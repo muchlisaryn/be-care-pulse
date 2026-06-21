@@ -13,6 +13,7 @@ class TitleMenuSeeder extends Seeder
             ['title' => 'Dashboard', 'sort_order' => 1],
             ['title' => 'Master Data', 'sort_order' => 2],
             ['title' => 'Cssd', 'sort_order' => 3],
+            ['title' => 'Clinical Pathway', 'sort_order' => 4],
         ];
 
         foreach ($items as $item) {

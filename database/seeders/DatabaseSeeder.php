@@ -23,6 +23,7 @@ class DatabaseSeeder extends Seeder
             ConditionSeeder::class,
             InstrumentCatalogSeeder::class,
             InstrumentStockSeeder::class,
+            CategoriClinicalPathwaySeeder::class,
         ]);
     }
 }

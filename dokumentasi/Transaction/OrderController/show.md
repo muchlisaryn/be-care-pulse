@@ -27,6 +27,7 @@
   "data": {
     "id": 1,
     "code": "ORD-001",
+    "code_transaction": "INV20260619001",
     "room_id": 1,
     "user_id": 1,
     "order_date": "2026-06-08",
@@ -84,10 +85,34 @@
         "condition_out": { "id": 1, "name": "Baik" },
         "condition_in": null
       }
+    ],
+    "timeline": [
+      {
+        "id": 1,
+        "type": "dibuat",
+        "room": "poli umum",
+        "actor": "Administrator",
+        "borrowed_by": null,
+        "note": "Order peminjaman diajukan",
+        "created_at": "2026-06-08T03:10:00.000000Z"
+      },
+      {
+        "id": 2,
+        "type": "diterima",
+        "room": "poli umum",
+        "actor": "Administrator",
+        "borrowed_by": "dr. Budi",
+        "note": "Order diterima & unit dipinjamkan CSSD",
+        "created_at": "2026-06-08T04:00:00.000000Z"
+      }
     ]
   }
 }
 ```
+
+> Catatan: `timeline` (Riwayat Peminjaman) menggabungkan seluruh event dari semua order
+> yang berbagi `code_transaction` (rantai pinjam-alih antar unit). Bila order belum
+> punya `code_transaction` (masih `diajukan`), hanya event order itu yang ditampilkan.
 
 ### Error (404)
 ```json

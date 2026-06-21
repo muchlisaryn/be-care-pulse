@@ -37,6 +37,7 @@ class MonitoringController extends Controller
         $rooms->getCollection()->transform(function (Room $room) {
             $groups = [];
             $unitCount = 0;
+            $txKeys = [];
 
             foreach ($room->orders as $order) {
                 foreach ($order->items as $item) {
@@ -47,6 +48,8 @@ class MonitoringController extends Controller
                     }
 
                     $unitCount++;
+                    // Hitung transaksi unik berdasarkan no_transaction (code_transaction).
+                    $txKeys[$order->code_transaction ?? ('ord-'.$order->id)] = true;
                     // Pisahkan per asal (satuan/paket) & nama paket agar bisa
                     // dikelompokkan "detail per paket" di frontend monitoring.
                     $key = $order->id.'-'.$item->source.'-'.($item->package_name ?? '').'-'.$instrument->id;
@@ -56,6 +59,7 @@ class MonitoringController extends Controller
                         'code_transaction' => $order->code_transaction,
                         'borrowed_by' => $order->borrowed_by ?? $order->created_by,
                         'order_date' => $order->order_date,
+                        'order_time' => optional($order->created_at)->format('H:i'),
                         'return_plan_date' => $order->return_plan_date,
                         'source' => $item->source,
                         'package_name' => $item->package_name,
@@ -87,6 +91,7 @@ class MonitoringController extends Controller
                 'code' => $room->code,
                 'name' => $room->name,
                 'borrowed_count' => $unitCount,
+                'transaction_count' => count($txKeys),
                 'instrument_count' => count($instruments),
                 'instruments' => $instruments,
             ];
@@ -227,6 +232,8 @@ class MonitoringController extends Controller
                     'date' => optional($order->order_date)->format('d.m.Y'),
                     'time' => optional($order->created_at)->format('H:i'),
                     'reservation' => $order->code,
+                    // No. transaksi (dipakai menggantikan reservation saat sudah dipinjam).
+                    'no_transaction' => $order->code_transaction,
                     'room_code' => $order->room?->code,
                     'room_name' => $order->room?->name,
                     'instrument_code' => $g['instrument_code'],

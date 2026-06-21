@@ -122,6 +122,8 @@ class OrderController extends Controller
     public function show(Order $order): JsonResponse
     {
         $order->load(self::DETAIL_RELATIONS);
+        // Lampirkan Riwayat Peminjaman (timeline) untuk ditampilkan di detail order.
+        $this->attachTimeline($order);
 
         return $this->success('Detail peminjaman berhasil diambil.', $order);
     }
@@ -520,6 +522,9 @@ class OrderController extends Controller
             });
 
             $order->load(self::DETAIL_RELATIONS);
+            // Lampirkan timeline agar Riwayat Peminjaman tetap tampil setelah
+            // pengembalian (termasuk pengembalian dicicil sebagian unit).
+            $this->attachTimeline($order);
 
             return $this->success('Peminjaman berhasil diperbarui.', $order);
         } catch (\Throwable $e) {

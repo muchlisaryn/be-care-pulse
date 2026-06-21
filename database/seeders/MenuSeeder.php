@@ -13,6 +13,7 @@ class MenuSeeder extends Seeder
         $dashboard = TitleMenus::where('title', 'Dashboard')->first();
         $masterData = TitleMenus::where('title', 'Master Data')->first();
         $cssd = TitleMenus::where('title', 'Cssd')->first();
+        $clinicalPathway = TitleMenus::where('title', 'Clinical Pathway')->first();
 
         // Dashboard — langsung link, tidak ada sub_menu
         Menu::create([
@@ -83,6 +84,70 @@ class MenuSeeder extends Seeder
                 'is_open' => false,
             ]);
         }
+
+        // Medis — grup master data medis (di bawah title "Master Data").
+        $medisParent = Menu::create([
+            'title_menu_id' => $masterData?->id,
+            'name' => 'Medis',
+            'url' => null,
+            'icon' => 'activity',
+            'sort_order' => 3,
+            'is_open' => false,
+        ]);
+
+        $medisChildren = [
+            ['name' => 'ICD 10', 'url' => '/master/icd-10', 'icon' => 'clipboard-list', 'sort_order' => 1],
+        ];
+
+        foreach ($medisChildren as $child) {
+            Menu::create([
+                'title_menu_id' => $masterData?->id,
+                'parent_id' => $medisParent->id,
+                'name' => $child['name'],
+                'url' => $child['url'],
+                'icon' => $child['icon'],
+                'sort_order' => $child['sort_order'],
+                'is_open' => false,
+            ]);
+        }
+
+        // Clinical Pathway — grup dipindah ke title "Master Data".
+        // Parent group sekarang bernama "Clinical Pathway", berisi "Kategori"
+        // dan "Formulir" (sebelumnya "Template Clinical Pathway").
+        $clinicalPathwayParent = Menu::create([
+            'title_menu_id' => $masterData?->id,
+            'name' => 'Clinical Pathway',
+            'url' => null,
+            'icon' => 'list',
+            'sort_order' => 4,
+            'is_open' => false,
+        ]);
+
+        $clinicalPathwayChildren = [
+            ['name' => 'Kategori', 'url' => '/clinical-pathway/kategori', 'sort_order' => 1],
+            ['name' => 'Formulir', 'url' => '/clinical-pathway/formulir', 'sort_order' => 2],
+        ];
+
+        foreach ($clinicalPathwayChildren as $child) {
+            Menu::create([
+                'title_menu_id' => $masterData?->id,
+                'parent_id' => $clinicalPathwayParent->id,
+                'name' => $child['name'],
+                'url' => $child['url'],
+                'sort_order' => $child['sort_order'],
+                'is_open' => false,
+            ]);
+        }
+
+        // Title "Clinical Pathway" — menu transaksi pengisian: Asesmen pasien.
+        Menu::create([
+            'title_menu_id' => $clinicalPathway?->id,
+            'name' => 'Asesmen',
+            'url' => '/clinical-pathway/asesmen',
+            'icon' => 'clipboard-list',
+            'sort_order' => 1,
+            'is_open' => false,
+        ]);
 
         // CSSD — sisa 2 sub-grup di bawah title "Cssd": Transaksi & Monitoring.
         // Masing-masing parent tertutup default (is_open=false) supaya sidebar

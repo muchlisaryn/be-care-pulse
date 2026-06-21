@@ -2,8 +2,14 @@
 
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\AuthorityController;
+use App\Http\Controllers\ClinicalPathway\AsesmenClinicalPathwayController;
+use App\Http\Controllers\ClinicalPathway\CategoriClinicalPathwayController;
+use App\Http\Controllers\ClinicalPathway\PointClinicalPathwayController;
+use App\Http\Controllers\ClinicalPathway\TemplateClinicalPathwayController;
+use App\Http\Controllers\ClinicalPathway\VarianClinicalPathwayController;
 use App\Http\Controllers\Master\BmhpController;
 use App\Http\Controllers\Master\ConditionController;
+use App\Http\Controllers\Master\Icd10Controller;
 use App\Http\Controllers\Master\InstrumentCatalogController;
 use App\Http\Controllers\Master\InstrumentController;
 use App\Http\Controllers\Master\InstrumentStockController;
@@ -44,6 +50,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('menus', MenuController::class);
         Route::apiResource('users', UserController::class);
         Route::apiResource('conditions', ConditionController::class);
+
+        // ICD 10 (master data medis) + impor massal dari Excel (skip duplikat code+version)
+        Route::post('icd10/import', [Icd10Controller::class, 'import']);
+        Route::apiResource('icd10', Icd10Controller::class)->parameters(['icd10' => 'icd10']);
         Route::get('instruments/stats', [InstrumentController::class, 'stats']);
         // Gambar instrumen (opsional): unggah/ganti & hapus
         Route::post('instruments/{instrument}/image', [InstrumentController::class, 'uploadImage']);
@@ -102,5 +112,46 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Laporan CSSD per alat (satu baris per unit di tiap batch sterilisasi)
         Route::get('reports/cssd-per-item', [ReportController::class, 'cssdPerItem']);
+    });
+
+    // Clinical Pathway
+    Route::prefix('clinical-pathway')->group(function () {
+        // Kategori (template) — urutan unik + label
+        Route::apiResource('categories', CategoriClinicalPathwayController::class)
+            ->parameters(['categories' => 'categori']);
+
+        // Template Clinical Pathway — diagnosa (ICD 10) + maksimal hari + keterangan
+        // + status. Tidak bisa dihapus, hanya aktif / non-aktif (toggle).
+        Route::patch('templates/{template}/toggle', [TemplateClinicalPathwayController::class, 'toggleStatus']);
+        Route::apiResource('templates', TemplateClinicalPathwayController::class)
+            ->except(['destroy'])
+            ->parameters(['templates' => 'template']);
+
+        // Formulir: poin (& sub-poin) per template. Penomoran mengikuti kategori
+        // (mis. kategori 1 → poin 1.1 → sub-poin 1.1.1).
+        Route::get('templates/{template}/points', [PointClinicalPathwayController::class, 'index']);
+        Route::post('templates/{template}/points', [PointClinicalPathwayController::class, 'store']);
+        // Salin seluruh poin dari formulir lain ke formulir ini.
+        Route::post('templates/{template}/copy-points', [PointClinicalPathwayController::class, 'copyFrom']);
+        Route::put('points/{point}', [PointClinicalPathwayController::class, 'update']);
+        Route::delete('points/{point}', [PointClinicalPathwayController::class, 'destroy']);
+
+        // Asesmen — pengisian clinical pathway per pasien (data pasien + ceklis poin).
+        // Auto-save ceklis/keterangan per poin lewat endpoint savePoint.
+        Route::put('asesmen/{asesmen}/points/{point}', [AsesmenClinicalPathwayController::class, 'savePoint']);
+        // Verifikasi CP per peran (dokter / perawat / pelaksana) + batal verifikasi.
+        Route::post('asesmen/{asesmen}/verify', [AsesmenClinicalPathwayController::class, 'verify']);
+        // Cetak asesmen ke PDF (preview & download di frontend).
+        Route::get('asesmen/{asesmen}/pdf', [AsesmenClinicalPathwayController::class, 'pdf']);
+
+        // Pencatatan varian (penyimpangan) per asesmen. Paraf diisi otomatis
+        // dari username user yang login.
+        Route::get('asesmen/{asesmen}/varian', [VarianClinicalPathwayController::class, 'index']);
+        Route::post('asesmen/{asesmen}/varian', [VarianClinicalPathwayController::class, 'store']);
+        Route::put('varian/{varian}', [VarianClinicalPathwayController::class, 'update']);
+        Route::delete('varian/{varian}', [VarianClinicalPathwayController::class, 'destroy']);
+
+        Route::apiResource('asesmen', AsesmenClinicalPathwayController::class)
+            ->parameters(['asesmen' => 'asesmen']);
     });
 });
