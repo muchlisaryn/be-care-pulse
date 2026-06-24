@@ -37,7 +37,8 @@ respons 422 dan seluruh transaksi di-rollback.
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | borrowed_by | string | Tidak | Nama penerima / peminjam |
-| order_date | date | Ya | Tanggal pinjam |
+| order_date | date | Ya | Tanggal pinjam (format `YYYY-MM-DD`) |
+| order_time | string | Tidak | Jam pinjam, format `HH:mm` (mis. `09:15`) |
 | return_plan_date | date | Tidak | Rencana kembali |
 | selections | object | Ya | Peta `key` requirement → array `instrument_stock_id` |
 
@@ -46,6 +47,7 @@ respons 422 dan seluruh transaksi di-rollback.
 {
   "borrowed_by": "Bidan Siti",
   "order_date": "2026-06-17",
+  "order_time": "09:15",
   "return_plan_date": "2026-06-20",
   "selections": {
     "paket|18|SET PARTUS": [86],

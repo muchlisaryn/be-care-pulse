@@ -36,7 +36,8 @@ sistem dapat berjalan dengan satu akun.
       "code_transaction": "INV20260619001",
       "borrowed_by": "Ruang OK 1",
       "room": { "id": 2, "name": "OK 1" },
-      "order_date": "2026-06-19",
+      "order_date": "2026-06-19T00:00:00.000000Z",
+      "order_time": "14:30:00",
       "return_plan_date": "2026-06-21",
       "units": [
         {

@@ -59,7 +59,10 @@ class MonitoringController extends Controller
                         'code_transaction' => $order->code_transaction,
                         'borrowed_by' => $order->borrowed_by ?? $order->created_by,
                         'order_date' => $order->order_date,
-                        'order_time' => optional($order->created_at)->format('H:i'),
+                        // Jam peminjaman yang diisi manual; fallback ke waktu dibuat.
+                        'order_time' => $order->order_time
+                            ? substr($order->order_time, 0, 5)
+                            : optional($order->created_at)->format('H:i'),
                         'return_plan_date' => $order->return_plan_date,
                         'source' => $item->source,
                         'package_name' => $item->package_name,
@@ -131,6 +134,7 @@ class MonitoringController extends Controller
                 'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
                 'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
                 'order_date' => $order->order_date,
+                'order_time' => $order->order_time ? substr($order->order_time, 0, 5) : null,
                 'return_plan_date' => $order->return_plan_date,
                 'note' => $order->note,
                 'requested_qty' => (int) $order->requestItems->sum('quantity'),

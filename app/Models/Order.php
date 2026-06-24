@@ -35,6 +35,7 @@ class Order extends Model
         'code_transaction',
         'borrowed_by',
         'order_date',
+        'order_time',
         'return_plan_date',
         'return_actual_date',
         'returned_by',
@@ -48,6 +49,7 @@ class Order extends Model
 
     protected $casts = [
         'order_date' => 'date',
+        // order_time disimpan terpisah sebagai string jam (format H:i), tanpa cast.
         'return_plan_date' => 'date',
         'return_actual_date' => 'date',
         'canceled_at' => 'datetime',

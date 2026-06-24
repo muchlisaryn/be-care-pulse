@@ -61,6 +61,7 @@ class OrderController extends Controller
             'user_id' => 'nullable|integer|exists:users,id',
             'borrowed_by' => 'nullable|string|max:255',
             'order_date' => 'required|date',
+            'order_time' => 'nullable|date_format:H:i',
             'return_plan_date' => 'nullable|date',
             'note' => 'nullable|string',
             // Baris permintaan: hanya jumlah. Unit fisik (order_item) di-generate
@@ -83,6 +84,7 @@ class OrderController extends Controller
                     // Nama peminjam (teks bebas) — diisi manual di form.
                     'borrowed_by' => $validated['borrowed_by'] ?? null,
                     'order_date' => $validated['order_date'],
+                    'order_time' => $validated['order_time'] ?? null,
                     'return_plan_date' => $validated['return_plan_date'] ?? null,
                     'note' => $validated['note'] ?? null,
                     'status' => Order::STATUS_DIAJUKAN,
@@ -195,6 +197,7 @@ class OrderController extends Controller
             'borrowed_by' => $o->borrowed_by ?? $o->user?->name,
             'room' => $o->room ? ['id' => $o->room->id, 'name' => $o->room->name] : null,
             'order_date' => $o->order_date,
+            'order_time' => $o->order_time,
             'return_plan_date' => $o->return_plan_date,
             'units' => $o->items->map(fn ($it) => [
                 'order_item_id' => $it->id,
@@ -298,6 +301,7 @@ class OrderController extends Controller
                 'status' => $order->status,
                 'borrowed_by' => $order->borrowed_by,
                 'order_date' => $order->order_date,
+                'order_time' => $order->order_time,
                 'return_plan_date' => $order->return_plan_date,
                 'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
             ],
@@ -319,6 +323,7 @@ class OrderController extends Controller
         $validated = $request->validate([
             'borrowed_by' => 'nullable|string|max:255',
             'order_date' => 'required|date',
+            'order_time' => 'nullable|date_format:H:i',
             'return_plan_date' => 'nullable|date',
             // Peta: key requirement → daftar instrument_stock_id yang dipilih.
             'selections' => 'required|array|min:1',
@@ -380,6 +385,7 @@ class OrderController extends Controller
                 // Perbarui header order + status, lalu kurangi stok (unit → dipinjam).
                 $order->borrowed_by = $validated['borrowed_by'] ?? $order->borrowed_by;
                 $order->order_date = $validated['order_date'];
+                $order->order_time = $validated['order_time'] ?? $order->order_time;
                 $order->return_plan_date = $validated['return_plan_date'] ?? null;
                 $order->status = Order::STATUS_DIPINJAM;
                 // Generate kode transaksi unik untuk barcode saat order diterima.

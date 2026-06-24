@@ -28,6 +28,7 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
 | user_id | integer | Tidak | Petugas/penanggung jawab, harus ada di tabel users |
 | borrowed_by | string | Tidak | Nama peminjam (teks bebas), maksimal 255 karakter |
 | order_date | date | Ya | Tanggal pengajuan/pinjam (format `YYYY-MM-DD`) |
+| order_time | string | Tidak | Jam pinjam, format `HH:mm` (mis. `14:30`) |
 | return_plan_date | date | Tidak | Rencana tanggal kembali |
 | note | string | Tidak | Catatan/keperluan |
 | items | array | Ya | Minimal 1 baris permintaan |
@@ -44,6 +45,7 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
   "user_id": 1,
   "borrowed_by": "dr. Andi",
   "order_date": "2026-06-08",
+  "order_time": "14:30",
   "return_plan_date": "2026-06-10",
   "note": "Untuk operasi minor",
   "items": [
@@ -66,7 +68,8 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
     "room_id": 1,
     "user_id": 1,
     "borrowed_by": "dr. Andi",
-    "order_date": "2026-06-08",
+    "order_date": "2026-06-08T00:00:00.000000Z",
+    "order_time": "14:30:00",
     "return_plan_date": "2026-06-10",
     "return_actual_date": null,
     "status": "diajukan",
