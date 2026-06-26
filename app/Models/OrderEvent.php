@@ -23,6 +23,11 @@ class OrderEvent extends Model
 
     public const TYPE_DIBATALKAN = 'dibatalkan';
 
+    // Pipeline pemrosesan CSSD: order diproses → selesai dicuci.
+    public const TYPE_DIPROSES = 'diproses';
+
+    public const TYPE_SELESAI_CUCI = 'selesai_cuci';
+
     protected $table = 'order_events';
 
     // Hanya created_at yang dipakai (append-only, tanpa updated_at).

@@ -22,11 +22,22 @@ class Order extends Model
 
     public const STATUS_DIBATALKAN = 'dibatalkan';
 
+    // Pipeline pemrosesan CSSD (reprocessing): order masuk → diproses (Proses) →
+    // pencucian (Cleaning) → pengemasan → selesai (siap sterilisasi).
+    public const STATUS_PENCUCIAN = 'pencucian';
+
+    public const STATUS_PENGEMASAN = 'pengemasan';
+
+    public const STATUS_SELESAI = 'selesai';
+
     public const STATUSES = [
         self::STATUS_DIAJUKAN,
         self::STATUS_DIPINJAM,
         self::STATUS_DIKEMBALIKAN,
         self::STATUS_DIBATALKAN,
+        self::STATUS_PENCUCIAN,
+        self::STATUS_PENGEMASAN,
+        self::STATUS_SELESAI,
     ];
 
     protected $fillable = [
@@ -42,6 +53,8 @@ class Order extends Model
         'note',
         'canceled_at',
         'canceled_by',
+        'processed_at',
+        'processed_by',
         'created_by',
         'updated_by',
     ];
@@ -51,6 +64,7 @@ class Order extends Model
         'return_plan_date' => 'date',
         'return_actual_date' => 'date',
         'canceled_at' => 'datetime',
+        'processed_at' => 'datetime',
     ];
 
     protected static function generateUniqueCode($model): string
@@ -98,5 +112,11 @@ class Order extends Model
     public function transfers()
     {
         return $this->hasMany(OrderTransfer::class, 'from_order_id');
+    }
+
+    /** Catatan pencucian (Cleaning) — satu batch per order. */
+    public function washing()
+    {
+        return $this->hasOne(OrderWashing::class);
     }
 }

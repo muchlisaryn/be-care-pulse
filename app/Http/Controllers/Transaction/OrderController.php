@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\InstrumentStock;
 use App\Models\Order;
 use App\Models\OrderEvent;
+use App\Models\OrderItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -410,6 +411,228 @@ class OrderController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 422);
         }
+    }
+
+    /**
+     * Data tahap Packaging: kebutuhan unit per instrumen + jumlah yang sudah
+     * di-generate + sisa unit tersedia. Untuk order pada status `pengemasan`.
+     */
+    public function packaging(Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_PENGEMASAN) {
+            return $this->error('Order ini tidak sedang dalam tahap packaging.', 422);
+        }
+
+        return $this->success('Data packaging berhasil diambil.', $this->packagingPayload($order));
+    }
+
+    /**
+     * Generate unit fisik order secara OTOMATIS dari stok tersedia (tahap Packaging).
+     * Bila stok kurang, ambil sebanyak yang ada — sisanya dibiarkan (tetap boleh
+     * lanjut).
+     *
+     * Mode:
+     * - preview=true  → hanya PRATINJAU unit yang akan dialokasikan (tidak disimpan,
+     *   tidak membuat nomor batch). Dipakai tombol "Generate / Generate Ulang".
+     * - preview=false → SIMPAN: buat order_item dari unit terpilih + bangkitkan
+     *   nomor batch (code_transaction). Dipakai tombol "Simpan".
+     */
+    public function pack(Request $request, Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_PENGEMASAN) {
+            return $this->error('Order ini tidak sedang dalam tahap packaging.', 422);
+        }
+
+        // Pratinjau: hitung unit yang akan dialokasikan tanpa menyentuh database.
+        if ($request->boolean('preview')) {
+            $proposed = $this->proposePacking($order);
+
+            return $this->success('Pratinjau alokasi unit.', $this->packagingPayload($order, $proposed));
+        }
+
+        try {
+            DB::transaction(function () use ($order) {
+                $requirements = $this->buildRequirements($order);
+                $order->load('items.instrumentStock');
+
+                foreach ($requirements as $req) {
+                    $remaining = $req['needed_qty'] - $this->generatedQtyFor($order, $req);
+                    if ($remaining <= 0) {
+                        continue;
+                    }
+
+                    $units = $this->availableUnitsFor($req, $remaining);
+                    foreach ($units as $stock) {
+                        $order->items()->create([
+                            'instrument_stock_id' => $stock->id,
+                            'source' => $req['source'],
+                            'package_name' => $req['package_name'],
+                            'condition_out_id' => $stock->condition_id,
+                            'is_returned' => false,
+                        ]);
+                    }
+                    // Muat ulang agar hitungan unit terbaru benar untuk requirement berikutnya.
+                    $order->load('items.instrumentStock');
+                }
+
+                // Nomor batch / kode transaksi dibuat sekali saat simpan pertama.
+                if (! $order->code_transaction) {
+                    $order->code_transaction = $this->generateTransactionCode();
+                    $order->save();
+
+                    OrderEvent::where('order_id', $order->id)
+                        ->whereNull('code_transaction')
+                        ->update(['code_transaction' => $order->code_transaction]);
+                }
+            });
+
+            return $this->success('Unit order berhasil disimpan.', $this->packagingPayload($order));
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Hitung pratinjau unit yang akan dialokasikan per requirement (tanpa menyimpan).
+     * Mengembalikan map: key requirement → daftar [{id, code}] unit yang diusulkan.
+     */
+    private function proposePacking(Order $order): array
+    {
+        $requirements = $this->buildRequirements($order);
+        $order->load('items.instrumentStock');
+
+        // Unit yang sudah terpakai order lain — dikecualikan, dan ditambah unit yang
+        // diusulkan di requirement sebelumnya agar tidak dipakai dua kali.
+        $excludeIds = OrderItem::where('is_returned', false)->pluck('instrument_stock_id')->all();
+
+        $proposed = [];
+        foreach ($requirements as $req) {
+            $remaining = $req['needed_qty'] - $this->generatedQtyFor($order, $req);
+            if ($remaining <= 0) {
+                $proposed[$req['key']] = [];
+
+                continue;
+            }
+
+            $units = $this->availableUnitsFor($req, $remaining, $excludeIds);
+            $proposed[$req['key']] = $units->map(fn ($u) => ['id' => $u->id, 'code' => $u->code])->all();
+            foreach ($units as $u) {
+                $excludeIds[] = $u->id;
+            }
+        }
+
+        return $proposed;
+    }
+
+    /** Ambil unit tersedia untuk sebuah requirement (urut kode), kecuali yang sudah terpakai. */
+    private function availableUnitsFor(array $req, int $limit, ?array $excludeIds = null)
+    {
+        $query = InstrumentStock::where('instrument_id', $req['instrument_id'])
+            ->where('status', InstrumentStock::STATUS_TERSEDIA);
+
+        if ($excludeIds === null) {
+            $query->whereNotIn('id', OrderItem::where('is_returned', false)->select('instrument_stock_id'));
+        } else {
+            $query->whereNotIn('id', $excludeIds);
+        }
+
+        return $query->orderBy('code')->limit($limit)->get();
+    }
+
+    /**
+     * Selesaikan tahap Packaging: order → `selesai` (siap disterilkan). Unit yang
+     * sudah di-generate tetap berstatus `tersedia` agar bisa dimasukkan ke batch
+     * sterilisasi di menu Sterilisasi.
+     */
+    public function packagingComplete(Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_PENGEMASAN) {
+            return $this->error('Order ini tidak sedang dalam tahap packaging.', 422);
+        }
+        if (! $order->code_transaction) {
+            return $this->error('Generate unit & nomor batch terlebih dahulu sebelum melanjutkan.', 422);
+        }
+
+        try {
+            $order->status = Order::STATUS_SELESAI;
+            $order->save();
+
+            $order->load(self::DETAIL_RELATIONS);
+
+            return $this->success('Order siap disterilkan.', $order);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /** Unit (order_item) yang sudah di-generate untuk sebuah requirement (instrumen+asal+paket). */
+    private function generatedItemsFor(Order $order, array $req)
+    {
+        return $order->items
+            ->filter(fn ($it) => $it->source === $req['source']
+                && (string) $it->package_name === (string) $req['package_name']
+                && (int) ($it->instrumentStock?->instrument_id ?? 0) === (int) $req['instrument_id'])
+            ->values();
+    }
+
+    /** Jumlah unit yang sudah di-generate untuk sebuah requirement. */
+    private function generatedQtyFor(Order $order, array $req): int
+    {
+        return $this->generatedItemsFor($order, $req)->count();
+    }
+
+    /**
+     * Susun payload tahap packaging: order + requirement + status generate per
+     * instrumen. `$proposedByKey` (opsional) berisi unit pratinjau yang BELUM
+     * disimpan, digabung ke daftar unit agar tampil di pratinjau.
+     */
+    private function packagingPayload(Order $order, array $proposedByKey = []): array
+    {
+        $requirements = $this->buildRequirements($order);
+        $order->load(['items.instrumentStock', 'room']);
+
+        $boundIds = OrderItem::where('is_returned', false)->pluck('instrument_stock_id')->all();
+
+        $reqs = collect($requirements)->values()->map(function ($req) use ($order, $boundIds, $proposedByKey) {
+            $available = InstrumentStock::where('instrument_id', $req['instrument_id'])
+                ->where('status', InstrumentStock::STATUS_TERSEDIA)
+                ->whereNotIn('id', $boundIds)
+                ->count();
+
+            // Kode unit (stock) yang sudah di-generate (tersimpan) untuk requirement ini.
+            $generatedUnits = $this->generatedItemsFor($order, $req)
+                ->map(fn ($it) => [
+                    'id' => $it->instrument_stock_id,
+                    'code' => $it->instrumentStock?->code,
+                ])
+                ->values();
+
+            // Gabungkan unit pratinjau (belum disimpan) bila ada.
+            $units = $generatedUnits->concat($proposedByKey[$req['key']] ?? [])->values();
+
+            return [
+                'key' => $req['key'],
+                'instrument' => $req['instrument'],
+                'source' => $req['source'],
+                'package_name' => $req['package_name'],
+                'needed_qty' => $req['needed_qty'],
+                'generated_qty' => $units->count(),
+                'generated_units' => $units,
+                'available_count' => $available,
+            ];
+        });
+
+        return [
+            'order' => [
+                'id' => $order->id,
+                'code' => $order->code,
+                'code_transaction' => $order->code_transaction,
+                'status' => $order->status,
+                'borrowed_by' => $order->borrowed_by,
+                'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
+            ],
+            'requirements' => $reqs,
+        ];
     }
 
     /**

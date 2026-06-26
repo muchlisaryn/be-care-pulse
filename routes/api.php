@@ -17,6 +17,7 @@ use App\Http\Controllers\Master\MenuController;
 use App\Http\Controllers\Master\RoomController;
 use App\Http\Controllers\Master\TitleMenuController;
 use App\Http\Controllers\Master\UserController;
+use App\Http\Controllers\Transaction\CleaningController;
 use App\Http\Controllers\Transaction\DistributionController;
 use App\Http\Controllers\Transaction\MonitoringController;
 use App\Http\Controllers\Transaction\OrderController;
@@ -93,6 +94,14 @@ Route::middleware('auth:sanctum')->group(function () {
         // Terima order: data alokasi unit + proses penerimaan (alokasi + kurangi stok)
         Route::get('orders/{order}/allocation', [OrderController::class, 'allocation']);
         Route::post('orders/{order}/receive', [OrderController::class, 'receive']);
+        // Pipeline pemrosesan CSSD: Proses order masuk → tahap Cleaning & Pengemasan
+        Route::post('orders/{order}/process', [CleaningController::class, 'process']);
+        Route::get('cleaning', [CleaningController::class, 'index']);
+        Route::put('cleaning/{order}/washing', [CleaningController::class, 'updateWashing']);
+        // Tahap Packaging: data kebutuhan unit, generate unit dari stok, lalu lanjut (selesai/siap steril)
+        Route::get('orders/{order}/packaging', [OrderController::class, 'packaging']);
+        Route::post('orders/{order}/pack', [OrderController::class, 'pack']);
+        Route::post('orders/{order}/packaging-complete', [OrderController::class, 'packagingComplete']);
         Route::apiResource('orders', OrderController::class);
 
         // Pinjam-alih (handover) instrumen antar peminjam tanpa order ulang ke CSSD

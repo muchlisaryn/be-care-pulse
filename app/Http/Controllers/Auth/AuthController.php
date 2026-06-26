@@ -231,12 +231,14 @@ class AuthController extends Controller
 
         try {
             $user->update(['password' => Hash::make($request->password)]);
-            $user->tokens()->delete();
 
-            $token = $user->createToken('auth_token')->plainTextToken;
+            // Cabut sesi di perangkat LAIN, tapi pertahankan sesi yang sedang
+            // dipakai agar user tidak ikut ter-logout di perangkat ini.
+            $currentTokenId = $request->user()->currentAccessToken()->id;
+            $user->tokens()->where('id', '!=', $currentTokenId)->delete();
 
-            return $this->success('Password berhasil diubah. Silakan login ulang.', [
-                'token' => $token,
+            return $this->success('Password berhasil diubah. Sesi di perangkat lain telah dikeluarkan.', [
+                'token' => $request->bearerToken(),
             ]);
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
