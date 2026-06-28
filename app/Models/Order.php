@@ -30,6 +30,15 @@ class Order extends Model
 
     public const STATUS_SELESAI = 'selesai';
 
+    // Tahap Sterilisasi: order yang sudah dimasukkan ke batch sterilisasi.
+    public const STATUS_STERILISASI = 'sterilisasi';
+
+    // Hasil sterilisasi tervalidasi: steril & siap rilis.
+    public const STATUS_STERIL = 'steril';
+
+    // Tahap Penyimpanan: seluruh unit order tersimpan di gudang steril.
+    public const STATUS_DIGUDANG = 'digudang';
+
     public const STATUSES = [
         self::STATUS_DIAJUKAN,
         self::STATUS_DIPINJAM,
@@ -38,6 +47,9 @@ class Order extends Model
         self::STATUS_PENCUCIAN,
         self::STATUS_PENGEMASAN,
         self::STATUS_SELESAI,
+        self::STATUS_STERILISASI,
+        self::STATUS_STERIL,
+        self::STATUS_DIGUDANG,
     ];
 
     protected $fillable = [
@@ -49,6 +61,10 @@ class Order extends Model
         'return_plan_date',
         'return_actual_date',
         'returned_by',
+        'medical_record_no',
+        'patient_name',
+        'distributed_to',
+        'distributed_at',
         'status',
         'note',
         'canceled_at',
@@ -65,6 +81,7 @@ class Order extends Model
         'return_actual_date' => 'date',
         'canceled_at' => 'datetime',
         'processed_at' => 'datetime',
+        'distributed_at' => 'datetime',
     ];
 
     protected static function generateUniqueCode($model): string
@@ -118,5 +135,17 @@ class Order extends Model
     public function washing()
     {
         return $this->hasOne(OrderWashing::class);
+    }
+
+    /** Batch sterilisasi yang dibuat dari order ini (pipeline tab Sterilization). */
+    public function sterilizations()
+    {
+        return $this->hasMany(Sterilization::class);
+    }
+
+    /** Penempatan unit order di rak gudang steril (Tahap 5 — Storage). */
+    public function storages()
+    {
+        return $this->hasMany(InstrumentStorage::class);
     }
 }

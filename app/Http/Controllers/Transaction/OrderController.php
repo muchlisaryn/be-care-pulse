@@ -5,9 +5,12 @@ namespace App\Http\Controllers\Transaction;
 use App\Events\OrderSubmitted;
 use App\Http\Controllers\Controller;
 use App\Models\InstrumentStock;
+use App\Models\InstrumentStorage;
 use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\OrderItem;
+use App\Models\OrderTransfer;
+use App\Models\Sterilization;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -173,9 +176,9 @@ class OrderController extends Controller
         // Petakan permintaan pinjam yang masih `pending` per instrument_stock_id,
         // agar frontend bisa menandai unit yang sudah diminta (cegah request dobel).
         $pendingByStock = [];
-        $pendingTransfers = \App\Models\OrderTransfer::with(['toRoom', 'requestedBy', 'items'])
+        $pendingTransfers = OrderTransfer::with(['toRoom', 'requestedBy', 'items'])
             ->whereIn('from_order_id', $orders->pluck('id'))
-            ->where('status', \App\Models\OrderTransfer::STATUS_PENDING)
+            ->where('status', OrderTransfer::STATUS_PENDING)
             ->get();
         foreach ($pendingTransfers as $t) {
             foreach ($t->items as $ti) {
@@ -344,7 +347,7 @@ class OrderController extends Controller
                     if (count($ids) !== $req['needed_qty']) {
                         throw new \RuntimeException(
                             "Jumlah unit untuk \"{$req['instrument']['name']}\" harus {$req['needed_qty']}, "
-                            ."terisi ".count($ids).'.'
+                            .'terisi '.count($ids).'.'
                         );
                     }
 
@@ -493,6 +496,112 @@ class OrderController extends Controller
     }
 
     /**
+     * Inspection & Packaging — scan barcode satu unit instrumen di meja pengemasan.
+     * Sistem mencocokkan unit ke daftar komponen set (checklist); bila cocok &
+     * masih kurang, unit "dicentang" (jadi order_item). Petugas memindai satu per
+     * satu untuk memverifikasi tiap komponen ada.
+     */
+    public function packScan(Request $request, Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_PENGEMASAN) {
+            return $this->error('Order ini tidak sedang dalam tahap packaging.', 422);
+        }
+
+        $validated = $request->validate(['code' => 'required|string']);
+
+        $stock = InstrumentStock::where('code', $validated['code'])->first();
+        if (! $stock) {
+            return $this->error("Unit dengan kode \"{$validated['code']}\" tidak ditemukan.", 404);
+        }
+
+        $requirements = $this->buildRequirements($order);
+        $order->load('items.instrumentStock');
+
+        // Sudah dicentang di order ini?
+        if ($order->items->firstWhere('instrument_stock_id', $stock->id)) {
+            return $this->error("Unit \"{$stock->code}\" sudah dicentang.", 422);
+        }
+
+        // Cari komponen set (requirement) untuk instrumen unit ini yang masih kurang.
+        $req = collect($requirements)->first(fn ($r) => (int) $r['instrument_id'] === (int) $stock->instrument_id
+            && $this->generatedQtyFor($order, $r) < $r['needed_qty']);
+
+        if (! $req) {
+            return $this->error(
+                "Instrumen \"{$stock->instrument?->name}\" tidak ada di daftar set ini, atau jumlahnya sudah lengkap.",
+                422
+            );
+        }
+
+        if ($stock->status !== InstrumentStock::STATUS_TERSEDIA) {
+            return $this->error("Unit \"{$stock->code}\" tidak tersedia (status: {$stock->status}).", 422);
+        }
+
+        if (OrderItem::where('is_returned', false)->where('instrument_stock_id', $stock->id)->exists()) {
+            return $this->error("Unit \"{$stock->code}\" sudah dipakai order lain.", 422);
+        }
+
+        try {
+            $order->items()->create([
+                'instrument_stock_id' => $stock->id,
+                'source' => $req['source'],
+                'package_name' => $req['package_name'],
+                'condition_out_id' => $stock->condition_id,
+                'is_returned' => false,
+            ]);
+
+            return $this->success("Unit \"{$stock->code}\" tercentang.", $this->packagingPayload($order));
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Inspection checklist — centang manual satu komponen set (tanpa scan barcode).
+     * Mengalokasikan 1 unit tersedia untuk requirement (komponen) tertentu. Berguna
+     * saat unit belum punya barcode tercetak / inspeksi manual.
+     */
+    public function packCheck(Request $request, Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_PENGEMASAN) {
+            return $this->error('Order ini tidak sedang dalam tahap packaging.', 422);
+        }
+
+        $validated = $request->validate(['key' => 'required|string']);
+
+        $requirements = $this->buildRequirements($order);
+        $order->load('items.instrumentStock');
+
+        $req = collect($requirements)->firstWhere('key', $validated['key']);
+        if (! $req) {
+            return $this->error('Komponen set tidak ditemukan.', 422);
+        }
+
+        if ($this->generatedQtyFor($order, $req) >= $req['needed_qty']) {
+            return $this->error("Komponen \"{$req['instrument']['name']}\" sudah lengkap.", 422);
+        }
+
+        $unit = $this->availableUnitsFor($req, 1)->first();
+        if (! $unit) {
+            return $this->error("Stok \"{$req['instrument']['name']}\" tidak tersedia untuk dicentang.", 422);
+        }
+
+        try {
+            $order->items()->create([
+                'instrument_stock_id' => $unit->id,
+                'source' => $req['source'],
+                'package_name' => $req['package_name'],
+                'condition_out_id' => $unit->condition_id,
+                'is_returned' => false,
+            ]);
+
+            return $this->success("Komponen \"{$req['instrument']['name']}\" ({$unit->code}) tercentang.", $this->packagingPayload($order));
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
      * Hitung pratinjau unit yang akan dialokasikan per requirement (tanpa menyimpan).
      * Mengembalikan map: key requirement → daftar [{id, code}] unit yang diusulkan.
      */
@@ -549,11 +658,21 @@ class OrderController extends Controller
         if ($order->status !== Order::STATUS_PENGEMASAN) {
             return $this->error('Order ini tidak sedang dalam tahap packaging.', 422);
         }
-        if (! $order->code_transaction) {
-            return $this->error('Generate unit & nomor batch terlebih dahulu sebelum melanjutkan.', 422);
+
+        $itemCount = $order->items()->where('is_returned', false)->count();
+        if ($itemCount === 0) {
+            return $this->error('Belum ada unit yang dicentang / di-generate untuk dikemas.', 422);
         }
 
         try {
+            // Bangkitkan nomor batch bila belum ada (alur scan tidak lewat "Simpan").
+            if (! $order->code_transaction) {
+                $order->code_transaction = $this->generateTransactionCode();
+                OrderEvent::where('order_id', $order->id)
+                    ->whereNull('code_transaction')
+                    ->update(['code_transaction' => $order->code_transaction]);
+            }
+
             $order->status = Order::STATUS_SELESAI;
             $order->save();
 
@@ -563,6 +682,360 @@ class OrderController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Tahap Sterilisasi — daftar order pada pipeline sterilisasi:
+     * - `selesai`     : siap dibuatkan batch sterilisasi.
+     * - `sterilisasi` : batch sudah dibuat, menunggu validasi (Steril / Gagal).
+     * Mengembalikan ringkasan unit fisik + info batch terbaru (bila ada).
+     */
+    public function readyToSterilize(Request $request): JsonResponse
+    {
+        $orders = Order::with([
+            'room',
+            'user',
+            'items.instrumentStock.instrument',
+            'sterilizations' => fn ($q) => $q->latest(),
+        ])
+            ->whereIn('status', [Order::STATUS_SELESAI, Order::STATUS_STERILISASI])
+            ->when(
+                $request->search,
+                fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
+                    ->orWhere('code_transaction', 'like', "%{$s}%")
+                    ->orWhere('borrowed_by', 'like', "%{$s}%")
+                    ->orWhereHas('room', fn ($r) => $r->where('name', 'like', "%{$s}%")))
+            )
+            ->orderByDesc('processed_at')
+            ->latest()
+            ->paginate(20);
+
+        $orders->getCollection()->transform(fn (Order $order) => $this->sterilizePayload($order));
+
+        return $this->success('Data order pipeline sterilisasi berhasil diambil.', $orders);
+    }
+
+    /**
+     * Validasi hasil sterilisasi sebuah order langsung dari tab Sterilization.
+     * - result=selesai (Steril/Siap Rilis): batch → selesai, unit → tersedia (steril),
+     *   order → `steril`. Order keluar dari pipeline sterilisasi.
+     * - result=gagal (Gagal Steril/Wajib Re-proses): batch → gagal, unit → tersedia
+     *   (dibebaskan), order kembali → `selesai` agar bisa dibuatkan batch ulang.
+     */
+    public function validateSterilization(Request $request, Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_STERILISASI) {
+            return $this->error('Order ini tidak sedang dalam proses sterilisasi.', 422);
+        }
+
+        $validated = $request->validate([
+            'result' => ['required', Rule::in([Sterilization::STATUS_SELESAI, Sterilization::STATUS_GAGAL])],
+            'chemical_indicator' => 'nullable|string|max:100',
+            'biological_indicator' => 'nullable|string|max:100',
+            'expiry_date' => 'nullable|date',
+            'note' => 'nullable|string',
+        ]);
+
+        $batch = $order->sterilizations()
+            ->where('status', Sterilization::STATUS_DIPROSES)
+            ->latest()
+            ->first();
+
+        if (! $batch) {
+            return $this->error('Batch sterilisasi untuk order ini tidak ditemukan.', 422);
+        }
+
+        try {
+            DB::transaction(function () use ($validated, $batch, $order) {
+                $steril = $validated['result'] === Sterilization::STATUS_SELESAI;
+
+                // Lengkapi hasil indikator / kedaluwarsa bila diisi saat validasi.
+                $batch->fill(array_filter([
+                    'chemical_indicator' => $validated['chemical_indicator'] ?? null,
+                    'biological_indicator' => $validated['biological_indicator'] ?? null,
+                    'expiry_date' => $validated['expiry_date'] ?? null,
+                    'note' => $validated['note'] ?? null,
+                ], fn ($v) => $v !== null));
+                $batch->status = $validated['result'];
+                $batch->save();
+
+                // Unit kembali tersedia (steril & siap pakai, atau dibebaskan untuk re-proses).
+                $stockIds = $batch->items()->pluck('instrument_stock_id');
+                InstrumentStock::transitionMany($stockIds, InstrumentStock::STATUS_TERSEDIA, [
+                    'context' => 'sterilization',
+                    'reference' => $batch->code,
+                ]);
+
+                if ($steril) {
+                    $order->status = Order::STATUS_STERIL;
+                    $order->save();
+                    OrderEvent::record(OrderEvent::TYPE_STERIL, $order, [
+                        'note' => 'Sterilisasi tervalidasi (steril & siap rilis) — batch '.$batch->code,
+                    ]);
+                } else {
+                    // Gagal steril → wajib re-proses: kembali ke antrean siap-steril.
+                    $order->status = Order::STATUS_SELESAI;
+                    $order->save();
+                    OrderEvent::record(OrderEvent::TYPE_GAGAL_STERIL, $order, [
+                        'note' => 'Gagal steril, wajib re-proses — batch '.$batch->code,
+                    ]);
+                }
+            });
+
+            $order->load(['sterilizations' => fn ($q) => $q->latest()]);
+
+            return $this->success(
+                $validated['result'] === Sterilization::STATUS_SELESAI
+                    ? 'Sterilisasi tervalidasi: alat steril & siap rilis.'
+                    : 'Sterilisasi ditandai gagal: order kembali ke antrean siap-steril.',
+                ['order_id' => $order->id, 'order_status' => $order->status]
+            );
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Buat batch sterilisasi langsung dari sebuah order yang siap (`selesai`).
+     * Seluruh unit fisik order (order_item belum dikembalikan) dimasukkan ke batch,
+     * unit → status `sterilisasi`, dan order → status `sterilisasi` (keluar dari
+     * antrean siap-steril). Batch tercatat di modul Sterilisasi seperti biasa.
+     */
+    public function sterilize(Request $request, Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_SELESAI) {
+            return $this->error('Order ini belum siap disterilkan (harus selesai packaging).', 422);
+        }
+
+        $validated = $request->validate([
+            'machine' => 'required|string|max:255',
+            'method' => ['nullable', Rule::in(Sterilization::METHODS)],
+            'cycle_number' => 'nullable|string|max:100',
+            'temperature' => 'nullable|numeric',
+            'duration_minutes' => 'nullable|integer|min:0',
+            'operator' => 'nullable|string|max:255',
+            'sterilized_at' => 'required|date',
+            'expiry_date' => 'nullable|date|after_or_equal:sterilized_at',
+            'chemical_indicator' => 'nullable|string|max:100',
+            'biological_indicator' => 'nullable|string|max:100',
+            'note' => 'nullable|string',
+        ]);
+
+        $stockIds = $order->items()->where('is_returned', false)
+            ->pluck('instrument_stock_id')->unique()->values();
+
+        if ($stockIds->isEmpty()) {
+            return $this->error('Order ini tidak punya unit untuk disterilkan.', 422);
+        }
+
+        try {
+            $sterilization = DB::transaction(function () use ($validated, $stockIds, $order) {
+                $sterilization = Sterilization::create([
+                    ...collect($validated)->all(),
+                    'order_id' => $order->id,
+                    'method' => $validated['method'] ?? Sterilization::METHOD_UAP,
+                    'status' => Sterilization::STATUS_DIPROSES,
+                ]);
+
+                foreach ($stockIds as $stockId) {
+                    $sterilization->items()->create(['instrument_stock_id' => $stockId]);
+                }
+
+                // Unit fisik masuk batch → status sterilisasi.
+                InstrumentStock::transitionMany($stockIds, InstrumentStock::STATUS_STERILISASI, [
+                    'context' => 'sterilization',
+                    'reference' => $sterilization->code,
+                ]);
+
+                // Order keluar dari antrean siap-steril.
+                $order->status = Order::STATUS_STERILISASI;
+                $order->save();
+
+                OrderEvent::record(OrderEvent::TYPE_DISTERILKAN, $order, [
+                    'note' => 'Order dimasukkan ke batch sterilisasi '.$sterilization->code,
+                ]);
+
+                return $sterilization;
+            });
+
+            $sterilization->load('items.instrumentStock.instrument');
+
+            return $this->success('Batch sterilisasi berhasil dibuat dari order.', [
+                'order_id' => $order->id,
+                'order_status' => $order->status,
+                'sterilization' => $sterilization,
+            ], 201);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Tahap 6 — Distribution & Tracking. Daftar order yang sudah di gudang steril
+     * (status `digudang`) & siap didistribusikan ke unit pelayanan.
+     */
+    public function readyToDistribute(Request $request): JsonResponse
+    {
+        $orders = Order::with([
+            'room',
+            'user',
+            'items.instrumentStock.instrument',
+            'storages' => fn ($q) => $q->where('status', InstrumentStorage::STATUS_TERSIMPAN),
+            'sterilizations' => fn ($q) => $q->where('status', 'selesai')->latest(),
+        ])
+            ->where('status', Order::STATUS_DIGUDANG)
+            ->when(
+                $request->search,
+                fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
+                    ->orWhere('code_transaction', 'like', "%{$s}%")
+                    ->orWhere('borrowed_by', 'like', "%{$s}%")
+                    ->orWhereHas('room', fn ($r) => $r->where('name', 'like', "%{$s}%")))
+            )
+            ->orderByDesc('processed_at')
+            ->latest()
+            ->paginate(20);
+
+        $orders->getCollection()->transform(fn (Order $order) => $this->distributePayload($order));
+
+        return $this->success('Data order siap distribusi berhasil diambil.', $orders);
+    }
+
+    /**
+     * Distribusikan order steril ke unit pelayanan (Double Verification).
+     * Body: `recipient` (ruangan/petugas penerima hasil scan), `medical_record_no`
+     * & `patient_name` (tautan RM pasien, full traceability loop).
+     *
+     * Efek: unit keluar gudang (storage `keluar`), unit → `dipinjam`, order →
+     * `dipinjam` (Terdistribusi/Digunakan) + data RM, event `terdistribusi`.
+     */
+    public function distribute(Request $request, Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_DIGUDANG) {
+            return $this->error('Order ini belum berada di gudang steril / tidak siap didistribusikan.', 422);
+        }
+
+        $validated = $request->validate([
+            'recipient' => 'required|string|max:255',
+            'medical_record_no' => 'nullable|string|max:100',
+            'patient_name' => 'nullable|string|max:255',
+            'note' => 'nullable|string',
+        ]);
+
+        $stockIds = $order->items()->where('is_returned', false)
+            ->pluck('instrument_stock_id')->unique()->values();
+
+        if ($stockIds->isEmpty()) {
+            return $this->error('Order ini tidak punya unit untuk didistribusikan.', 422);
+        }
+
+        try {
+            DB::transaction(function () use ($validated, $order, $stockIds) {
+                // Keluarkan unit dari gudang steril.
+                InstrumentStorage::where('order_id', $order->id)
+                    ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
+                    ->update([
+                        'status' => InstrumentStorage::STATUS_KELUAR,
+                        'removed_at' => now(),
+                        'updated_by' => auth()->user()?->name,
+                    ]);
+
+                // Unit → dipinjam (Terdistribusi/Digunakan).
+                InstrumentStock::transitionMany($stockIds, InstrumentStock::STATUS_DIPINJAM, [
+                    'context' => 'order',
+                    'reference' => $order->code,
+                ]);
+
+                $order->status = Order::STATUS_DIPINJAM;
+                $order->distributed_to = $validated['recipient'];
+                $order->distributed_at = now();
+                $order->medical_record_no = $validated['medical_record_no'] ?? null;
+                $order->patient_name = $validated['patient_name'] ?? null;
+                $order->save();
+
+                $rm = $validated['medical_record_no'] ?? null;
+                OrderEvent::record(OrderEvent::TYPE_TERDISTRIBUSI, $order, [
+                    'note' => 'Diterima '.$validated['recipient'].($rm ? ' · RM '.$rm : ''),
+                ]);
+            });
+
+            $order->load(self::DETAIL_RELATIONS);
+
+            return $this->success('Alat steril berhasil didistribusikan.', $order);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /** Ringkasan order siap-distribusi + unit & lokasi raknya. */
+    private function distributePayload(Order $order): array
+    {
+        $units = $order->items->where('is_returned', false)->values();
+        $rackByStock = $order->relationLoaded('storages')
+            ? $order->storages->keyBy('instrument_stock_id')
+            : collect();
+        $expiry = $order->relationLoaded('sterilizations')
+            ? optional($order->sterilizations->first())->expiry_date
+            : null;
+
+        return [
+            'id' => $order->id,
+            'code' => $order->code,
+            'code_transaction' => $order->code_transaction,
+            'status' => $order->status,
+            'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
+            'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name, 'code' => $order->room->code] : null,
+            'processed_at' => $order->processed_at,
+            'expiry_date' => $expiry,
+            'unit_count' => $units->count(),
+            'units' => $units->map(fn ($it) => [
+                'id' => $it->instrument_stock_id,
+                'code' => $it->instrumentStock?->code,
+                'instrument' => $it->instrumentStock?->instrument?->name,
+                'rack_code' => $rackByStock->get($it->instrument_stock_id)?->rack_code,
+            ])->values(),
+        ];
+    }
+
+    /** Ringkasan order pipeline sterilisasi + unit fisik + batch terbaru. */
+    private function sterilizePayload(Order $order): array
+    {
+        $units = $order->items->where('is_returned', false)->values();
+
+        // Batch terbaru order ini (untuk order berstatus sterilisasi = menunggu validasi).
+        $batch = $order->relationLoaded('sterilizations') ? $order->sterilizations->first() : null;
+
+        return [
+            'id' => $order->id,
+            'code' => $order->code,
+            'code_transaction' => $order->code_transaction,
+            'status' => $order->status,
+            'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
+            'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
+            'order_date' => $order->order_date,
+            'processed_at' => $order->processed_at,
+            'unit_count' => $units->count(),
+            'units' => $units->map(fn ($it) => [
+                'id' => $it->instrument_stock_id,
+                'code' => $it->instrumentStock?->code,
+                'instrument' => $it->instrumentStock?->instrument?->name,
+                'source' => $it->source,
+                'package_name' => $it->package_name,
+            ])->values(),
+            'sterilization' => $batch ? [
+                'id' => $batch->id,
+                'code' => $batch->code,
+                'machine' => $batch->machine,
+                'method' => $batch->method,
+                'cycle_number' => $batch->cycle_number,
+                'temperature' => $batch->temperature,
+                'duration_minutes' => $batch->duration_minutes,
+                'sterilized_at' => $batch->sterilized_at,
+                'expiry_date' => $batch->expiry_date,
+                'chemical_indicator' => $batch->chemical_indicator,
+                'biological_indicator' => $batch->biological_indicator,
+                'status' => $batch->status,
+            ] : null,
+        ];
     }
 
     /** Unit (order_item) yang sudah di-generate untuk sebuah requirement (instrumen+asal+paket). */

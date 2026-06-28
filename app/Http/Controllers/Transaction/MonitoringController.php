@@ -197,52 +197,88 @@ class MonitoringController extends Controller
      */
     public function board(): JsonResponse
     {
+        // Seluruh tahap pipeline aktif (selain dikembalikan / dibatalkan) agar papan
+        // TV menampilkan setiap order beserta "lagi proses apa" (status tahapnya).
+        $statuses = [
+            Order::STATUS_DIAJUKAN,
+            Order::STATUS_PENCUCIAN,
+            Order::STATUS_PENGEMASAN,
+            Order::STATUS_SELESAI,
+            Order::STATUS_STERILISASI,
+            Order::STATUS_STERIL,
+            Order::STATUS_DIGUDANG,
+            Order::STATUS_DIPINJAM,
+        ];
+        $stageOrder = array_flip($statuses);
+
+        // Tahap dengan unit fisik sudah final → baca dari items; sebelum itu → requestItems.
+        $packedStatuses = [
+            Order::STATUS_SELESAI,
+            Order::STATUS_STERILISASI,
+            Order::STATUS_STERIL,
+            Order::STATUS_DIGUDANG,
+            Order::STATUS_DIPINJAM,
+        ];
+
         $orders = Order::query()
-            ->whereIn('status', [
-                Order::STATUS_DIAJUKAN,
-                Order::STATUS_DIPINJAM,
+            ->whereIn('status', $statuses)
+            ->with([
+                'room',
+                'items.instrumentStock.instrument',
+                'requestItems.instrument',
+                'requestItems.catalog',
             ])
-            ->with(['room', 'items.instrumentStock.instrument'])
-            ->orderBy('order_date')
-            ->orderBy('created_at')
-            ->get();
+            ->get()
+            ->sortBy(fn (Order $o) => sprintf('%02d-%s-%06d', $stageOrder[$o->status] ?? 99, (string) $o->order_date, $o->id))
+            ->values();
 
-        $rows = [];
-        foreach ($orders as $order) {
-            // Kelompokkan item per instrumen agar QTY-nya tergabung.
-            $groups = [];
-            foreach ($order->items as $item) {
-                $instrument = $item->instrumentStock?->instrument;
-                if (! $instrument) {
-                    continue;
+        $rows = $orders->map(function (Order $order) use ($packedStatuses) {
+            $lines = [];
+
+            if (in_array($order->status, $packedStatuses, true) && $order->items->isNotEmpty()) {
+                $paket = [];
+                $satuan = [];
+                foreach ($order->items as $it) {
+                    if ($it->is_returned) {
+                        continue;
+                    }
+                    if ($it->source === 'paket') {
+                        $name = $it->package_name ?? 'Paket';
+                        $paket[$name] = ($paket[$name] ?? 0) + 1;
+                    } else {
+                        $name = $it->instrumentStock?->instrument?->name ?? '—';
+                        $satuan[$name] = ($satuan[$name] ?? 0) + 1;
+                    }
                 }
-
-                $key = $instrument->id;
-                $groups[$key] ??= [
-                    'instrument_code' => $instrument->code,
-                    'instrument_name' => $instrument->name,
-                    'qty' => 0,
-                ];
-                $groups[$key]['qty']++;
+                foreach ($paket as $name => $qty) {
+                    $lines[] = ['jenis' => 'Paket', 'name' => $name, 'qty' => $qty];
+                }
+                foreach ($satuan as $name => $qty) {
+                    $lines[] = ['jenis' => 'Satuan', 'name' => $name, 'qty' => $qty];
+                }
+            } else {
+                foreach ($order->requestItems as $line) {
+                    if ($line->type === 'paket') {
+                        $name = $line->package_name ?? $line->catalog?->name ?? 'Paket';
+                        $lines[] = ['jenis' => 'Paket', 'name' => $name, 'qty' => (int) $line->quantity];
+                    } else {
+                        $lines[] = ['jenis' => 'Satuan', 'name' => $line->instrument?->name ?? '—', 'qty' => (int) $line->quantity];
+                    }
+                }
             }
 
-            foreach ($groups as $g) {
-                $rows[] = [
-                    'status' => $order->status,
-                    'date' => optional($order->order_date)->format('d.m.Y'),
-                    'time' => optional($order->created_at)->format('H:i'),
-                    'reservation' => $order->code,
-                    // No. transaksi (dipakai menggantikan reservation saat sudah dipinjam).
-                    'no_transaction' => $order->code_transaction,
-                    'room_code' => $order->room?->code,
-                    'room_name' => $order->room?->name,
-                    'instrument_code' => $g['instrument_code'],
-                    'instrument_name' => $g['instrument_name'],
-                    'qty' => $g['qty'],
-                    'unit' => 'PCS',
-                ];
-            }
-        }
+            return [
+                'order_code' => $order->code,
+                'no_transaction' => $order->code_transaction,
+                'borrowed_by' => $order->borrowed_by,
+                'order_date' => optional($order->order_date)->toDateString(),
+                'order_time' => optional($order->created_at)->format('H:i'),
+                'room_id' => $order->room?->id,
+                'room_name' => $order->room?->name,
+                'status' => $order->status,
+                'lines' => $lines,
+            ];
+        })->values();
 
         return $this->success('Data papan monitoring berhasil diambil.', $rows);
     }

@@ -5,9 +5,18 @@
 **Endpoint:** /api/master/cleaning/{order}/washing
 **Auth:** Bearer Token (wajib)
 
-Menyimpan / memperbarui catatan pencucian sebuah order pada tahap cleaning.
-Bila `complete = true`, catatan ditandai selesai (`Selesai Cuci`) dan order
-lanjut ke status `pengemasan` (mencatat event `selesai_cuci`).
+Menyimpan / memperbarui catatan pencucian (Tahap 2 — Cleaning & Disinfection).
+
+**Perilaku:**
+- `washer_machine_id` mencatat mesin washer yang dipindai (lihat `washer-machines/scan`).
+  Suhu & durasi yang diinput dievaluasi terhadap ambang mesin → bila di luar
+  rentang, sistem menandai `alert = true` dan mengisi `alert_message`
+  (notifikasi kegagalan suhu/waktu).
+- `complete = true` menandai **"Selesai Cuci"** → order lanjut ke status
+  `pengemasan` (mencatat event `selesai_cuci`). **Ditolak (422)** selama masih
+  ada `alert` parameter.
+- `fail = true` menandai pencucian **"Gagal"** (wajib diulang); status washing
+  menjadi `gagal`, order tetap di tahap `pencucian` (mencatat event `gagal_cuci`).
 
 ### Headers
 | Key | Value | Required |
@@ -22,16 +31,21 @@ lanjut ke status `pengemasan` (mencatat event `selesai_cuci`).
 ### Body Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| machine_no | string | Tidak | Nomor mesin pencuci |
+| washer_machine_id | integer | Tidak | ID mesin washer yang dipindai (FK `washer_machines`) |
+| machine_no | string | Tidak | Nomor mesin (teks bebas; terisi otomatis dari kode mesin bila kosong) |
 | operator | string | Tidak | ID / nama operator |
 | temperature | string | Tidak | Suhu pencucian (°C) |
-| washed_at | date | Tidak | Waktu pencucian |
+| washed_at | date | Tidak | Waktu mulai pencucian |
+| duration_minutes | integer | Tidak | Durasi pencucian (menit) |
 | detergent_type | string | Tidak | Jenis deterjen / enzimatis |
 | complete | boolean | Tidak | Tandai "Selesai Cuci" |
+| completed_at | date | Tidak | Waktu selesai (default now) |
+| fail | boolean | Tidak | Tandai "Gagal" (wajib diulang) |
+| failure_reason | string | Tidak | Alasan gagal (default: pesan alert / "Pencucian gagal.") |
 
 ### Response
 
-#### Success (200)
+#### Success (200) — tersimpan / selesai
 ```json
 {
   "status": true,
@@ -40,19 +54,44 @@ lanjut ke status `pengemasan` (mencatat event `selesai_cuci`).
     "id": 12,
     "status": "pengemasan",
     "washing": {
-      "status": "selesai",
-      "machine_no": "M-01",
+      "washer_machine": { "id": 1, "code": "WSH-001", "name": "Washer Disinfector 1" },
+      "machine_no": "WSH-001",
       "operator": "OP-7",
-      "temperature": "60",
-      "washed_at": "2026-06-25T08:30:00.000000Z",
+      "temperature": "70",
+      "duration_minutes": 20,
       "detergent_type": "Enzimatik",
-      "completed_at": "2026-06-25T08:45:00.000000Z"
+      "status": "selesai",
+      "alert": false,
+      "alert_message": null,
+      "failure_reason": null,
+      "completed_at": "2026-06-28T08:45:00.000000Z"
     }
   }
 }
 ```
 
-#### Error (422)
+#### Success (200) — ditandai gagal
+```json
+{
+  "status": true,
+  "message": "Pencucian ditandai gagal dan harus diulang.",
+  "data": {
+    "id": 12,
+    "status": "pencucian",
+    "washing": { "status": "gagal", "failure_reason": "Indikator kotor masih tersisa." }
+  }
+}
+```
+
+#### Error (422) — parameter di luar ambang mesin saat mencoba menyelesaikan
+```json
+{
+  "status": false,
+  "message": "Parameter pencucian di luar ambang mesin: Suhu 45°C di bawah minimum mesin (55°C). Periksa ulang atau tandai gagal."
+}
+```
+
+#### Error (422) — bukan tahap cleaning
 ```json
 { "status": false, "message": "Order ini tidak sedang dalam tahap cleaning." }
 ```

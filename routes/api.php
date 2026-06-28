@@ -17,6 +17,7 @@ use App\Http\Controllers\Master\MenuController;
 use App\Http\Controllers\Master\RoomController;
 use App\Http\Controllers\Master\TitleMenuController;
 use App\Http\Controllers\Master\UserController;
+use App\Http\Controllers\Master\WasherMachineController;
 use App\Http\Controllers\Transaction\CleaningController;
 use App\Http\Controllers\Transaction\DistributionController;
 use App\Http\Controllers\Transaction\MonitoringController;
@@ -24,6 +25,7 @@ use App\Http\Controllers\Transaction\OrderController;
 use App\Http\Controllers\Transaction\OrderTransferController;
 use App\Http\Controllers\Transaction\ReportController;
 use App\Http\Controllers\Transaction\SterilizationController;
+use App\Http\Controllers\Transaction\StorageController;
 use Illuminate\Support\Facades\Route;
 
 // Publik
@@ -77,6 +79,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::apiResource('rooms', RoomController::class);
 
+        // Master mesin pencuci (washer disinfector) — tahap Cleaning
+        // Scan barcode mesin (WSH-NNN) sebelum alat masuk mesin pencuci
+        Route::post('washer-machines/scan', [WasherMachineController::class, 'scan']);
+        Route::apiResource('washer-machines', WasherMachineController::class)
+            ->parameters(['washer-machines' => 'washer_machine']);
+
         // Monitoring ruangan: unit instrumen yang sedang dipinjam per ruangan
         Route::get('monitoring/rooms', [MonitoringController::class, 'rooms']);
         // Order masuk dari menu Order Instrumen (diajukan/disetujui, lintas user)
@@ -97,11 +105,24 @@ Route::middleware('auth:sanctum')->group(function () {
         // Pipeline pemrosesan CSSD: Proses order masuk → tahap Cleaning & Pengemasan
         Route::post('orders/{order}/process', [CleaningController::class, 'process']);
         Route::get('cleaning', [CleaningController::class, 'index']);
+        // Notifikasi kegagalan suhu/waktu pencucian (parameter di luar ambang mesin)
+        Route::get('cleaning/alerts', [CleaningController::class, 'alerts']);
         Route::put('cleaning/{order}/washing', [CleaningController::class, 'updateWashing']);
         // Tahap Packaging: data kebutuhan unit, generate unit dari stok, lalu lanjut (selesai/siap steril)
         Route::get('orders/{order}/packaging', [OrderController::class, 'packaging']);
         Route::post('orders/{order}/pack', [OrderController::class, 'pack']);
+        // Inspection checklist: scan barcode unit / centang manual komponen set
+        Route::post('orders/{order}/pack/scan', [OrderController::class, 'packScan']);
+        Route::post('orders/{order}/pack/check', [OrderController::class, 'packCheck']);
         Route::post('orders/{order}/packaging-complete', [OrderController::class, 'packagingComplete']);
+        // Tahap Sterilisasi: daftar order siap-steril (selesai) & buat batch dari order
+        Route::get('orders/ready-to-sterilize', [OrderController::class, 'readyToSterilize']);
+        Route::post('orders/{order}/sterilize', [OrderController::class, 'sterilize']);
+        // Validasi hasil sterilisasi (Steril / Gagal) langsung dari tab
+        Route::post('orders/{order}/sterilize/validate', [OrderController::class, 'validateSterilization']);
+        // Tahap 6 — Distribusi: order siap-distribusi (digudang) & distribusikan + RM pasien
+        Route::get('orders/ready-to-distribute', [OrderController::class, 'readyToDistribute']);
+        Route::post('orders/{order}/distribute', [OrderController::class, 'distribute']);
         Route::apiResource('orders', OrderController::class);
 
         // Pinjam-alih (handover) instrumen antar peminjam tanpa order ulang ke CSSD
@@ -114,6 +135,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Distribusi alat bersih: serah-terima alat steril CSSD → unit/ruangan
         Route::apiResource('distributions', DistributionController::class);
+
+        // Tahap 5 — Penyimpanan (Storage Steril): simpan unit steril ke rak + inventaris
+        Route::get('storage/incoming', [StorageController::class, 'incoming']);
+        Route::get('storage/inventory', [StorageController::class, 'inventory']);
+        Route::post('orders/{order}/store', [StorageController::class, 'store']);
 
         // Sterilisasi CSSD: batch/siklus sterilisasi + unit di dalamnya
         Route::get('sterilizations/expiring', [SterilizationController::class, 'expiring']);

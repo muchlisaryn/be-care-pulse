@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\OrderWashing;
+use App\Models\WasherMachine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -65,7 +66,7 @@ class CleaningController extends Controller
         $orders = Order::with([
             'room',
             'user',
-            'washing',
+            'washing.washerMachine',
             'requestItems.instrument',
             'requestItems.catalog',
         ])
@@ -86,8 +87,44 @@ class CleaningController extends Controller
     }
 
     /**
-     * Simpan / perbarui catatan pencucian sebuah order. Bila `complete = true`,
-     * tandai "Selesai Cuci" → order lanjut ke tahap pengemasan.
+     * Daftar notifikasi kegagalan pencucian: order yang catatan pencuciannya
+     * memiliki alert parameter (suhu/durasi di luar ambang mesin washer).
+     */
+    public function alerts(Request $request): JsonResponse
+    {
+        $orders = Order::with([
+            'room',
+            'user',
+            'washing.washerMachine',
+            'requestItems.instrument',
+            'requestItems.catalog',
+        ])
+            ->whereIn('status', [Order::STATUS_PENCUCIAN, Order::STATUS_PENGEMASAN])
+            ->whereHas('washing', fn ($q) => $q->where('alert', true))
+            ->when(
+                $request->search,
+                fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
+                    ->orWhere('borrowed_by', 'like', "%{$s}%")
+                    ->orWhereHas('room', fn ($r) => $r->where('name', 'like', "%{$s}%")))
+            )
+            ->latest()
+            ->paginate(20);
+
+        $orders->getCollection()->transform(fn (Order $order) => $this->transform($order));
+
+        return $this->success('Daftar notifikasi kegagalan pencucian berhasil diambil.', $orders);
+    }
+
+    /**
+     * Simpan / perbarui catatan pencucian sebuah order.
+     *
+     * - `washer_machine_id` mencatat mesin washer yang dipindai; suhu & durasi
+     *   dievaluasi terhadap ambang mesin → bila di luar rentang, sistem menandai
+     *   `alert` (notifikasi kegagalan suhu/waktu).
+     * - `complete = true` menandai "Selesai Cuci" → order lanjut ke pengemasan.
+     *   Tidak diizinkan selama masih ada alert parameter.
+     * - `fail = true` menandai pencucian "Gagal" (wajib diulang); order tetap di
+     *   tahap pencucian.
      */
     public function updateWashing(Request $request, Order $order): JsonResponse
     {
@@ -96,49 +133,109 @@ class CleaningController extends Controller
         }
 
         $validated = $request->validate([
+            'washer_machine_id' => 'nullable|exists:washer_machines,id',
             'machine_no' => 'nullable|string|max:255',
             'operator' => 'nullable|string|max:255',
             'temperature' => 'nullable|string|max:50',
             'washed_at' => 'nullable|date',
+            'duration_minutes' => 'nullable|integer|min:0',
             'detergent_type' => 'nullable|string|max:255',
             'complete' => 'sometimes|boolean',
             'completed_at' => 'nullable|date',
+            'fail' => 'sometimes|boolean',
+            'failure_reason' => 'nullable|string|max:255',
         ]);
 
         try {
-            DB::transaction(function () use ($validated, $order) {
+            $result = DB::transaction(function () use ($validated, $order) {
                 $washing = $order->washing()->firstOrCreate([], [
                     'status' => OrderWashing::STATUS_DALAM_PROSES,
                 ]);
 
                 $washing->fill(array_intersect_key(
                     $validated,
-                    array_flip(['machine_no', 'operator', 'temperature', 'washed_at', 'detergent_type'])
+                    array_flip(['washer_machine_id', 'machine_no', 'operator', 'temperature', 'washed_at', 'duration_minutes', 'detergent_type'])
                 ));
 
-                // Tandai Selesai Cuci → catatan selesai & order lanjut ke pengemasan.
-                // Waktu selesai memakai input operator bila ada, jika tidak now().
-                if (! empty($validated['complete'])) {
+                // Evaluasi parameter terhadap ambang mesin washer yang dipindai.
+                $alerts = [];
+                if ($washing->washer_machine_id && ($machine = WasherMachine::find($washing->washer_machine_id))) {
+                    $temp = is_numeric($washing->temperature) ? (float) $washing->temperature : null;
+                    $alerts = $machine->evaluate($temp, $washing->duration_minutes);
+                    // Lengkapi nomor mesin dari master bila belum diisi manual.
+                    $washing->machine_no ??= $machine->code;
+                }
+                $washing->alert = ! empty($alerts);
+                $washing->alert_message = $alerts ? implode(' ', $alerts) : null;
+
+                // Tandai Gagal → wajib diulang; order tetap di tahap pencucian.
+                if (! empty($validated['fail'])) {
+                    $washing->status = OrderWashing::STATUS_GAGAL;
+                    $washing->failure_reason = $validated['failure_reason']
+                        ?? $washing->alert_message
+                        ?? 'Pencucian gagal.';
+                    $washing->save();
+
+                    if ($order->status === Order::STATUS_PENGEMASAN) {
+                        $order->status = Order::STATUS_PENCUCIAN;
+                        $order->save();
+                    }
+
+                    OrderEvent::record(OrderEvent::TYPE_GAGAL_CUCI, $order, [
+                        'note' => 'Pencucian gagal: '.$washing->failure_reason,
+                    ]);
+
+                    return ['blocked' => false, 'failed' => true];
+                }
+
+                $completing = ! empty($validated['complete']);
+
+                // Selesai Cuci diblokir selama parameter masih di luar ambang mesin.
+                if ($completing && $washing->alert) {
+                    $washing->save();
+
+                    return ['blocked' => true, 'failed' => false];
+                }
+
+                if ($completing) {
                     $completedAt = $validated['completed_at'] ?? now();
                     $washing->status = OrderWashing::STATUS_SELESAI;
                     $washing->completed_at = $completedAt;
                     $washing->washed_at ??= $completedAt;
+                    $washing->failure_reason = null;
+                } elseif ($washing->status === OrderWashing::STATUS_GAGAL) {
+                    // Disimpan ulang setelah perbaikan parameter → kembali Dalam Proses.
+                    $washing->status = OrderWashing::STATUS_DALAM_PROSES;
+                    $washing->failure_reason = null;
                 }
 
                 $washing->save();
 
-                if (! empty($validated['complete']) && $order->status === Order::STATUS_PENCUCIAN) {
+                if ($completing && $order->status === Order::STATUS_PENCUCIAN) {
                     $order->status = Order::STATUS_PENGEMASAN;
                     $order->save();
                     OrderEvent::record(OrderEvent::TYPE_SELESAI_CUCI, $order, [
                         'note' => 'Pencucian selesai, order lanjut ke pengemasan',
                     ]);
                 }
+
+                return ['blocked' => false, 'failed' => false];
             });
 
-            $order->load(['room', 'washing']);
+            $order->load(['room', 'washing.washerMachine']);
 
-            return $this->success('Catatan pencucian berhasil disimpan.', $this->transform($order));
+            if ($result['blocked']) {
+                return $this->error(
+                    'Parameter pencucian di luar ambang mesin: '.$order->washing->alert_message.' Periksa ulang atau tandai gagal.',
+                    422
+                );
+            }
+
+            $message = $result['failed']
+                ? 'Pencucian ditandai gagal dan harus diulang.'
+                : 'Catatan pencucian berhasil disimpan.';
+
+            return $this->success($message, $this->transform($order));
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
@@ -147,7 +244,7 @@ class CleaningController extends Controller
     /** Bentuk respons order tahap cleaning untuk frontend. */
     private function transform(Order $order): array
     {
-        $order->loadMissing(['room', 'user', 'washing', 'requestItems.instrument', 'requestItems.catalog']);
+        $order->loadMissing(['room', 'user', 'washing.washerMachine', 'requestItems.instrument', 'requestItems.catalog']);
         $w = $order->washing;
 
         return [
@@ -171,12 +268,22 @@ class CleaningController extends Controller
             ])->values(),
             'washing' => $w ? [
                 'id' => $w->id,
+                'washer_machine_id' => $w->washer_machine_id,
+                'washer_machine' => $w->washerMachine ? [
+                    'id' => $w->washerMachine->id,
+                    'code' => $w->washerMachine->code,
+                    'name' => $w->washerMachine->name,
+                ] : null,
                 'machine_no' => $w->machine_no,
                 'operator' => $w->operator,
                 'temperature' => $w->temperature,
                 'washed_at' => $w->washed_at,
+                'duration_minutes' => $w->duration_minutes,
                 'detergent_type' => $w->detergent_type,
                 'status' => $w->status,
+                'alert' => $w->alert,
+                'alert_message' => $w->alert_message,
+                'failure_reason' => $w->failure_reason,
                 'completed_at' => $w->completed_at,
             ] : null,
         ];

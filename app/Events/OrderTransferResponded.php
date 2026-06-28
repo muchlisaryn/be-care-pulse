@@ -20,9 +20,7 @@ class OrderTransferResponded implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
-    public function __construct(public OrderTransfer $transfer)
-    {
-    }
+    public function __construct(public OrderTransfer $transfer) {}
 
     public function broadcastOn(): Channel
     {

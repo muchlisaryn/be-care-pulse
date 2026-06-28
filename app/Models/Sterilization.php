@@ -40,6 +40,7 @@ class Sterilization extends Model
     ];
 
     protected $fillable = [
+        'order_id',
         'machine',
         'method',
         'cycle_number',
@@ -80,5 +81,10 @@ class Sterilization extends Model
     public function items()
     {
         return $this->hasMany(SterilizationItem::class);
+    }
+
+    public function order()
+    {
+        return $this->belongsTo(Order::class);
     }
 }

@@ -20,13 +20,20 @@ class OrderWashing extends Model
 
     public const STATUS_SELESAI = 'selesai';
 
+    public const STATUS_GAGAL = 'gagal';
+
     protected $fillable = [
         'order_id',
+        'washer_machine_id',
         'machine_no',
         'operator',
         'temperature',
         'washed_at',
+        'duration_minutes',
         'detergent_type',
+        'alert',
+        'alert_message',
+        'failure_reason',
         'status',
         'completed_at',
         'created_by',
@@ -36,10 +43,17 @@ class OrderWashing extends Model
     protected $casts = [
         'washed_at' => 'datetime',
         'completed_at' => 'datetime',
+        'duration_minutes' => 'integer',
+        'alert' => 'boolean',
     ];
 
     public function order()
     {
         return $this->belongsTo(Order::class);
+    }
+
+    public function washerMachine()
+    {
+        return $this->belongsTo(WasherMachine::class);
     }
 }

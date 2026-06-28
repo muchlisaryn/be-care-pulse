@@ -28,6 +28,22 @@ class OrderEvent extends Model
 
     public const TYPE_SELESAI_CUCI = 'selesai_cuci';
 
+    public const TYPE_GAGAL_CUCI = 'gagal_cuci';
+
+    // Tahap Sterilisasi: order dimasukkan ke batch sterilisasi.
+    public const TYPE_DISTERILKAN = 'disterilkan';
+
+    // Hasil validasi sterilisasi: steril & siap rilis / gagal & wajib re-proses.
+    public const TYPE_STERIL = 'steril';
+
+    public const TYPE_GAGAL_STERIL = 'gagal_steril';
+
+    // Tahap Penyimpanan: order tersimpan di gudang steril.
+    public const TYPE_DISIMPAN = 'disimpan';
+
+    // Tahap Distribusi: alat steril didistribusikan ke unit / pasien.
+    public const TYPE_TERDISTRIBUSI = 'terdistribusi';
+
     protected $table = 'order_events';
 
     // Hanya created_at yang dipakai (append-only, tanpa updated_at).
