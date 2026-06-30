@@ -67,6 +67,9 @@ class OrderController extends Controller
             'room_id' => 'required|integer|exists:rooms,id',
             'user_id' => 'nullable|integer|exists:users,id',
             'borrowed_by' => 'nullable|string|max:255',
+            // Identitas pasien (opsional) — no. rekam medis & nama pasien.
+            'medical_record_no' => 'nullable|string|max:255',
+            'patient_name' => 'nullable|string|max:255',
             'order_date' => 'required|date',
             'return_plan_date' => 'nullable|date',
             'note' => 'nullable|string',
@@ -89,6 +92,8 @@ class OrderController extends Controller
                     'user_id' => $validated['user_id'] ?? auth()->id(),
                     // Nama peminjam (teks bebas) — diisi manual di form.
                     'borrowed_by' => $validated['borrowed_by'] ?? null,
+                    'medical_record_no' => $validated['medical_record_no'] ?? null,
+                    'patient_name' => $validated['patient_name'] ?? null,
                     'order_date' => $validated['order_date'],
                     'return_plan_date' => $validated['return_plan_date'] ?? null,
                     'note' => $validated['note'] ?? null,
