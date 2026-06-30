@@ -114,6 +114,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Inspection checklist: scan barcode unit / centang manual komponen set
         Route::post('orders/{order}/pack/scan', [OrderController::class, 'packScan']);
         Route::post('orders/{order}/pack/check', [OrderController::class, 'packCheck']);
+        // Batalkan centang satu unit (edit alokasi sebelum diselesaikan)
+        Route::post('orders/{order}/pack/uncheck', [OrderController::class, 'packUncheck']);
         Route::post('orders/{order}/packaging-complete', [OrderController::class, 'packagingComplete']);
         // Tahap Sterilisasi: daftar order siap-steril (selesai) & buat batch dari order
         Route::get('orders/ready-to-sterilize', [OrderController::class, 'readyToSterilize']);

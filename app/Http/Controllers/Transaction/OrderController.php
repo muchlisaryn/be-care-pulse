@@ -602,6 +602,41 @@ class OrderController extends Controller
     }
 
     /**
+     * Batalkan centang satu unit yang sudah tersimpan (edit alokasi). Menghapus
+     * order_item terkait → unit kembali bebas (tersedia untuk dipilih lagi). Hanya
+     * boleh selama order masih tahap packaging (belum diselesaikan).
+     */
+    public function packUncheck(Request $request, Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_PENGEMASAN) {
+            return $this->error('Order ini tidak sedang dalam tahap packaging.', 422);
+        }
+
+        $validated = $request->validate([
+            'instrument_stock_id' => 'required|integer',
+        ]);
+
+        $item = $order->items()
+            ->where('instrument_stock_id', $validated['instrument_stock_id'])
+            ->where('is_returned', false)
+            ->first();
+
+        if (! $item) {
+            return $this->error('Unit ini tidak tercentang pada order.', 422);
+        }
+
+        try {
+            // Stok di packaging tidak dipindah statusnya (tetap tersedia); cukup
+            // hapus order_item agar unit bebas dipakai lagi.
+            $item->delete();
+
+            return $this->success('Centang unit dibatalkan.', $this->packagingPayload($order));
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
      * Hitung pratinjau unit yang akan dialokasikan per requirement (tanpa menyimpan).
      * Mengembalikan map: key requirement → daftar [{id, code}] unit yang diusulkan.
      */
@@ -1067,10 +1102,15 @@ class OrderController extends Controller
         $boundIds = OrderItem::where('is_returned', false)->pluck('instrument_stock_id')->all();
 
         $reqs = collect($requirements)->values()->map(function ($req) use ($order, $boundIds, $proposedByKey) {
-            $available = InstrumentStock::where('instrument_id', $req['instrument_id'])
+            // Unit (stock) yang tersedia untuk dicentang — beserta kodenya, agar
+            // frontend bisa menampilkan kode unit yang siap dipilih (bukan tombol generik).
+            $availableUnits = InstrumentStock::where('instrument_id', $req['instrument_id'])
                 ->where('status', InstrumentStock::STATUS_TERSEDIA)
                 ->whereNotIn('id', $boundIds)
-                ->count();
+                ->orderBy('code')
+                ->get(['id', 'code'])
+                ->map(fn ($u) => ['id' => $u->id, 'code' => $u->code])
+                ->values();
 
             // Kode unit (stock) yang sudah di-generate (tersimpan) untuk requirement ini.
             $generatedUnits = $this->generatedItemsFor($order, $req)
@@ -1091,7 +1131,8 @@ class OrderController extends Controller
                 'needed_qty' => $req['needed_qty'],
                 'generated_qty' => $units->count(),
                 'generated_units' => $units,
-                'available_count' => $available,
+                'available_count' => $availableUnits->count(),
+                'available_units' => $availableUnits,
             ];
         });
 
