@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Transaction;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\OrderEvent;
+use App\Models\OrderItem;
 use App\Models\OrderWashing;
 use App\Models\WasherMachine;
 use Illuminate\Http\JsonResponse;
@@ -69,6 +70,8 @@ class CleaningController extends Controller
             'washing.washerMachine',
             'requestItems.instrument',
             'requestItems.catalog',
+            'items.instrumentStock.instrument',
+            'items.conditionOut',
         ])
             ->whereIn('status', [Order::STATUS_PENCUCIAN, Order::STATUS_PENGEMASAN])
             ->when(
@@ -98,6 +101,8 @@ class CleaningController extends Controller
             'washing.washerMachine',
             'requestItems.instrument',
             'requestItems.catalog',
+            'items.instrumentStock.instrument',
+            'items.conditionOut',
         ])
             ->whereIn('status', [Order::STATUS_PENCUCIAN, Order::STATUS_PENGEMASAN])
             ->whereHas('washing', fn ($q) => $q->where('alert', true))
@@ -244,7 +249,11 @@ class CleaningController extends Controller
     /** Bentuk respons order tahap cleaning untuk frontend. */
     private function transform(Order $order): array
     {
-        $order->loadMissing(['room', 'user', 'washing.washerMachine', 'requestItems.instrument', 'requestItems.catalog']);
+        $order->loadMissing([
+            'room', 'user', 'washing.washerMachine',
+            'requestItems.instrument', 'requestItems.catalog',
+            'items.instrumentStock.instrument', 'items.conditionOut',
+        ]);
         $w = $order->washing;
 
         return [
@@ -265,6 +274,23 @@ class CleaningController extends Controller
                     ? ($it->package_name ?? $it->catalog?->name ?? 'Paket')
                     : ($it->instrument?->name ?? "Instrumen #{$it->instrument_id}"),
                 'quantity' => (int) $it->quantity,
+            ])->values(),
+            // Unit fisik yang dikunci ke batch (terisi untuk batch Produksi CSSD;
+            // kosong untuk order peminjaman yang unitnya baru di-generate saat Packaging).
+            'units_count' => $order->items->count(),
+            'units' => $order->items->map(fn (OrderItem $it) => [
+                'id' => $it->id,
+                'source' => $it->source,
+                'package_name' => $it->package_name,
+                'instrument_stock_id' => $it->instrument_stock_id,
+                'code' => $it->instrumentStock?->code,
+                'instrument' => $it->instrumentStock?->instrument
+                    ? ['id' => $it->instrumentStock->instrument->id, 'name' => $it->instrumentStock->instrument->name]
+                    : null,
+                'status' => $it->instrumentStock?->status,
+                'condition_out' => $it->conditionOut
+                    ? ['id' => $it->conditionOut->id, 'name' => $it->conditionOut->name]
+                    : null,
             ])->values(),
             'washing' => $w ? [
                 'id' => $w->id,

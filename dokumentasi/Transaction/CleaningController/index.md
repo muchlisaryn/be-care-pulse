@@ -9,6 +9,13 @@ Daftar order yang sedang berada di tahap Cleaning & Pengemasan
 (status `pencucian` atau `pengemasan`), beserta catatan pencucian & ringkasan
 permintaan. Mendukung `search` + pagination (20/halaman).
 
+> `items` = baris permintaan (jenis + jumlah). `units` = unit fisik yang dikunci
+> ke batch (kode stock, instrumen, kondisi). Untuk batch **Produksi CSSD** (`PRD-NNN`)
+> `units` sudah terisi sejak awal; untuk order peminjaman biasa `units` masih kosong
+> karena unit fisik baru di-generate di tahap Packaging. Field yang sama (`units`,
+> `units_count`) juga muncul di response `alerts`, `process`, dan `updateWashing`
+> karena berbagi `transform()` yang sama.
+
 ### Headers
 | Key | Value | Required |
 |-----|-------|----------|
@@ -40,6 +47,19 @@ permintaan. Mendukung `search` + pagination (20/halaman).
         "requested_qty": 5,
         "request_lines": 2,
         "items": [{ "type": "satuan", "name": "Gunting", "quantity": 2 }],
+        "units_count": 2,
+        "units": [
+          {
+            "id": 45,
+            "source": "satuan",
+            "package_name": null,
+            "instrument_stock_id": 88,
+            "code": "GNT-001",
+            "instrument": { "id": 7, "name": "Gunting" },
+            "status": "sterilisasi",
+            "condition_out": { "id": 1, "name": "Baik" }
+          }
+        ],
         "washing": { "status": "dalam_proses", "machine_no": "M-01", "temperature": "60", "...": null }
       }
     ],

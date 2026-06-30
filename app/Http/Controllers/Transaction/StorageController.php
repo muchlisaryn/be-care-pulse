@@ -167,6 +167,7 @@ class StorageController extends Controller
                 'id' => $it->instrument_stock_id,
                 'code' => $it->instrumentStock?->code,
                 'instrument' => $it->instrumentStock?->instrument?->name,
+                'image_url' => $it->instrumentStock?->instrument?->image_url,
                 'source' => $it->source,
                 'package_name' => $it->package_name,
                 'stored' => (bool) $stored,
