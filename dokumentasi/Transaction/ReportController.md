@@ -7,9 +7,14 @@
 
 ## 1. cssdPerItem
 
-Laporan CSSD Per Alat — satu baris per unit instrumen di setiap batch sterilisasi.
-Sumber data: `SterilizationItem` → `Sterilization` + `InstrumentStock` (instrument & condition).
-BMHP tidak termasuk (BMHP hanya didistribusi, tidak disterilkan).
+Laporan CSSD Per Alat — dikelompokkan per batch sterilisasi. Item **paket** ditampilkan
+sebagai **satu baris** (gabungan unit dalam paket itu) dengan rincian tiap aset di
+`units`; instrumen **satuan** tetap satu baris per unit. Sumber data: `SterilizationItem`
+→ `Sterilization` + `InstrumentStock`; asal (satuan/paket) & nama paket diambil dari
+`order_item` batch tersebut. BMHP tidak termasuk (hanya didistribusi, tidak disterilkan).
+
+Pengelompokan dilakukan di server lalu dipaginasi per-grup (agar paket tidak terpotong
+antar halaman).
 
 **Method:** GET  
 **Endpoint:** /api/master/reports/cssd-per-item  
@@ -33,9 +38,11 @@ BMHP tidak termasuk (BMHP hanya didistribusi, tidak disterilkan).
 
 ### Response
 
-Setiap item pada `data.data` berisi:
-`id`, `name`, `unit_code`, `batch_code`, `status`, `method`, `machine`, `operator`,
-`condition`, `result`, `sterilized_at`, `expiry_date`.
+Setiap baris pada `data.data` adalah satu **grup**:
+- `key`, `type` (`paket` / `satuan`), `name` (nama paket atau nama instrumen),
+- `unit_code`, `condition` (hanya untuk `satuan`; `null` untuk header paket),
+- `batch_code`, `status`, `method`, `machine`, `operator`, `sterilized_at`, `expiry_date` (tingkat batch),
+- `qty` (jumlah aset), `units[]` (rincian tiap aset: `id`, `name`, `unit_code`, `condition`, `result`).
 
 #### Success (200)
 ```json
@@ -46,18 +53,41 @@ Setiap item pada `data.data` berisi:
     "current_page": 1,
     "data": [
       {
-        "id": 1,
-        "name": "Gunting",
-        "unit_code": "GNT-001",
+        "key": "pkg|3|SET PARTUS",
+        "type": "paket",
+        "name": "SET PARTUS",
+        "unit_code": null,
+        "condition": null,
         "batch_code": "STR-001",
-        "status": "diproses",
+        "status": "selesai",
         "method": "uap",
-        "machine": "Autoclave",
+        "machine": "Autoclave-01",
         "operator": "-",
+        "sterilized_at": "2026-06-30T08:09:00.000000Z",
+        "expiry_date": "2026-07-07T00:00:00.000000Z",
+        "qty": 2,
+        "units": [
+          { "id": 10, "name": "Gunting Epis", "unit_code": "GNE-001", "condition": "Baik", "result": "steril" },
+          { "id": 11, "name": "Kom Kecil", "unit_code": "KMK-001", "condition": "Baik", "result": "steril" }
+        ]
+      },
+      {
+        "key": "unit|22",
+        "type": "satuan",
+        "name": "Bengkok",
+        "unit_code": "BKK-003",
         "condition": "Baik",
-        "result": null,
-        "sterilized_at": "2026-06-12T08:09:00.000000Z",
-        "expiry_date": "2026-06-15T00:00:00.000000Z"
+        "batch_code": "STR-002",
+        "status": "selesai",
+        "method": "uap",
+        "machine": "Autoclave-01",
+        "operator": "-",
+        "sterilized_at": "2026-06-30T09:00:00.000000Z",
+        "expiry_date": "2026-07-07T00:00:00.000000Z",
+        "qty": 1,
+        "units": [
+          { "id": 22, "name": "Bengkok", "unit_code": "BKK-003", "condition": "Baik", "result": "steril" }
+        ]
       }
     ],
     "last_page": 1,

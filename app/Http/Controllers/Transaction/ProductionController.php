@@ -43,6 +43,9 @@ class ProductionController extends Controller
         try {
             $order = DB::transaction(function () use ($validated) {
                 $order = Order::create([
+                    // Kode produksi terpisah (PRD-NNN) agar deret ORD-NNN khusus
+                    // order peminjaman & tidak "terserap" batch produksi.
+                    'code' => $this->generateProductionCode(),
                     // Internal CSSD — tanpa ruangan peminjam.
                     'room_id' => null,
                     'user_id' => auth()->id(),
@@ -88,5 +91,20 @@ class ProductionController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
+    }
+
+    /** Kode batch produksi berikutnya: PRD-NNN (deret terpisah dari ORD peminjaman). */
+    private function generateProductionCode(): string
+    {
+        $maxCode = Order::withoutGlobalScopes()
+            ->where('code', 'like', 'PRD-%')
+            ->max('code');
+
+        $sequence = 1;
+        if ($maxCode && preg_match('/-(\d+)$/', $maxCode, $matches)) {
+            $sequence = (int) $matches[1] + 1;
+        }
+
+        return 'PRD-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
     }
 }

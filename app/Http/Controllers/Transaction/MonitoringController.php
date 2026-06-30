@@ -23,7 +23,9 @@ class MonitoringController extends Controller
                     ->orWhere('code', 'like', "%{$s}%")
             )
             ->with(['orders' => function ($q) {
-                $q->where('status', Order::STATUS_DIPINJAM)
+                // dipinjam = sudah di ruangan; digudang = sudah diterima & ditujukan
+                // ke ruangan (siap diantar) — keduanya dianggap "aktif" untuk ruangan.
+                $q->whereIn('status', [Order::STATUS_DIPINJAM, Order::STATUS_DIGUDANG])
                     ->with(['items' => function ($q) {
                         $q->where('is_returned', false)
                             ->with(['instrumentStock.instrument', 'instrumentStock.condition']);
@@ -37,9 +39,18 @@ class MonitoringController extends Controller
         $rooms->getCollection()->transform(function (Room $room) {
             $groups = [];
             $unitCount = 0;
+            $readyCount = 0; // unit pada order "digudang" (siap diantar, belum di ruangan)
             $txKeys = [];
 
             foreach ($room->orders as $order) {
+                // Order siap-diantar (digudang): hitung jumlahnya saja; jangan masukkan
+                // ke daftar `instruments` agar "Distribusi per Ruangan" tetap = yang dipinjam.
+                if ($order->status === Order::STATUS_DIGUDANG) {
+                    $readyCount += $order->items->count();
+
+                    continue;
+                }
+
                 foreach ($order->items as $item) {
                     $stock = $item->instrumentStock;
                     $instrument = $stock?->instrument;
@@ -91,6 +102,9 @@ class MonitoringController extends Controller
                 'code' => $room->code,
                 'name' => $room->name,
                 'borrowed_count' => $unitCount,
+                // Unit yang sudah diterima & ditujukan ke ruangan ini tapi belum
+                // didistribusikan (status order `digudang`).
+                'ready_count' => $readyCount,
                 'transaction_count' => count($txKeys),
                 'instrument_count' => count($instruments),
                 'instruments' => $instruments,
