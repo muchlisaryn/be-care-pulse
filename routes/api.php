@@ -23,6 +23,7 @@ use App\Http\Controllers\Transaction\DistributionController;
 use App\Http\Controllers\Transaction\MonitoringController;
 use App\Http\Controllers\Transaction\OrderController;
 use App\Http\Controllers\Transaction\OrderTransferController;
+use App\Http\Controllers\Transaction\ProductionController;
 use App\Http\Controllers\Transaction\ReportController;
 use App\Http\Controllers\Transaction\SterilizationController;
 use App\Http\Controllers\Transaction\StorageController;
@@ -102,6 +103,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Terima order: data alokasi unit + proses penerimaan (alokasi + kurangi stok)
         Route::get('orders/{order}/allocation', [OrderController::class, 'allocation']);
         Route::post('orders/{order}/receive', [OrderController::class, 'receive']);
+        // Produksi CSSD: mulai batch internal (stok milik CSSD) → langsung tahap Cleaning
+        Route::post('production', [ProductionController::class, 'store']);
         // Pipeline pemrosesan CSSD: Proses order masuk → tahap Cleaning & Pengemasan
         Route::post('orders/{order}/process', [CleaningController::class, 'process']);
         Route::get('cleaning', [CleaningController::class, 'index']);
@@ -122,6 +125,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('orders/{order}/sterilize', [OrderController::class, 'sterilize']);
         // Validasi hasil sterilisasi (Steril / Gagal) langsung dari tab
         Route::post('orders/{order}/sterilize/validate', [OrderController::class, 'validateSterilization']);
+        // Order masuk: terima & alokasikan unit steril (FEFO) → langsung siap distribusi
+        Route::post('orders/{order}/accept-distribution', [OrderController::class, 'acceptDistribution']);
         // Tahap 6 — Distribusi: order siap-distribusi (digudang) & distribusikan + RM pasien
         Route::get('orders/ready-to-distribute', [OrderController::class, 'readyToDistribute']);
         Route::post('orders/{order}/distribute', [OrderController::class, 'distribute']);

@@ -6,6 +6,8 @@
 **Auth:** Bearer Token (wajib)
 
 > Daftar yang dikembalikan **hanya order milik akun yang login** (difilter `user_id = id user login`). Tiap akun hanya melihat order yang dibuatnya sendiri.
+>
+> Batch **Produksi CSSD** (internal, `room_id` null) **dikecualikan** — itu bukan order peminjaman; tempatnya di pipeline Cleaning.
 
 ## Request
 

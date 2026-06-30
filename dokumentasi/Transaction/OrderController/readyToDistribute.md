@@ -9,6 +9,9 @@ Tahap 6 — Distribution & Tracking. Daftar order yang sudah di gudang steril
 (status `digudang`) & siap didistribusikan ke unit pelayanan. Menyertakan unit +
 lokasi rak (agar petugas tahu mengambil dari mana).
 
+> Batch **Produksi CSSD** (internal, `room_id` null) **dikecualikan** — itu stok
+> steril di gudang yang menunggu diorder, bukan order siap-distribusi.
+
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|

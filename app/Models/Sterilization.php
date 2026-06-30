@@ -39,6 +39,10 @@ class Sterilization extends Model
         self::METHOD_PANAS_KERING,
     ];
 
+    // Masa simpan steril default (hari) — dipakai mengisi expiry_date otomatis bila
+    // operator tidak mengisinya saat validasi: expiry = tgl sterilisasi + N hari.
+    public const STERILE_SHELF_LIFE_DAYS = 7;
+
     protected $fillable = [
         'order_id',
         'machine',

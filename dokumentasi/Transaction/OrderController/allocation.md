@@ -49,7 +49,7 @@ Hanya bisa diakses bila status order `diajukan` atau `disetujui` (selain itu 422
         "source": "paket",
         "package_name": "SET PARTUS",
         "instrument_id": 18,
-        "instrument": { "id": 18, "code": "GNE", "name": "Gunting Epis" },
+        "instrument": { "id": 18, "code": "GNE", "name": "Gunting Epis", "image_url": "http://localhost:8000/uploads/instruments/gne.jpg" },
         "needed_qty": 1,
         "available_units": [
           { "id": 86, "code": "GNE-001" },

@@ -45,6 +45,9 @@ class OrderController extends Controller
             ])
             // Hanya tampilkan order milik akun yang login (penanggung jawab order).
             ->where('user_id', auth()->id())
+            // Kecualikan batch PRODUKSI CSSD (internal, tanpa ruangan) — itu bukan
+            // order peminjaman; tempatnya di pipeline Cleaning, bukan daftar ini.
+            ->whereNotNull('room_id')
             ->when($request->status, fn ($q, $s) => $q->where('status', $s))
             ->when(
                 $request->search,
@@ -241,6 +244,7 @@ class OrderController extends Controller
                     'id' => $instrument->id,
                     'code' => $instrument->code,
                     'name' => $instrument->name,
+                    'image_url' => $instrument->image_url,
                 ],
                 'needed_qty' => 0,
             ];
@@ -792,6 +796,14 @@ class OrderController extends Controller
                     'note' => $validated['note'] ?? null,
                 ], fn ($v) => $v !== null));
                 $batch->status = $validated['result'];
+
+                // Bila hasil steril & operator tak mengisi kedaluwarsa: set otomatis
+                // = tgl sterilisasi + masa simpan default (agar gudang punya expiry).
+                if ($steril && $batch->expiry_date === null) {
+                    $base = $batch->sterilized_at ? $batch->sterilized_at->copy() : now();
+                    $batch->expiry_date = $base->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
+                }
+
                 $batch->save();
 
                 // Unit kembali tersedia (steril & siap pakai, atau dibebaskan untuk re-proses).
@@ -919,6 +931,9 @@ class OrderController extends Controller
             'sterilizations' => fn ($q) => $q->where('status', 'selesai')->latest(),
         ])
             ->where('status', Order::STATUS_DIGUDANG)
+            // Batch PRODUKSI CSSD (tanpa ruangan) = stok steril di gudang menunggu
+            // diorder, bukan order yang siap didistribusikan. Kecualikan dari sini.
+            ->whereNotNull('room_id')
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
@@ -933,6 +948,104 @@ class OrderController extends Controller
         $orders->getCollection()->transform(fn (Order $order) => $this->distributePayload($order));
 
         return $this->success('Data order siap distribusi berhasil diambil.', $orders);
+    }
+
+    /**
+     * Terima order masuk & SIAPKAN DISTRIBUSI. Karena order hanya meminta barang
+     * yang sudah steril, order tidak perlu lewat pipeline Cleaning→Sterilisasi lagi:
+     * sistem mengalokasikan unit steril dari gudang secara FEFO (first-expired-first-out),
+     * lalu order → `digudang` (muncul di Distribution & Tracking).
+     *
+     * Reservasi: baris gudang unit yang dipilih dipindahkan kepemilikannya ke order
+     * ini (order_id), sehingga (a) keluar dari pool "available sterile" milik produksi
+     * (room_id null) dan (b) distribute menemukannya untuk dikeluarkan dari gudang.
+     */
+    public function acceptDistribution(Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_DIAJUKAN) {
+            return $this->error('Order ini sudah diproses dan tidak bisa diterima lagi.', 422);
+        }
+
+        try {
+            DB::transaction(function () use ($order) {
+                $requirements = $this->buildRequirements($order);
+                if (empty($requirements)) {
+                    throw new \RuntimeException('Order tidak punya baris permintaan yang bisa dialokasikan.');
+                }
+
+                $today = now()->toDateString();
+                $picked = [];        // stock id yang sudah dipilih (cegah dobel antar requirement)
+                $allStockIds = [];
+
+                foreach ($requirements as $req) {
+                    // Kandidat unit steril (di gudang, belum kedaluwarsa, masih milik
+                    // produksi) untuk instrumen ini, diurutkan FEFO (kedaluwarsa terdekat).
+                    $rows = InstrumentStorage::withoutGlobalScopes()
+                        ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
+                        ->join('order', 'order.id', '=', 'instrument_storages.order_id')
+                        ->whereNull('instrument_storages.deleted_by')
+                        ->whereNull('instrument_stocks.deleted_by')
+                        ->whereNull('order.deleted_by')
+                        ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
+                        ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
+                            ->orWhereDate('instrument_storages.expiry_date', '>=', $today))
+                        ->whereNull('order.room_id') // hanya stok produksi yang belum dialokasikan
+                        ->where('instrument_stocks.instrument_id', $req['instrument_id'])
+                        ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
+                        ->when($picked, fn ($q) => $q->whereNotIn('instrument_stocks.id', $picked))
+                        ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')
+                        ->limit($req['needed_qty'])
+                        ->get([
+                            'instrument_storages.id as storage_id',
+                            'instrument_stocks.id as stock_id',
+                            'instrument_stocks.condition_id as condition_id',
+                        ]);
+
+                    if ($rows->count() < $req['needed_qty']) {
+                        throw new \RuntimeException(
+                            "Stok steril \"{$req['instrument']['name']}\" tidak cukup: butuh {$req['needed_qty']}, tersedia ".$rows->count().'.'
+                        );
+                    }
+
+                    foreach ($rows as $row) {
+                        $picked[] = $row->stock_id;
+                        $allStockIds[] = $row->stock_id;
+
+                        $order->items()->create([
+                            'instrument_stock_id' => $row->stock_id,
+                            'source' => $req['source'],
+                            'package_name' => $req['package_name'],
+                            'condition_out_id' => $row->condition_id,
+                            'is_returned' => false,
+                        ]);
+
+                        // Pindahkan kepemilikan baris gudang ke order ini (reservasi +
+                        // agar distribute mengeluarkannya dari gudang).
+                        InstrumentStorage::withoutGlobalScopes()
+                            ->where('id', $row->storage_id)
+                            ->update(['order_id' => $order->id, 'updated_by' => auth()->user()?->name]);
+                    }
+                }
+
+                $order->status = Order::STATUS_DIGUDANG;
+                $order->processed_at = now();
+                $order->processed_by = auth()->user()?->name;
+                if (! $order->code_transaction) {
+                    $order->code_transaction = $this->generateTransactionCode();
+                }
+                $order->save();
+
+                OrderEvent::record(OrderEvent::TYPE_DITERIMA, $order, [
+                    'note' => 'Order diterima — unit steril dialokasikan (FEFO) dari gudang, siap distribusi',
+                ]);
+            });
+
+            $order->load(self::DETAIL_RELATIONS);
+
+            return $this->success('Order diterima & siap didistribusikan.', $order);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
     }
 
     /**
@@ -988,8 +1101,11 @@ class OrderController extends Controller
                 $order->save();
 
                 $rm = $validated['medical_record_no'] ?? null;
+                $patient = $validated['patient_name'] ?? null;
                 OrderEvent::record(OrderEvent::TYPE_TERDISTRIBUSI, $order, [
-                    'note' => 'Diterima '.$validated['recipient'].($rm ? ' · RM '.$rm : ''),
+                    'note' => 'Diterima '.$validated['recipient']
+                        .($rm ? ' · RM '.$rm : '')
+                        .($patient ? ' · '.$patient : ''),
                 ]);
             });
 

@@ -17,7 +17,12 @@ Setiap item menyertakan `image` (path relatif, `null` bila belum ada) dan `image
 | page | integer | Tidak | Nomor halaman (default: 1) |
 
 > Setiap item menyertakan `stocks_count` — jumlah unit fisik (stok) milik instrumen tersebut,
-> dan `available_stocks_count` — jumlah unit yang berstatus `tersedia` (siap dipinjam).
+> `available_stocks_count` — jumlah unit yang berstatus `tersedia`, dan
+> `available_sterile_count` — jumlah unit STERIL siap-order (ada di gudang steril,
+> `instrument_storages.status = tersimpan`, belum kedaluwarsa, **dan masih milik
+> produksi / belum dialokasikan ke order peminjaman** — order pemilik `room_id` null).
+> Begitu order menerima & mengalokasikan unit (FEFO), kepemilikan baris gudang pindah
+> ke order itu sehingga otomatis keluar dari hitungan ini. Order hanya boleh atas barang steril.
 
 ## Response
 
@@ -35,6 +40,7 @@ Setiap item menyertakan `image` (path relatif, `null` bila belum ada) dan `image
         "name": "Stetoskop",
         "stocks_count": 3,
         "available_stocks_count": 2,
+        "available_sterile_count": 1,
         "created_by": "Admin",
         "updated_by": "Admin",
         "deleted_at": null,

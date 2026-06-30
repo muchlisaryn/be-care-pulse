@@ -15,9 +15,12 @@
 > `image_url` (URL publik gambar set, `null` bila belum ada). Kelola lewat
 > `uploadImage` / `deleteImage`.
 
-> Setiap item menyertakan `items_count` (jumlah jenis instrumen dalam katalog) dan
+> Setiap item menyertakan `items_count` (jumlah jenis instrumen dalam katalog),
 > `available_sets` — berapa set paket yang masih bisa dipenuhi dari stok `tersedia`
-> (= minimum dari `floor(stok_tersedia / qty_per_set)` atas seluruh isinya; `0` jika ada item yang habis).
+> (= minimum dari `floor(stok_tersedia / qty_per_set)` atas seluruh isinya; `0` jika ada item yang habis),
+> dan `available_sterile_sets` — sama, tetapi dihitung dari stok STERIL (unit di gudang
+> steril `tersimpan` & belum kedaluwarsa). Dipakai halaman order karena order hanya
+> boleh atas barang yang sudah steril.
 
 ### Response — Success (200)
 ```json
@@ -34,7 +37,8 @@
         "type": "paket",
         "description": null,
         "items_count": 2,
-        "available_sets": 3
+        "available_sets": 3,
+        "available_sterile_sets": 1
       }
     ],
     "last_page": 1,

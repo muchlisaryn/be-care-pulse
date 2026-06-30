@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Master;
 use App\Http\Controllers\Controller;
 use App\Models\InstrumentCatalog;
 use App\Models\InstrumentStock;
+use App\Models\InstrumentStorage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -38,14 +39,36 @@ class InstrumentCatalogController extends Controller
             ->groupBy('instrument_id')
             ->pluck('cnt', 'instrument_id');
 
-        $data->getCollection()->transform(function ($catalog) use ($available) {
-            $catalog->available_sets = $catalog->items->isEmpty()
-                ? 0
-                : (int) $catalog->items->min(function ($item) use ($available) {
-                    $stock = (int) ($available[$item->instrument_id] ?? 0);
+        // Stok STERIL per instrumen: unit di gudang steril (status `tersimpan`) yang
+        // belum kedaluwarsa. Dasar untuk available_sterile_sets (order = barang steril).
+        $sterile = InstrumentStorage::withoutGlobalScopes()
+            ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
+            ->join('order', 'order.id', '=', 'instrument_storages.order_id')
+            ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('instrument_stocks.deleted_by')
+            ->whereNull('order.deleted_by')
+            // Hanya stok produksi yang belum dialokasikan ke order (lihat InstrumentController).
+            ->whereNull('order.room_id')
+            ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
+            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
+                ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
+            ->selectRaw('instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
+            ->groupBy('instrument_stocks.instrument_id')
+            ->pluck('cnt', 'instrument_id');
 
-                    return $item->quantity > 0 ? intdiv($stock, $item->quantity) : 0;
-                });
+        // Berapa set yang bisa dipenuhi: min( floor(stok / qty_per_set) ) atas isinya.
+        $setsFrom = fn ($catalog, $counts) => $catalog->items->isEmpty()
+            ? 0
+            : (int) $catalog->items->min(function ($item) use ($counts) {
+                $stock = (int) ($counts[$item->instrument_id] ?? 0);
+
+                return $item->quantity > 0 ? intdiv($stock, $item->quantity) : 0;
+            });
+
+        $data->getCollection()->transform(function ($catalog) use ($available, $sterile, $setsFrom) {
+            $catalog->available_sets = $setsFrom($catalog, $available);
+            $catalog->available_sterile_sets = $setsFrom($catalog, $sterile);
             // Rincian item tidak perlu ikut di list (tersedia di endpoint show).
             $catalog->unsetRelation('items');
 

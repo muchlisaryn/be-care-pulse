@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Master;
 use App\Http\Controllers\Controller;
 use App\Models\Instrument;
 use App\Models\InstrumentStock;
+use App\Models\InstrumentStorage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -43,7 +44,50 @@ class InstrumentController extends Controller
             )
             ->paginate(20);
 
+        // Lampirkan available_sterile_count: jumlah unit STERIL siap-order (ada di
+        // gudang steril, status `tersimpan`, belum kedaluwarsa). Order hanya boleh
+        // atas barang yang sudah steril. Dihitung per halaman agar tetap ringan.
+        $sterile = $this->sterileCountsByInstrument(collect($data->items())->pluck('id'));
+        $data->getCollection()->transform(function ($instrument) use ($sterile) {
+            $instrument->available_sterile_count = (int) ($sterile[$instrument->id] ?? 0);
+
+            return $instrument;
+        });
+
         return $this->success('Data instrumen berhasil diambil.', $data);
+    }
+
+    /**
+     * Jumlah unit STERIL siap-order per instrument_id: unit di gudang steril
+     * (instrument_storages.status = `tersimpan`) yang belum kedaluwarsa.
+     * Kolom di-kualifikasi + tanpa global scope agar JOIN tidak ambigu pada `deleted_by`.
+     *
+     * @param  \Illuminate\Support\Collection<int,int>  $instrumentIds
+     * @return \Illuminate\Support\Collection<int,int>  cnt di-key oleh instrument_id
+     */
+    private function sterileCountsByInstrument($instrumentIds)
+    {
+        if ($instrumentIds->isEmpty()) {
+            return collect();
+        }
+
+        return InstrumentStorage::withoutGlobalScopes()
+            ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
+            ->join('order', 'order.id', '=', 'instrument_storages.order_id')
+            ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('instrument_stocks.deleted_by')
+            ->whereNull('order.deleted_by')
+            // Hanya stok milik produksi (room_id null) yang BELUM dialokasikan ke order
+            // peminjaman — begitu dialokasikan, kepemilikan baris gudang pindah ke order
+            // (room_id terisi) sehingga otomatis keluar dari hitungan ini.
+            ->whereNull('order.room_id')
+            ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
+            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
+                ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
+            ->selectRaw('instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
+            ->groupBy('instrument_stocks.instrument_id')
+            ->pluck('cnt', 'instrument_id');
     }
 
     public function store(Request $request): JsonResponse
