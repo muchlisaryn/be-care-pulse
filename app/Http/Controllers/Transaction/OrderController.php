@@ -999,12 +999,18 @@ class OrderController extends Controller
                         ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
                         ->when($picked, fn ($q) => $q->whereNotIn('instrument_stocks.id', $picked))
                         ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')
-                        ->limit($req['needed_qty'])
                         ->get([
                             'instrument_storages.id as storage_id',
                             'instrument_stocks.id as stock_id',
                             'instrument_stocks.condition_id as condition_id',
-                        ]);
+                        ])
+                        // Satu unit fisik bisa punya >1 baris gudang (mis. pernah
+                        // diproduksi/disimpan berkali-kali) sehingga JOIN mengembalikan
+                        // stock_id yang sama berulang. Dedup per unit — ambil baris FEFO
+                        // paling awal — agar unit yang sama tidak dialokasikan dua kali.
+                        ->unique('stock_id')
+                        ->take($req['needed_qty'])
+                        ->values();
 
                     if ($rows->count() < $req['needed_qty']) {
                         throw new \RuntimeException(
@@ -1125,7 +1131,9 @@ class OrderController extends Controller
     /** Ringkasan order siap-distribusi + unit & lokasi raknya. */
     private function distributePayload(Order $order): array
     {
-        $units = $order->items->where('is_returned', false)->values();
+        // Dedupe per unit fisik: satu instrument_stock tak boleh muncul (dan
+        // diambil dari gudang) dua kali walau ada order_item ganda.
+        $units = $order->items->where('is_returned', false)->unique('instrument_stock_id')->values();
         $rackByStock = $order->relationLoaded('storages')
             ? $order->storages->keyBy('instrument_stock_id')
             : collect();

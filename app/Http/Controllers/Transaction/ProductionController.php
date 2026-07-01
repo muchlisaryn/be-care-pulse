@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Instrument;
 use App\Models\InstrumentCatalog;
 use App\Models\InstrumentStock;
+use App\Models\InstrumentStorage;
 use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\OrderWashing;
@@ -187,6 +188,12 @@ class ProductionController extends Controller
 
         return InstrumentStock::whereIn('instrument_id', $instrumentIds)
             ->where('status', InstrumentStock::STATUS_TERSEDIA)
+            // Kecualikan unit yang fisiknya masih di gudang steril (tersimpan).
+            // Statusnya tetap `tersedia` agar bisa masuk batch sterilisasi, tapi
+            // tidak boleh ditarik ke produksi baru → mencegah baris gudang ganda.
+            ->whereNotIn('id', InstrumentStorage::query()
+                ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
+                ->select('instrument_stock_id'))
             ->orderBy('code')
             ->get()
             ->groupBy('instrument_id');

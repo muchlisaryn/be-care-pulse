@@ -159,10 +159,11 @@ class MenuSeeder extends Seeder
                 'sort_order' => 1,
                 'children' => [
                     // Aktivitas input yang menghasilkan data
-                    ['name' => 'Sterilisasi',     'url' => '/cssd/sterilisasi',     'sort_order' => 1],
-                    ['name' => 'Order Instrumen', 'url' => '/cssd/order/instrumen', 'sort_order' => 2],
-                    ['name' => 'Distribusi BMHP', 'url' => '/cssd/distribusi',      'sort_order' => 3],
+                    ['name' => 'Produksi CSSD',   'url' => '/cssd/produksi',        'icon' => 'factory',   'sort_order' => 1],
+                    ['name' => 'Storage Steril',  'url' => '/cssd/storage-steril',  'icon' => 'warehouse', 'sort_order' => 2],
+                    ['name' => 'Order Instrumen', 'url' => '/cssd/order/instrumen', 'sort_order' => 3],
                     ['name' => 'Tracking Order',  'url' => '/cssd/monitoring',      'sort_order' => 4],
+                    ['name' => 'Distribusi BMHP', 'url' => '/cssd/distribusi',      'sort_order' => 5],
                 ],
             ],
             [
@@ -197,6 +198,7 @@ class MenuSeeder extends Seeder
                     'parent_id' => $parent->id,
                     'name' => $child['name'],
                     'url' => $child['url'],
+                    'icon' => $child['icon'] ?? null,
                     'sort_order' => $child['sort_order'],
                     'is_open' => false,
                 ]);
