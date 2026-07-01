@@ -72,6 +72,7 @@ class MenuSeeder extends Seeder
             ['name' => 'Set Instrumen', 'url' => '/master/katalog-instrumen', 'sort_order' => 2],
             ['name' => 'Kondisi',       'url' => '/master/kondisi',           'sort_order' => 3],
             ['name' => 'BMHP',          'url' => '/master/bmhp',              'sort_order' => 4],
+            ['name' => 'Mesin Cuci',    'url' => '/master/mesin-cuci',        'sort_order' => 5],
         ];
 
         foreach ($masterCssdChildren as $child) {
