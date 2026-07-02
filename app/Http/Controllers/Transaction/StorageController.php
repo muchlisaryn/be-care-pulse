@@ -70,8 +70,9 @@ class StorageController extends Controller
         ]);
 
         // Unit fisik order ini (yang belum dikembalikan) — hanya ini yang boleh disimpan.
-        $orderStockIds = $order->items()->where('is_returned', false)
-            ->pluck('instrument_stock_id')->all();
+        $orderItems = $order->items()->where('is_returned', false)->get();
+        $orderStockIds = $orderItems->pluck('instrument_stock_id')->all();
+        $originByStock = $orderItems->keyBy('instrument_stock_id');
 
         $batch = $order->sterilizations()->where('status', 'selesai')->latest()->first();
         $expiry = $batch?->expiry_date;
@@ -82,7 +83,7 @@ class StorageController extends Controller
             ->pluck('instrument_stock_id')->all();
 
         try {
-            DB::transaction(function () use ($validated, $order, $orderStockIds, $alreadyStored, $batch, $expiry) {
+            DB::transaction(function () use ($validated, $order, $orderStockIds, $alreadyStored, $batch, $expiry, $originByStock) {
                 foreach ($validated['items'] as $item) {
                     $stockId = (int) $item['instrument_stock_id'];
 
@@ -91,10 +92,13 @@ class StorageController extends Controller
                         continue;
                     }
 
+                    $origin = $originByStock->get($stockId);
                     InstrumentStorage::create([
                         'order_id' => $order->id,
                         'sterilization_id' => $batch?->id,
                         'instrument_stock_id' => $stockId,
+                        'source' => $origin?->source ?? 'satuan',
+                        'package_name' => $origin?->package_name,
                         'rack_code' => $item['rack_code'],
                         'expiry_date' => $expiry,
                         'status' => InstrumentStorage::STATUS_TERSIMPAN,
@@ -250,13 +254,19 @@ class StorageController extends Controller
         $batchStockIds = $sterilization->items()->pluck('instrument_stock_id')->all();
         $expiry = $sterilization->expiry_date;
 
+        // Asal unit (satuan/paket) dari production_item, untuk denormalisasi ke gudang.
+        $sterilization->loadMissing('packagings.washing.production.items');
+        $originByStock = $sterilization->packagings
+            ->flatMap(fn ($p) => $p->washing?->production?->items ?? collect())
+            ->keyBy('instrument_stock_id');
+
         // Unit yang sudah tersimpan sebelumnya (hindari duplikat).
         $alreadyStored = InstrumentStorage::where('sterilization_id', $sterilization->id)
             ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
             ->pluck('instrument_stock_id')->all();
 
         try {
-            DB::transaction(function () use ($validated, $sterilization, $batchStockIds, $alreadyStored, $expiry) {
+            DB::transaction(function () use ($validated, $sterilization, $batchStockIds, $alreadyStored, $expiry, $originByStock) {
                 foreach ($validated['items'] as $item) {
                     $stockId = (int) $item['instrument_stock_id'];
 
@@ -264,10 +274,13 @@ class StorageController extends Controller
                         continue;
                     }
 
+                    $origin = $originByStock->get($stockId);
                     InstrumentStorage::create([
                         'order_id' => null,
                         'sterilization_id' => $sterilization->id,
                         'instrument_stock_id' => $stockId,
+                        'source' => $origin?->source ?? 'satuan',
+                        'package_name' => $origin?->package_name,
                         'rack_code' => $item['rack_code'],
                         'expiry_date' => $expiry,
                         'status' => InstrumentStorage::STATUS_TERSIMPAN,
@@ -382,10 +395,13 @@ class StorageController extends Controller
             'days_to_expiry' => $daysToExpiry,
             'alert' => $alert,
             'expired' => $expired,
+            'source' => $s->source ?? 'satuan',
+            'package_name' => $s->package_name,
             'unit' => [
                 'id' => $s->instrument_stock_id,
                 'code' => $s->instrumentStock?->code,
                 'instrument' => $s->instrumentStock?->instrument?->name,
+                'image_url' => $s->instrumentStock?->instrument?->image_url,
             ],
             'order' => $s->order ? [
                 'id' => $s->order->id,

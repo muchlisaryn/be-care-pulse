@@ -21,6 +21,8 @@ class InstrumentStorage extends Model
         'order_id',
         'sterilization_id',
         'instrument_stock_id',
+        'source',
+        'package_name',
         'rack_code',
         'expiry_date',
         'status',
