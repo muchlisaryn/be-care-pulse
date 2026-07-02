@@ -11,33 +11,33 @@ class AsesmenClinicalPathway extends Model
 {
     use HasAuditColumns;
 
-    protected $table = 'asesmen_clinical_pathway';
+    protected $table = 'clinical_pathway_assessments';
 
-    /** Pilihan jenis kelamin. */
-    public const JENIS_KELAMIN = ['L', 'P'];
+    /** Pilihan jenis kelamin (kolom gender). */
+    public const GENDER = ['L', 'P'];
 
     protected $fillable = [
-        'template_id', 'no_rm', 'nama_pasien', 'jenis_kelamin', 'tanggal_lahir',
-        'diagnosa_masuk', 'penyakit_utama', 'penyakit_penyerta', 'komplikasi',
-        'tindakan', 'bb', 'tb', 'tanggal_jam_masuk', 'tanggal_jam_keluar',
-        'lama_rawat', 'rencana_rawat', 'ruang_id', 'kelas', 'rujukan',
-        'verifikasi_dokter_by', 'verifikasi_dokter_at',
-        'verifikasi_perawat_by', 'verifikasi_perawat_at',
-        'verifikasi_pelaksana_by', 'verifikasi_pelaksana_at',
+        'template_id', 'medical_record_no', 'patient_name', 'gender', 'birth_date',
+        'admission_diagnosis', 'primary_disease', 'comorbidity', 'complication',
+        'procedure', 'weight', 'height', 'admitted_at', 'discharged_at',
+        'length_of_stay', 'care_plan', 'room_id', 'ward_class', 'is_referral',
+        'doctor_verified_by', 'doctor_verified_at',
+        'nurse_verified_by', 'nurse_verified_at',
+        'executor_verified_by', 'executor_verified_at',
         'created_by', 'updated_by',
     ];
 
     protected $casts = [
-        'tanggal_lahir' => 'date',
-        'tanggal_jam_masuk' => 'datetime',
-        'tanggal_jam_keluar' => 'datetime',
-        'bb' => 'decimal:2',
-        'tb' => 'decimal:2',
-        'lama_rawat' => 'integer',
-        'rujukan' => 'boolean',
-        'verifikasi_dokter_at' => 'datetime',
-        'verifikasi_perawat_at' => 'datetime',
-        'verifikasi_pelaksana_at' => 'datetime',
+        'birth_date' => 'date',
+        'admitted_at' => 'datetime',
+        'discharged_at' => 'datetime',
+        'weight' => 'decimal:2',
+        'height' => 'decimal:2',
+        'length_of_stay' => 'integer',
+        'is_referral' => 'boolean',
+        'doctor_verified_at' => 'datetime',
+        'nurse_verified_at' => 'datetime',
+        'executor_verified_at' => 'datetime',
     ];
 
     /** Formulir/template yang dipakai asesmen ini. */
@@ -47,20 +47,20 @@ class AsesmenClinicalPathway extends Model
     }
 
     /** Ruang rawat (master ruangan). */
-    public function ruang(): BelongsTo
+    public function room(): BelongsTo
     {
-        return $this->belongsTo(Room::class, 'ruang_id');
+        return $this->belongsTo(Room::class, 'room_id');
     }
 
     /** Nilai ceklis per poin. */
     public function points(): HasMany
     {
-        return $this->hasMany(AsesmenPointClinicalPathway::class, 'asesmen_id');
+        return $this->hasMany(AsesmenPointClinicalPathway::class, 'assessment_id');
     }
 
     /** Catatan varian (penyimpangan) clinical pathway. */
-    public function varians(): HasMany
+    public function variances(): HasMany
     {
-        return $this->hasMany(VarianClinicalPathway::class, 'asesmen_id');
+        return $this->hasMany(VarianClinicalPathway::class, 'assessment_id');
     }
 }

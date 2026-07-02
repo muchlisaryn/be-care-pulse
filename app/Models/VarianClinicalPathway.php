@@ -10,20 +10,20 @@ class VarianClinicalPathway extends Model
 {
     use HasAuditColumns;
 
-    protected $table = 'varian_clinical_pathway';
+    protected $table = 'clinical_pathway_variances';
 
     protected $fillable = [
-        'asesmen_id', 'tanggal_waktu', 'varian', 'alasan', 'paraf',
+        'assessment_id', 'occurred_at', 'variance', 'reason', 'initials',
         'created_by', 'updated_by',
     ];
 
     protected $casts = [
-        'tanggal_waktu' => 'datetime',
+        'occurred_at' => 'datetime',
     ];
 
     /** Asesmen pemilik catatan varian ini. */
-    public function asesmen(): BelongsTo
+    public function assessment(): BelongsTo
     {
-        return $this->belongsTo(AsesmenClinicalPathway::class, 'asesmen_id');
+        return $this->belongsTo(AsesmenClinicalPathway::class, 'assessment_id');
     }
 }

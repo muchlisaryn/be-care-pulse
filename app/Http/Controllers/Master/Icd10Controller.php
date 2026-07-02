@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 
 class Icd10Controller extends Controller
 {
+    /** Ambil daftar ICD 10 (paginasi + pencarian kode/nama/versi). */
     public function index(Request $request): JsonResponse
     {
         $data = Icd10::when(
@@ -23,6 +24,7 @@ class Icd10Controller extends Controller
         return $this->success('Data ICD 10 berhasil diambil.', $data);
     }
 
+    /** Simpan satu data ICD 10 baru. */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -40,11 +42,13 @@ class Icd10Controller extends Controller
         }
     }
 
+    /** Tampilkan detail satu ICD 10. */
     public function show(Icd10 $icd10): JsonResponse
     {
         return $this->success('Detail ICD 10 berhasil diambil.', $icd10);
     }
 
+    /** Perbarui data ICD 10. */
     public function update(Request $request, Icd10 $icd10): JsonResponse
     {
         $validated = $request->validate([
@@ -62,6 +66,7 @@ class Icd10Controller extends Controller
         }
     }
 
+    /** Hapus data ICD 10. */
     public function destroy(Icd10 $icd10): JsonResponse
     {
         try {

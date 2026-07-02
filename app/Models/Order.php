@@ -131,12 +131,6 @@ class Order extends Model
         return $this->hasMany(OrderTransfer::class, 'from_order_id');
     }
 
-    /** Catatan pencucian (Cleaning) — satu batch per order. */
-    public function washing()
-    {
-        return $this->hasOne(OrderWashing::class);
-    }
-
     /** Batch sterilisasi yang dibuat dari order ini (pipeline tab Sterilization). */
     public function sterilizations()
     {

@@ -7,41 +7,35 @@ use App\Models\Instrument;
 use App\Models\InstrumentCatalog;
 use App\Models\InstrumentStock;
 use App\Models\InstrumentStorage;
-use App\Models\Order;
-use App\Models\OrderEvent;
 use App\Models\OrderWashing;
+use App\Models\PipelineEvent;
+use App\Models\Production;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
- * Produksi CSSD — awal lifecycle pemrosesan. CSSD memproses stok alat miliknya
- * sendiri (tanpa order peminjam) langsung masuk antrean Cleaning. Membuat order
- * INTERNAL (room_id null, borrowed_by = "Produksi CSSD") berstatus `pencucian`,
- * sehingga mengalir ke pipeline yang ada: Cleaning → Packaging → Sterilization →
- * Storage.
+ * Produksi CSSD — tahap awal pipeline (produksi → cleaning → packaging → steril).
+ * CSSD memproses stok alat miliknya sendiri: membuat batch `production` (PRD-NNN)
+ * berisi unit yang dikunci (production_item), lalu langsung membuka tahap Cleaning
+ * (record `washing`) yang dirangkai lewat production_code.
  *
  * Saat "Mulai Produksi", stok langsung DIPOTONG: sejumlah unit `tersedia` per
- * instrumen dipilih, dikunci ke batch sebagai order_item, lalu statusnya diubah
- * `tersedia` → `sterilisasi`. Unit yang sama mengalir lewat pipeline (Packaging
- * tidak meng-generate ulang) dan kembali `tersedia` saat sterilisasi selesai.
+ * instrumen dipilih, dikunci ke batch sebagai production_item, lalu statusnya
+ * diubah `tersedia` → `sterilisasi`.
  */
 class ProductionController extends Controller
 {
-    /** Label peminjam untuk batch produksi internal (pembeda di daftar Cleaning). */
-    public const PRODUCER_LABEL = 'Produksi CSSD';
-
     /**
-     * Mulai produksi: buat batch internal berisi baris permintaan (jenis + jumlah)
-     * lalu langsung tempatkan di tahap Cleaning.
+     * Mulai produksi: buat batch produksi berisi unit terpilih lalu langsung
+     * buka tahap Cleaning (washing). Jejak tiap tahap dicatat di pipeline_events.
      */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'note' => 'nullable|string',
-            // Baris produksi: hanya jenis & jumlah. Unit fisik di-generate saat Packaging.
+            // Baris produksi: hanya jenis & jumlah. Unit fisik dikunci di sini.
             'items' => 'required|array|min:1',
             'items.*.type' => ['required', Rule::in(['satuan', 'paket'])],
             'items.*.quantity' => 'required|integer|min:1',
@@ -51,7 +45,7 @@ class ProductionController extends Controller
         ]);
 
         try {
-            $order = DB::transaction(function () use ($validated) {
+            $production = DB::transaction(function () use ($validated) {
                 // Jabarkan baris produksi menjadi kebutuhan unit per (asal, paket,
                 // instrumen). Paket diuraikan ke isi katalog × jumlah set.
                 $requirements = $this->buildRequirements($validated['items']);
@@ -61,63 +55,52 @@ class ProductionController extends Controller
                 $pools = $this->availablePools($requirements);
                 $this->assertStockSufficient($requirements, $pools);
 
-                $order = Order::create([
-                    // Kode produksi terpisah (PRD-NNN) agar deret ORD-NNN khusus
-                    // order peminjaman & tidak "terserap" batch produksi.
-                    'code' => $this->generateProductionCode(),
-                    // Internal CSSD — tanpa ruangan peminjam.
-                    'room_id' => null,
-                    'user_id' => auth()->id(),
-                    'borrowed_by' => self::PRODUCER_LABEL,
-                    'order_date' => now()->toDateString(),
+                $actor = auth()->user()?->name;
+
+                // Tahap Produksi (PRD-NNN, code auto). Dianggap langsung selesai
+                // karena batch dibuat & unit dikunci dalam satu aksi.
+                $production = Production::create([
+                    'source' => Production::SOURCE_INTERNAL,
                     'note' => $validated['note'] ?? null,
-                    // Langsung masuk tahap Cleaning (sudah "diproses" oleh CSSD).
-                    'status' => Order::STATUS_PENCUCIAN,
-                    'processed_at' => now(),
-                    'processed_by' => auth()->user()?->name,
+                    'status' => Production::STATUS_SELESAI,
+                    'started_by' => $actor,
+                    'started_at' => now(),
+                    'completed_by' => $actor,
+                    'completed_at' => now(),
                 ]);
 
-                foreach ($validated['items'] as $item) {
-                    $isPaket = $item['type'] === 'paket';
-                    $order->requestItems()->create([
-                        'type' => $item['type'],
-                        'instrument_id' => $isPaket ? null : ($item['instrument_id'] ?? null),
-                        'instrument_catalog_id' => $isPaket ? ($item['instrument_catalog_id'] ?? null) : null,
-                        'package_name' => $isPaket ? ($item['package_name'] ?? null) : null,
-                        'quantity' => $item['quantity'],
-                    ]);
-                }
-
-                // Potong stok: kunci unit terpilih ke batch sebagai order_item, lalu
-                // ubah statusnya `tersedia` → `sterilisasi`. Karena unit sudah ada,
-                // tahap Packaging tidak akan meng-generate ulang.
-                $pickedStockIds = $this->lockUnits($order, $requirements, $pools);
+                // Potong stok: kunci unit terpilih ke batch sebagai production_item,
+                // lalu ubah statusnya `tersedia` → `sterilisasi`.
+                $pickedStockIds = $this->lockUnits($production, $requirements, $pools);
 
                 InstrumentStock::transitionMany($pickedStockIds, InstrumentStock::STATUS_STERILISASI, [
                     'context' => 'production',
-                    'reference' => $order->code,
+                    'reference' => $production->code,
                     'note' => 'Stok dipotong untuk produksi CSSD',
                 ]);
 
-                // Catatan pencucian kosong (diisi operator di menu Cleaning).
-                $order->washing()->firstOrCreate([], [
+                // Buka tahap Cleaning (WSH-NNN) — dirangkai ke produksi via production_code.
+                $washing = OrderWashing::create([
+                    'production_code' => $production->code,
                     'status' => OrderWashing::STATUS_DALAM_PROSES,
+                    'started_by' => $actor,
+                    'started_at' => now(),
                 ]);
 
-                // Timeline: dibuat + langsung diproses ke Cleaning.
-                OrderEvent::record(OrderEvent::TYPE_DIBUAT, $order, [
-                    'note' => 'Batch produksi CSSD dibuat',
+                // Jejak pipeline: produksi selesai + masuk tahap cleaning.
+                PipelineEvent::record(PipelineEvent::STAGE_PRODUCTION, $production->code, PipelineEvent::ACTION_SELESAI, [
+                    'note' => 'Batch produksi CSSD dibuat ('.count($pickedStockIds).' unit dipotong dari stok)',
                 ]);
-                OrderEvent::record(OrderEvent::TYPE_DIPROSES, $order, [
-                    'note' => 'Produksi masuk tahap Cleaning ('.count($pickedStockIds).' unit dipotong dari stok)',
+                PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_DIBUAT, [
+                    'note' => 'Masuk tahap Cleaning (dari produksi '.$production->code.')',
                 ]);
 
-                return $order;
+                return $production;
             });
 
-            $order->load(['requestItems.instrument', 'requestItems.catalog', 'washing', 'items.instrumentStock']);
+            $production->load('items.instrumentStock', 'washings');
 
-            return $this->success('Batch produksi berhasil dibuat & masuk tahap Cleaning.', $order, 201);
+            return $this->success('Batch produksi berhasil dibuat & masuk tahap Cleaning.', $production, 201);
         } catch (\RuntimeException $e) {
             // Stok tidak cukup — tolak dengan 422 (validasi bisnis, bukan error server).
             return $this->error($e->getMessage(), 422);
@@ -128,9 +111,7 @@ class ProductionController extends Controller
 
     /**
      * Jabarkan baris produksi (satuan/paket) menjadi daftar kebutuhan unit per
-     * (asal, nama paket, instrumen) — selaras dengan buildRequirements milik
-     * OrderController agar order_item yang dikunci di sini dianggap "sudah
-     * di-generate" oleh tahap Packaging (tidak digenerate ulang).
+     * (asal, nama paket, instrumen). Paket diuraikan ke isi katalog × jumlah set.
      *
      * @param  array<int,array<string,mixed>>  $items
      * @return array<int,array{source:string,package_name:?string,instrument_id:int,qty:int}>
@@ -180,7 +161,6 @@ class ProductionController extends Controller
      * Pool unit `tersedia` per instrumen (urut kode) untuk seluruh kebutuhan.
      *
      * @param  array<int,array{instrument_id:int}>  $requirements
-     * @return Collection<int,Collection<int,InstrumentStock>>
      */
     private function availablePools(array $requirements)
     {
@@ -189,8 +169,6 @@ class ProductionController extends Controller
         return InstrumentStock::whereIn('instrument_id', $instrumentIds)
             ->where('status', InstrumentStock::STATUS_TERSEDIA)
             // Kecualikan unit yang fisiknya masih di gudang steril (tersimpan).
-            // Statusnya tetap `tersedia` agar bisa masuk batch sterilisasi, tapi
-            // tidak boleh ditarik ke produksi baru → mencegah baris gudang ganda.
             ->whereNotIn('id', InstrumentStorage::query()
                 ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
                 ->select('instrument_stock_id'))
@@ -222,12 +200,12 @@ class ProductionController extends Controller
     }
 
     /**
-     * Kunci unit terpilih ke order sebagai order_item (per kebutuhan), tanpa
-     * tumpang tindih antar kebutuhan yang berbagi instrumen yang sama.
+     * Kunci unit terpilih ke batch produksi sebagai production_item (per
+     * kebutuhan), tanpa tumpang tindih antar kebutuhan yang berbagi instrumen sama.
      *
      * @return array<int,int> daftar instrument_stock_id yang dipotong
      */
-    private function lockUnits(Order $order, array $requirements, $pools): array
+    private function lockUnits(Production $production, array $requirements, $pools): array
     {
         $cursor = []; // instrument_id => offset unit berikutnya di pool
         $pickedStockIds = [];
@@ -243,12 +221,11 @@ class ProductionController extends Controller
                     // Tidak seharusnya terjadi (sudah divalidasi), jaga-jaga saja.
                     throw new \RuntimeException('Stok berubah saat proses produksi. Coba lagi.');
                 }
-                $order->items()->create([
+                $production->items()->create([
                     'instrument_stock_id' => $stock->id,
                     'source' => $req['source'],
                     'package_name' => $req['package_name'],
                     'condition_out_id' => $stock->condition_id,
-                    'is_returned' => false,
                 ]);
                 $pickedStockIds[] = $stock->id;
             }
@@ -257,20 +234,5 @@ class ProductionController extends Controller
         }
 
         return $pickedStockIds;
-    }
-
-    /** Kode batch produksi berikutnya: PRD-NNN (deret terpisah dari ORD peminjaman). */
-    private function generateProductionCode(): string
-    {
-        $maxCode = Order::withoutGlobalScopes()
-            ->where('code', 'like', 'PRD-%')
-            ->max('code');
-
-        $sequence = 1;
-        if ($maxCode && preg_match('/-(\d+)$/', $maxCode, $matches)) {
-            $sequence = (int) $matches[1] + 1;
-        }
-
-        return 'PRD-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
     }
 }

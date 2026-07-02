@@ -21,7 +21,7 @@
         .grid th { background: #f3f4f6; font-size: 9px; text-transform: uppercase; }
         .grid td.center, .grid th.center { text-align: center; }
         .day-col { width: 18px; }
-        .pengisi { font-size: 8px; color: #374151; }
+        .filled-by { font-size: 8px; color: #374151; }
         .group td { background: #f9fafb; font-weight: bold; }
         .check { color: #047857; font-weight: bold; font-size: 13px; }
         .badge {
@@ -37,7 +37,7 @@
     @php
         $fmtDate = fn ($d) => $d ? \Illuminate\Support\Carbon::parse($d)->format('d-m-Y') : '—';
         $fmtDateTime = fn ($d) => $d ? \Illuminate\Support\Carbon::parse($d)->format('d-m-Y H:i') : '—';
-        $jk = $asesmen->jenis_kelamin === 'L' ? 'Laki-laki' : ($asesmen->jenis_kelamin === 'P' ? 'Perempuan' : '—');
+        $jk = $asesmen->gender === 'L' ? 'Laki-laki' : ($asesmen->gender === 'P' ? 'Perempuan' : '—');
     @endphp
 
     <h1>FORMULIR CLINICAL PATHWAY</h1>
@@ -45,46 +45,46 @@
         @if($template?->icd10)
             {{ $template->icd10->code }} — {{ $template->icd10->display }}
         @endif
-        · Maksimal {{ $maxHari }} hari
+        · Maksimal {{ $maxDays }} hari
     </p>
 
     <table class="info">
         <tr>
-            <td class="lbl">No. RM</td><td>: {{ $asesmen->no_rm ?: '—' }}</td>
-            <td class="lbl">Diagnosa Masuk</td><td>: {{ $asesmen->diagnosa_masuk ?: '—' }}</td>
+            <td class="lbl">No. RM</td><td>: {{ $asesmen->medical_record_no ?: '—' }}</td>
+            <td class="lbl">Diagnosa Masuk</td><td>: {{ $asesmen->admission_diagnosis ?: '—' }}</td>
         </tr>
         <tr>
-            <td class="lbl">Nama Pasien</td><td>: {{ $asesmen->nama_pasien ?: '—' }}</td>
-            <td class="lbl">Penyakit Utama</td><td>: {{ $asesmen->penyakit_utama ?: '—' }}</td>
+            <td class="lbl">Nama Pasien</td><td>: {{ $asesmen->patient_name ?: '—' }}</td>
+            <td class="lbl">Penyakit Utama</td><td>: {{ $asesmen->primary_disease ?: '—' }}</td>
         </tr>
         <tr>
             <td class="lbl">Jenis Kelamin</td><td>: {{ $jk }}</td>
-            <td class="lbl">Penyakit Penyerta</td><td>: {{ $asesmen->penyakit_penyerta ?: '—' }}</td>
+            <td class="lbl">Penyakit Penyerta</td><td>: {{ $asesmen->comorbidity ?: '—' }}</td>
         </tr>
         <tr>
-            <td class="lbl">Tanggal Lahir</td><td>: {{ $fmtDate($asesmen->tanggal_lahir) }}</td>
-            <td class="lbl">Komplikasi</td><td>: {{ $asesmen->komplikasi ?: '—' }}</td>
+            <td class="lbl">Tanggal Lahir</td><td>: {{ $fmtDate($asesmen->birth_date) }}</td>
+            <td class="lbl">Komplikasi</td><td>: {{ $asesmen->complication ?: '—' }}</td>
         </tr>
         <tr>
-            <td class="lbl">Ruang Rawat</td><td>: {{ $asesmen->ruang->name ?? '—' }}</td>
-            <td class="lbl">Tindakan</td><td>: {{ $asesmen->tindakan ?: '—' }}</td>
+            <td class="lbl">Ruang Rawat</td><td>: {{ $asesmen->room->name ?? '—' }}</td>
+            <td class="lbl">Tindakan</td><td>: {{ $asesmen->procedure ?: '—' }}</td>
         </tr>
         <tr>
-            <td class="lbl">Kelas</td><td>: {{ $asesmen->kelas ?: '—' }}</td>
-            <td class="lbl">BB / TB</td><td>: {{ $asesmen->bb ?? '—' }} kg / {{ $asesmen->tb ?? '—' }} cm</td>
+            <td class="lbl">Kelas</td><td>: {{ $asesmen->ward_class ?: '—' }}</td>
+            <td class="lbl">BB / TB</td><td>: {{ $asesmen->weight ?? '—' }} kg / {{ $asesmen->height ?? '—' }} cm</td>
         </tr>
         <tr>
-            <td class="lbl">Tgl/Jam Masuk</td><td>: {{ $fmtDateTime($asesmen->tanggal_jam_masuk) }}</td>
-            <td class="lbl">Lama Rawat</td><td>: {{ $asesmen->lama_rawat !== null ? $asesmen->lama_rawat.' hari' : '—' }}</td>
+            <td class="lbl">Tgl/Jam Masuk</td><td>: {{ $fmtDateTime($asesmen->admitted_at) }}</td>
+            <td class="lbl">Lama Rawat</td><td>: {{ $asesmen->length_of_stay !== null ? $asesmen->length_of_stay.' hari' : '—' }}</td>
         </tr>
         <tr>
-            <td class="lbl">Tgl/Jam Keluar</td><td>: {{ $fmtDateTime($asesmen->tanggal_jam_keluar) }}</td>
-            <td class="lbl">Rujukan</td><td>: {{ $asesmen->rujukan ? 'Ya' : 'Tidak' }}</td>
+            <td class="lbl">Tgl/Jam Keluar</td><td>: {{ $fmtDateTime($asesmen->discharged_at) }}</td>
+            <td class="lbl">Rujukan</td><td>: {{ $asesmen->is_referral ? 'Ya' : 'Tidak' }}</td>
         </tr>
     </table>
 
     @forelse($sections as $section)
-        <div class="section-title">{{ $section['urutan'] }}. {{ $section['label'] }}</div>
+        <div class="section-title">{{ $section['sort_order'] }}. {{ $section['label'] }}</div>
         <table class="grid">
             <thead>
                 <tr>
@@ -108,7 +108,7 @@
                                 @if(!$row['hasChildren'] && in_array($d, $row['checked']))<span class="check">&#10004;</span>@endif
                             </td>
                         @endforeach
-                        <td class="small">{{ $row['hasChildren'] ? '' : ($row['keterangan'] ?: '') }}</td>
+                        <td class="small">{{ $row['hasChildren'] ? '' : ($row['note'] ?: '') }}</td>
                     </tr>
                 @endforeach
             </tbody>
@@ -128,12 +128,12 @@
             </tr>
         </thead>
         <tbody>
-            @forelse($varians as $v)
+            @forelse($variances as $v)
                 <tr>
-                    <td>{{ $fmtDateTime($v->tanggal_waktu) }}</td>
-                    <td>{{ $v->varian }}</td>
-                    <td>{{ $v->alasan ?: '—' }}</td>
-                    <td>{{ $v->paraf }}</td>
+                    <td>{{ $fmtDateTime($v->occurred_at) }}</td>
+                    <td>{{ $v->variance }}</td>
+                    <td>{{ $v->reason ?: '—' }}</td>
+                    <td>{{ $v->initials }}</td>
                 </tr>
             @empty
                 <tr><td colspan="4" class="center muted">Belum ada catatan varian.</td></tr>

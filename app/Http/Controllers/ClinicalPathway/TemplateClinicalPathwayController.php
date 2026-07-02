@@ -9,13 +9,14 @@ use Illuminate\Http\Request;
 
 class TemplateClinicalPathwayController extends Controller
 {
+    /** Ambil daftar template clinical pathway (cari berdasarkan deskripsi / kode ICD 10). */
     public function index(Request $request): JsonResponse
     {
         $data = TemplateClinicalPathway::with('icd10')
             ->withCount('points')
             ->when(
                 $request->search,
-                fn ($q, $s) => $q->where('keterangan', 'like', "%{$s}%")
+                fn ($q, $s) => $q->where('description', 'like', "%{$s}%")
                     ->orWhereHas('icd10', fn ($w) => $w->where('code', 'like', "%{$s}%")
                         ->orWhere('display', 'like', "%{$s}%"))
             )
@@ -25,12 +26,13 @@ class TemplateClinicalPathwayController extends Controller
         return $this->success('Data template clinical pathway berhasil diambil.', $data);
     }
 
+    /** Simpan template baru beserta diagnosa ICD 10 & jumlah hari maksimal. */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'icd10_id' => 'required|integer|exists:icd10,id',
-            'maksimal_hari' => 'required|integer|min:1',
-            'keterangan' => 'nullable|string',
+            'max_days' => 'required|integer|min:1',
+            'description' => 'nullable|string',
             'is_active' => 'sometimes|boolean',
         ]);
 
@@ -43,17 +45,19 @@ class TemplateClinicalPathwayController extends Controller
         }
     }
 
+    /** Tampilkan detail template beserta diagnosanya. */
     public function show(TemplateClinicalPathway $template): JsonResponse
     {
         return $this->success('Detail template clinical pathway berhasil diambil.', $template->load('icd10'));
     }
 
+    /** Perbarui data template clinical pathway. */
     public function update(Request $request, TemplateClinicalPathway $template): JsonResponse
     {
         $validated = $request->validate([
             'icd10_id' => 'required|integer|exists:icd10,id',
-            'maksimal_hari' => 'required|integer|min:1',
-            'keterangan' => 'nullable|string',
+            'max_days' => 'required|integer|min:1',
+            'description' => 'nullable|string',
             'is_active' => 'sometimes|boolean',
         ]);
 

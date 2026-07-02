@@ -13,31 +13,32 @@ class VarianClinicalPathwayController extends Controller
     /** Semua catatan varian untuk satu asesmen (terbaru di atas). */
     public function index(Request $request, AsesmenClinicalPathway $asesmen): JsonResponse
     {
-        $data = VarianClinicalPathway::where('asesmen_id', $asesmen->id)
+        $data = VarianClinicalPathway::where('assessment_id', $asesmen->id)
             ->when(
                 $request->search,
-                fn ($q, $s) => $q->where('varian', 'like', "%{$s}%")
-                    ->orWhere('alasan', 'like', "%{$s}%")
+                fn ($q, $s) => $q->where('variance', 'like', "%{$s}%")
+                    ->orWhere('reason', 'like', "%{$s}%")
             )
-            ->orderByDesc('tanggal_waktu')
+            ->orderByDesc('occurred_at')
             ->orderByDesc('id')
             ->get();
 
         return $this->success('Data varian clinical pathway berhasil diambil.', $data);
     }
 
+    /** Tambah catatan varian pada asesmen. Paraf diisi otomatis dari user login. */
     public function store(Request $request, AsesmenClinicalPathway $asesmen): JsonResponse
     {
         $validated = $this->validateVarian($request);
 
         try {
             $varian = VarianClinicalPathway::create([
-                'asesmen_id' => $asesmen->id,
-                'tanggal_waktu' => $validated['tanggal_waktu'],
-                'varian' => $validated['varian'],
-                'alasan' => $validated['alasan'] ?? null,
+                'assessment_id' => $asesmen->id,
+                'occurred_at' => $validated['occurred_at'],
+                'variance' => $validated['variance'],
+                'reason' => $validated['reason'] ?? null,
                 // Paraf selalu diisi otomatis dari username user yang login.
-                'paraf' => $request->user()->username,
+                'initials' => $request->user()->username,
             ]);
 
             return $this->success('Catatan varian berhasil ditambahkan.', $varian, 201);
@@ -46,17 +47,18 @@ class VarianClinicalPathwayController extends Controller
         }
     }
 
+    /** Perbarui catatan varian. Paraf diperbarui ke username user yang mengubah. */
     public function update(Request $request, VarianClinicalPathway $varian): JsonResponse
     {
         $validated = $this->validateVarian($request);
 
         try {
             $varian->update([
-                'tanggal_waktu' => $validated['tanggal_waktu'],
-                'varian' => $validated['varian'],
-                'alasan' => $validated['alasan'] ?? null,
+                'occurred_at' => $validated['occurred_at'],
+                'variance' => $validated['variance'],
+                'reason' => $validated['reason'] ?? null,
                 // Paraf diperbarui ke username user yang melakukan perubahan.
-                'paraf' => $request->user()->username,
+                'initials' => $request->user()->username,
             ]);
 
             return $this->success('Catatan varian berhasil diperbarui.', $varian);
@@ -65,6 +67,7 @@ class VarianClinicalPathwayController extends Controller
         }
     }
 
+    /** Hapus catatan varian. */
     public function destroy(VarianClinicalPathway $varian): JsonResponse
     {
         try {
@@ -76,12 +79,13 @@ class VarianClinicalPathwayController extends Controller
         }
     }
 
+    /** Validasi payload catatan varian (tanggal-waktu, isi varian, alasan). */
     private function validateVarian(Request $request): array
     {
         return $request->validate([
-            'tanggal_waktu' => 'required|date',
-            'varian' => 'required|string',
-            'alasan' => 'nullable|string',
+            'occurred_at' => 'required|date',
+            'variance' => 'required|string',
+            'reason' => 'nullable|string',
         ]);
     }
 }

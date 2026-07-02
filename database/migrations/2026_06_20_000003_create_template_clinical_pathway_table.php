@@ -11,12 +11,12 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('template_clinical_pathway', function (Blueprint $table) {
+        Schema::create('clinical_pathway_templates', function (Blueprint $table) {
             $table->id();
             // Diagnosa diambil dari tabel icd10.
             $table->foreignId('icd10_id')->constrained('icd10')->cascadeOnDelete();
-            $table->integer('maksimal_hari');
-            $table->text('keterangan')->nullable();
+            $table->integer('max_days');
+            $table->text('description')->nullable();
             // Status aktif / tidak. Template tidak bisa dihapus, hanya di-nonaktifkan.
             $table->boolean('is_active')->default(true);
             $table->string('updated_by')->nullable();
@@ -32,6 +32,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('template_clinical_pathway');
+        Schema::dropIfExists('clinical_pathway_templates');
     }
 };

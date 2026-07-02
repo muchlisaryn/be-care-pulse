@@ -11,12 +11,12 @@ class TemplateClinicalPathway extends Model
 {
     use HasAuditColumns;
 
-    protected $table = 'template_clinical_pathway';
+    protected $table = 'clinical_pathway_templates';
 
-    protected $fillable = ['icd10_id', 'maksimal_hari', 'keterangan', 'is_active', 'created_by', 'updated_by'];
+    protected $fillable = ['icd10_id', 'max_days', 'description', 'is_active', 'created_by', 'updated_by'];
 
     protected $casts = [
-        'maksimal_hari' => 'integer',
+        'max_days' => 'integer',
         'is_active' => 'boolean',
     ];
 

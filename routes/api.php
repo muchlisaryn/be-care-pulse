@@ -110,7 +110,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('cleaning', [CleaningController::class, 'index']);
         // Notifikasi kegagalan suhu/waktu pencucian (parameter di luar ambang mesin)
         Route::get('cleaning/alerts', [CleaningController::class, 'alerts']);
-        Route::put('cleaning/{order}/washing', [CleaningController::class, 'updateWashing']);
+        Route::put('cleaning/{washing}/washing', [CleaningController::class, 'updateWashing']);
         // Tahap Packaging: data kebutuhan unit, generate unit dari stok, lalu lanjut (selesai/siap steril)
         Route::get('orders/{order}/packaging', [OrderController::class, 'packaging']);
         Route::post('orders/{order}/pack', [OrderController::class, 'pack']);

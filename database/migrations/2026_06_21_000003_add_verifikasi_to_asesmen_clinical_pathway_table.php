@@ -13,23 +13,23 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('asesmen_clinical_pathway', function (Blueprint $table) {
-            $table->string('verifikasi_dokter_by')->nullable()->after('rujukan');
-            $table->timestamp('verifikasi_dokter_at')->nullable()->after('verifikasi_dokter_by');
-            $table->string('verifikasi_perawat_by')->nullable()->after('verifikasi_dokter_at');
-            $table->timestamp('verifikasi_perawat_at')->nullable()->after('verifikasi_perawat_by');
-            $table->string('verifikasi_pelaksana_by')->nullable()->after('verifikasi_perawat_at');
-            $table->timestamp('verifikasi_pelaksana_at')->nullable()->after('verifikasi_pelaksana_by');
+        Schema::table('clinical_pathway_assessments', function (Blueprint $table) {
+            $table->string('doctor_verified_by')->nullable()->after('is_referral');
+            $table->timestamp('doctor_verified_at')->nullable()->after('doctor_verified_by');
+            $table->string('nurse_verified_by')->nullable()->after('doctor_verified_at');
+            $table->timestamp('nurse_verified_at')->nullable()->after('nurse_verified_by');
+            $table->string('executor_verified_by')->nullable()->after('nurse_verified_at');
+            $table->timestamp('executor_verified_at')->nullable()->after('executor_verified_by');
         });
     }
 
     public function down(): void
     {
-        Schema::table('asesmen_clinical_pathway', function (Blueprint $table) {
+        Schema::table('clinical_pathway_assessments', function (Blueprint $table) {
             $table->dropColumn([
-                'verifikasi_dokter_by', 'verifikasi_dokter_at',
-                'verifikasi_perawat_by', 'verifikasi_perawat_at',
-                'verifikasi_pelaksana_by', 'verifikasi_pelaksana_at',
+                'doctor_verified_by', 'doctor_verified_at',
+                'nurse_verified_by', 'nurse_verified_at',
+                'executor_verified_by', 'executor_verified_at',
             ]);
         });
     }

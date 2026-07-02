@@ -9,38 +9,38 @@ return new class extends Migration
     /**
      * Asesmen clinical pathway — data pasien + diagnosa (mengacu ke satu
      * template/formulir). Pengisian ceklis per poin disimpan di tabel
-     * asesmen_point_clinical_pathway.
+     * clinical_pathway_assessment_points.
      */
     public function up(): void
     {
-        Schema::create('asesmen_clinical_pathway', function (Blueprint $table) {
+        Schema::create('clinical_pathway_assessments', function (Blueprint $table) {
             $table->id();
             // Formulir/template yang dipakai (menentukan diagnosa & maksimal hari).
-            $table->foreignId('template_id')->constrained('template_clinical_pathway')->cascadeOnDelete();
+            $table->foreignId('template_id')->constrained('clinical_pathway_templates')->cascadeOnDelete();
 
-            // Identitas pasien. Wajib: no_rm & nama_pasien. Sisanya opsional.
-            $table->string('no_rm'); // nomor rekam medis (wajib)
-            $table->string('nama_pasien');
-            $table->string('jenis_kelamin', 1)->nullable(); // L / P
-            $table->date('tanggal_lahir')->nullable();
+            // Identitas pasien. Wajib: medical_record_no & patient_name. Sisanya opsional.
+            $table->string('medical_record_no'); // nomor rekam medis (wajib)
+            $table->string('patient_name');
+            $table->string('gender', 1)->nullable(); // L / P
+            $table->date('birth_date')->nullable();
 
             // Data klinis.
-            $table->string('diagnosa_masuk')->nullable();
-            $table->string('penyakit_utama')->nullable();
-            $table->string('penyakit_penyerta')->nullable();
-            $table->string('komplikasi')->nullable();
-            $table->string('tindakan')->nullable();
-            $table->decimal('bb', 5, 2)->nullable(); // berat badan (kg)
-            $table->decimal('tb', 5, 2)->nullable(); // tinggi badan (cm)
+            $table->string('admission_diagnosis')->nullable();
+            $table->string('primary_disease')->nullable();
+            $table->string('comorbidity')->nullable();
+            $table->string('complication')->nullable();
+            $table->string('procedure')->nullable();
+            $table->decimal('weight', 5, 2)->nullable(); // berat badan (kg)
+            $table->decimal('height', 5, 2)->nullable(); // tinggi badan (cm)
 
             // Perawatan.
-            $table->dateTime('tanggal_jam_masuk')->nullable();
-            $table->dateTime('tanggal_jam_keluar')->nullable();
-            $table->integer('lama_rawat')->nullable();   // hari (diisi manual)
-            $table->string('rencana_rawat')->nullable();
+            $table->dateTime('admitted_at')->nullable();
+            $table->dateTime('discharged_at')->nullable();
+            $table->integer('length_of_stay')->nullable();   // lama rawat (hari, diisi manual)
+            $table->string('care_plan')->nullable();
             // Ruang rawat diambil dari master ruangan (rooms).
-            $table->foreignId('ruang_id')->nullable()->constrained('rooms')->nullOnDelete();
-            $table->boolean('rujukan')->default(false);  // ya / tidak
+            $table->foreignId('room_id')->nullable()->constrained('rooms')->nullOnDelete();
+            $table->boolean('is_referral')->default(false);  // pasien rujukan: ya / tidak
 
             $table->string('updated_by')->nullable();
             $table->string('created_by')->nullable();
@@ -52,6 +52,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('asesmen_clinical_pathway');
+        Schema::dropIfExists('clinical_pathway_assessments');
     }
 };

@@ -9,23 +9,25 @@ use Illuminate\Http\Request;
 
 class CategoriClinicalPathwayController extends Controller
 {
+    /** Ambil daftar kategori clinical pathway (paginasi + pencarian label/urutan). */
     public function index(Request $request): JsonResponse
     {
         $data = CategoriClinicalPathway::when(
             $request->search,
             fn ($q, $s) => $q->where('label', 'like', "%{$s}%")
-                ->orWhere('urutan', 'like', "%{$s}%")
+                ->orWhere('sort_order', 'like', "%{$s}%")
         )
-            ->orderBy('urutan')
+            ->orderBy('sort_order')
             ->paginate(20);
 
         return $this->success('Data kategori clinical pathway berhasil diambil.', $data);
     }
 
+    /** Simpan kategori baru (urutan wajib unik). */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'urutan' => 'required|integer|min:1|unique:categori_clinical_pathway,urutan',
+            'sort_order' => 'required|integer|min:1|unique:clinical_pathway_categories,sort_order',
             'label' => 'required|string|max:255',
         ]);
 
@@ -38,15 +40,17 @@ class CategoriClinicalPathwayController extends Controller
         }
     }
 
+    /** Tampilkan detail satu kategori. */
     public function show(CategoriClinicalPathway $categori): JsonResponse
     {
         return $this->success('Detail kategori clinical pathway berhasil diambil.', $categori);
     }
 
+    /** Perbarui kategori (urutan tetap harus unik, kecuali dirinya sendiri). */
     public function update(Request $request, CategoriClinicalPathway $categori): JsonResponse
     {
         $validated = $request->validate([
-            'urutan' => 'required|integer|min:1|unique:categori_clinical_pathway,urutan,'.$categori->id,
+            'sort_order' => 'required|integer|min:1|unique:clinical_pathway_categories,sort_order,'.$categori->id,
             'label' => 'required|string|max:255',
         ]);
 
@@ -59,6 +63,7 @@ class CategoriClinicalPathwayController extends Controller
         }
     }
 
+    /** Hapus kategori clinical pathway. */
     public function destroy(CategoriClinicalPathway $categori): JsonResponse
     {
         try {

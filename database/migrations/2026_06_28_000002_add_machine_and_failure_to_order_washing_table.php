@@ -15,8 +15,8 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('order_washing', function (Blueprint $table) {
-            $table->foreignId('washer_machine_id')->nullable()->after('order_id')
+        Schema::table('washing', function (Blueprint $table) {
+            $table->foreignId('washer_machine_id')->nullable()->after('production_code')
                 ->constrained('washer_machines')->nullOnDelete();
             $table->unsignedInteger('duration_minutes')->nullable()->after('washed_at');
             // Notifikasi kegagalan suhu/waktu mesin.
@@ -29,7 +29,7 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::table('order_washing', function (Blueprint $table) {
+        Schema::table('washing', function (Blueprint $table) {
             $table->dropConstrainedForeignId('washer_machine_id');
             $table->dropColumn(['duration_minutes', 'alert', 'alert_message', 'failure_reason']);
         });

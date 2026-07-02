@@ -11,9 +11,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('categori_clinical_pathway', function (Blueprint $table) {
+        Schema::create('clinical_pathway_categories', function (Blueprint $table) {
             $table->id();
-            $table->integer('urutan')->unique();
+            $table->integer('sort_order')->unique();
             $table->string('label');
             $table->string('updated_by')->nullable();
             $table->string('created_by')->nullable();
@@ -28,6 +28,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('categori_clinical_pathway');
+        Schema::dropIfExists('clinical_pathway_categories');
     }
 };

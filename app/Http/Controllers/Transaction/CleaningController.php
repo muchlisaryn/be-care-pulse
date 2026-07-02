@@ -5,26 +5,27 @@ namespace App\Http\Controllers\Transaction;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\OrderEvent;
-use App\Models\OrderItem;
 use App\Models\OrderWashing;
+use App\Models\Packaging;
+use App\Models\PipelineEvent;
 use App\Models\WasherMachine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Tahap Cleaning & Pengemasan pada pipeline pemrosesan CSSD.
+ * Tahap Cleaning & Disinfection pada pipeline pemrosesan CSSD.
  *
- * Alur: order masuk (diajukan) → Proses → pencucian (Cleaning) → pengemasan.
- * "Proses" hanya mencatat waktu & memindahkan stage; catatan pencucian
- * (nomor mesin, operator, suhu, waktu, deterjen) diisi di menu Cleaning.
+ * Sumber data kini tabel `washing` (dirangkai dari `production` lewat
+ * production_code), bukan lagi order. Satu record washing = satu batch di tahap
+ * cleaning. Saat "Selesai Cuci", dibuat record `packaging` (PKG) sebagai tahap
+ * berikutnya. Respons dibentuk agar cocok dengan tipe CleaningOrder di frontend.
  */
 class CleaningController extends Controller
 {
     /**
-     * Proses order masuk: pindahkan dari "diajukan" ke tahap pencucian (Cleaning).
-     * Hanya mencatat kapan & oleh siapa diproses + buat catatan pencucian kosong;
-     * tidak ada alokasi unit fisik.
+     * [ALUR ORDER PINJAMAN — belum dimigrasi ke pipeline baru]
+     * Proses order masuk: pindahkan dari "diajukan" ke tahap pencucian.
      */
     public function process(Order $order): JsonResponse
     {
@@ -39,104 +40,73 @@ class CleaningController extends Controller
                 $order->processed_by = auth()->user()?->name;
                 $order->save();
 
-                // Catatan pencucian dibuat kosong (Dalam Proses Pencucian), diisi
-                // operator kemudian di menu Cleaning.
-                $order->washing()->firstOrCreate([], [
-                    'status' => OrderWashing::STATUS_DALAM_PROSES,
-                ]);
-
                 OrderEvent::record(OrderEvent::TYPE_DIPROSES, $order, [
                     'note' => 'Order diproses & masuk tahap Cleaning',
                 ]);
             });
 
-            $order->load(['room', 'washing']);
+            $order->load(['room']);
 
-            return $this->success('Order berhasil diproses & masuk tahap Cleaning.', $this->transform($order));
+            return $this->success('Order berhasil diproses & masuk tahap Cleaning.', $order);
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
     }
 
     /**
-     * Daftar order pada tahap Cleaning & Pengemasan (status pencucian/pengemasan)
-     * beserta catatan pencucian & ringkasan permintaan.
+     * Daftar batch pada tahap Cleaning: record `washing` yang belum lanjut ke
+     * packaging (belum ada record packaging dengan washing_code-nya).
      */
     public function index(Request $request): JsonResponse
     {
-        $orders = Order::with([
-            'room',
-            'user',
-            'washing.washerMachine',
-            'requestItems.instrument',
-            'requestItems.catalog',
-            'items.instrumentStock.instrument',
-            'items.conditionOut',
-        ])
-            ->whereIn('status', [Order::STATUS_PENCUCIAN, Order::STATUS_PENGEMASAN])
+        $washings = $this->cleaningQuery()
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
-                    ->orWhere('borrowed_by', 'like', "%{$s}%")
-                    ->orWhereHas('room', fn ($r) => $r->where('name', 'like', "%{$s}%")))
+                    ->orWhere('production_code', 'like', "%{$s}%")
+                    ->orWhere('operator', 'like', "%{$s}%"))
             )
-            ->orderByDesc('processed_at')
-            ->latest()
+            ->orderByDesc('id')
             ->paginate(20);
 
-        $orders->getCollection()->transform(fn (Order $order) => $this->transform($order));
+        $washings->getCollection()->transform(fn (OrderWashing $w) => $this->transform($w));
 
-        return $this->success('Data order tahap cleaning berhasil diambil.', $orders);
+        return $this->success('Data tahap cleaning berhasil diambil.', $washings);
     }
 
     /**
-     * Daftar notifikasi kegagalan pencucian: order yang catatan pencuciannya
-     * memiliki alert parameter (suhu/durasi di luar ambang mesin washer).
+     * Daftar notifikasi kegagalan pencucian: washing dengan alert parameter
+     * (suhu/durasi di luar ambang mesin washer).
      */
     public function alerts(Request $request): JsonResponse
     {
-        $orders = Order::with([
-            'room',
-            'user',
-            'washing.washerMachine',
-            'requestItems.instrument',
-            'requestItems.catalog',
-            'items.instrumentStock.instrument',
-            'items.conditionOut',
-        ])
-            ->whereIn('status', [Order::STATUS_PENCUCIAN, Order::STATUS_PENGEMASAN])
-            ->whereHas('washing', fn ($q) => $q->where('alert', true))
+        $washings = $this->cleaningQuery()
+            ->where('alert', true)
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
-                    ->orWhere('borrowed_by', 'like', "%{$s}%")
-                    ->orWhereHas('room', fn ($r) => $r->where('name', 'like', "%{$s}%")))
+                    ->orWhere('production_code', 'like', "%{$s}%")
+                    ->orWhere('operator', 'like', "%{$s}%"))
             )
-            ->latest()
+            ->orderByDesc('id')
             ->paginate(20);
 
-        $orders->getCollection()->transform(fn (Order $order) => $this->transform($order));
+        $washings->getCollection()->transform(fn (OrderWashing $w) => $this->transform($w));
 
-        return $this->success('Daftar notifikasi kegagalan pencucian berhasil diambil.', $orders);
+        return $this->success('Daftar notifikasi kegagalan pencucian berhasil diambil.', $washings);
     }
 
     /**
-     * Simpan / perbarui catatan pencucian sebuah order.
+     * Simpan / perbarui catatan pencucian sebuah record washing.
      *
-     * - `washer_machine_id` mencatat mesin washer yang dipindai; suhu & durasi
-     *   dievaluasi terhadap ambang mesin → bila di luar rentang, sistem menandai
-     *   `alert` (notifikasi kegagalan suhu/waktu).
-     * - `complete = true` menandai "Selesai Cuci" → order lanjut ke pengemasan.
+     * - `washer_machine_id` mencatat mesin washer; suhu & durasi dievaluasi
+     *   terhadap ambang mesin → bila di luar rentang, ditandai `alert`.
+     * - `complete = true` menandai "Selesai Cuci" → dibuat tahap packaging (PKG).
      *   Tidak diizinkan selama masih ada alert parameter.
-     * - `fail = true` menandai pencucian "Gagal" (wajib diulang); order tetap di
-     *   tahap pencucian.
+     * - `fail = true` menandai pencucian "Gagal" (wajib diulang).
      */
-    public function updateWashing(Request $request, Order $order): JsonResponse
+    public function updateWashing(Request $request, OrderWashing $washing): JsonResponse
     {
-        if (! in_array($order->status, [Order::STATUS_PENCUCIAN, Order::STATUS_PENGEMASAN], true)) {
-            return $this->error('Order ini tidak sedang dalam tahap cleaning.', 422);
-        }
-
         $validated = $request->validate([
             'washer_machine_id' => 'nullable|exists:washer_machines,id',
             'machine_no' => 'nullable|string|max:255',
@@ -152,15 +122,17 @@ class CleaningController extends Controller
         ]);
 
         try {
-            $result = DB::transaction(function () use ($validated, $order) {
-                $washing = $order->washing()->firstOrCreate([], [
-                    'status' => OrderWashing::STATUS_DALAM_PROSES,
-                ]);
+            $result = DB::transaction(function () use ($validated, $washing) {
+                $actor = auth()->user()?->name;
 
                 $washing->fill(array_intersect_key(
                     $validated,
                     array_flip(['washer_machine_id', 'machine_no', 'operator', 'temperature', 'washed_at', 'duration_minutes', 'detergent_type'])
                 ));
+
+                // Yang pertama kali mengisi = penanggung jawab mulai (bila belum ada).
+                $washing->started_by ??= $actor;
+                $washing->started_at ??= now();
 
                 // Evaluasi parameter terhadap ambang mesin washer yang dipindai.
                 $alerts = [];
@@ -173,7 +145,7 @@ class CleaningController extends Controller
                 $washing->alert = ! empty($alerts);
                 $washing->alert_message = $alerts ? implode(' ', $alerts) : null;
 
-                // Tandai Gagal → wajib diulang; order tetap di tahap pencucian.
+                // Tandai Gagal → wajib diulang.
                 if (! empty($validated['fail'])) {
                     $washing->status = OrderWashing::STATUS_GAGAL;
                     $washing->failure_reason = $validated['failure_reason']
@@ -181,12 +153,7 @@ class CleaningController extends Controller
                         ?? 'Pencucian gagal.';
                     $washing->save();
 
-                    if ($order->status === Order::STATUS_PENGEMASAN) {
-                        $order->status = Order::STATUS_PENCUCIAN;
-                        $order->save();
-                    }
-
-                    OrderEvent::record(OrderEvent::TYPE_GAGAL_CUCI, $order, [
+                    PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_GAGAL, [
                         'note' => 'Pencucian gagal: '.$washing->failure_reason,
                     ]);
 
@@ -206,32 +173,45 @@ class CleaningController extends Controller
                     $completedAt = $validated['completed_at'] ?? now();
                     $washing->status = OrderWashing::STATUS_SELESAI;
                     $washing->completed_at = $completedAt;
+                    $washing->completed_by = $actor;
                     $washing->washed_at ??= $completedAt;
                     $washing->failure_reason = null;
-                } elseif ($washing->status === OrderWashing::STATUS_GAGAL) {
-                    // Disimpan ulang setelah perbaikan parameter → kembali Dalam Proses.
+                    $washing->save();
+
+                    // Buka tahap Packaging (PKG) — dirangkai lewat washing_code.
+                    $packaging = Packaging::create([
+                        'washing_code' => $washing->code,
+                        'status' => Packaging::STATUS_DIPROSES,
+                        'started_by' => $actor,
+                        'started_at' => now(),
+                    ]);
+
+                    PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_SELESAI, [
+                        'note' => 'Pencucian selesai',
+                    ]);
+                    PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $packaging->code, PipelineEvent::ACTION_DIBUAT, [
+                        'note' => 'Masuk tahap Packaging (dari cleaning '.$washing->code.')',
+                    ]);
+
+                    return ['blocked' => false, 'failed' => false];
+                }
+
+                // Disimpan ulang setelah perbaikan parameter → kembali Dalam Proses.
+                if ($washing->status === OrderWashing::STATUS_GAGAL) {
                     $washing->status = OrderWashing::STATUS_DALAM_PROSES;
                     $washing->failure_reason = null;
                 }
 
                 $washing->save();
 
-                if ($completing && $order->status === Order::STATUS_PENCUCIAN) {
-                    $order->status = Order::STATUS_PENGEMASAN;
-                    $order->save();
-                    OrderEvent::record(OrderEvent::TYPE_SELESAI_CUCI, $order, [
-                        'note' => 'Pencucian selesai, order lanjut ke pengemasan',
-                    ]);
-                }
-
                 return ['blocked' => false, 'failed' => false];
             });
 
-            $order->load(['room', 'washing.washerMachine']);
+            $washing->refresh();
 
             if ($result['blocked']) {
                 return $this->error(
-                    'Parameter pencucian di luar ambang mesin: '.$order->washing->alert_message.' Periksa ulang atau tandai gagal.',
+                    'Parameter pencucian di luar ambang mesin: '.$washing->alert_message.' Periksa ulang atau tandai gagal.',
                     422
                 );
             }
@@ -240,78 +220,105 @@ class CleaningController extends Controller
                 ? 'Pencucian ditandai gagal dan harus diulang.'
                 : 'Catatan pencucian berhasil disimpan.';
 
-            return $this->success($message, $this->transform($order));
+            return $this->success($message, $this->transform($washing));
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
     }
 
-    /** Bentuk respons order tahap cleaning untuk frontend. */
-    private function transform(Order $order): array
+    /** Query dasar batch cleaning: washing yang belum lanjut ke packaging. */
+    private function cleaningQuery()
     {
-        $order->loadMissing([
-            'room', 'user', 'washing.washerMachine',
-            'requestItems.instrument', 'requestItems.catalog',
-            'items.instrumentStock.instrument', 'items.conditionOut',
+        return OrderWashing::with([
+            'washerMachine',
+            'production.items.instrumentStock.instrument',
+            'production.items.conditionOut',
+        ])->whereNotIn('code', Packaging::query()
+            ->whereNotNull('washing_code')
+            ->select('washing_code'));
+    }
+
+    /** Bentuk respons satu batch cleaning agar cocok dengan tipe CleaningOrder di frontend. */
+    private function transform(OrderWashing $washing): array
+    {
+        $washing->loadMissing([
+            'washerMachine',
+            'production.items.instrumentStock.instrument',
+            'production.items.conditionOut',
         ]);
-        $w = $order->washing;
+
+        $production = $washing->production;
+        $units = $production ? $production->items : collect();
+
+        // Ringkasan untuk chip kartu: unit paket dikelompokkan PER PAKET (nama paket,
+        // bukan dipecah per instrumen penyusunnya); unit satuan per nama instrumen.
+        $items = $units
+            ->groupBy(fn ($u) => $u->source === 'paket'
+                ? 'paket|'.($u->package_name ?? 'Paket')
+                : 'satuan|'.($u->instrumentStock?->instrument?->name ?? 'Instrumen'))
+            ->map(function ($group) {
+                $first = $group->first();
+                $isPaket = $first->source === 'paket';
+
+                return [
+                    'type' => $isPaket ? 'paket' : 'satuan',
+                    'name' => $isPaket
+                        ? ($first->package_name ?? 'Paket')
+                        : ($first->instrumentStock?->instrument?->name ?? 'Instrumen'),
+                    'quantity' => $group->count(),
+                ];
+            })
+            ->values();
+
+        $jenis = $units->pluck('instrumentStock.instrument.id')->filter()->unique()->count();
 
         return [
-            'id' => $order->id,
-            'code' => $order->code,
-            'code_transaction' => $order->code_transaction,
-            'status' => $order->status,
-            'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
-            'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
-            'order_date' => $order->order_date,
-            'processed_at' => $order->processed_at,
-            'processed_by' => $order->processed_by,
-            'requested_qty' => (int) $order->requestItems->sum('quantity'),
-            'request_lines' => $order->requestItems->count(),
-            'items' => $order->requestItems->map(fn ($it) => [
-                'type' => $it->type,
-                'name' => $it->type === 'paket'
-                    ? ($it->package_name ?? $it->catalog?->name ?? 'Paket')
-                    : ($it->instrument?->name ?? "Instrumen #{$it->instrument_id}"),
-                'quantity' => (int) $it->quantity,
-            ])->values(),
-            // Unit fisik yang dikunci ke batch (terisi untuk batch Produksi CSSD;
-            // kosong untuk order peminjaman yang unitnya baru di-generate saat Packaging).
-            'units_count' => $order->items->count(),
-            'units' => $order->items->map(fn (OrderItem $it) => [
-                'id' => $it->id,
-                'source' => $it->source,
-                'package_name' => $it->package_name,
-                'instrument_stock_id' => $it->instrument_stock_id,
-                'code' => $it->instrumentStock?->code,
-                'instrument' => $it->instrumentStock?->instrument
-                    ? ['id' => $it->instrumentStock->instrument->id, 'name' => $it->instrumentStock->instrument->name]
+            'id' => $washing->id,
+            'code' => $washing->code,                          // WSH-NNN (id record cleaning)
+            'code_transaction' => $production?->code,          // PRD-NNN (ditampilkan di kartu)
+            'status' => 'pencucian',
+            'borrowed_by' => $production?->displayName(),
+            'room' => null,
+            'order_date' => $production?->created_at?->toDateString(),
+            'processed_at' => $production?->completed_at ?? $washing->started_at,
+            'processed_by' => $production?->completed_by ?? $washing->started_by,
+            'requested_qty' => $units->count(),
+            'request_lines' => $jenis,
+            'items' => $items,
+            'units_count' => $units->count(),
+            'units' => $units->map(fn ($u) => [
+                'id' => $u->id,
+                'source' => $u->source,
+                'package_name' => $u->package_name,
+                'instrument_stock_id' => $u->instrument_stock_id,
+                'code' => $u->instrumentStock?->code,
+                'instrument' => $u->instrumentStock?->instrument
+                    ? ['id' => $u->instrumentStock->instrument->id, 'name' => $u->instrumentStock->instrument->name]
                     : null,
-                'status' => $it->instrumentStock?->status,
-                'condition_out' => $it->conditionOut
-                    ? ['id' => $it->conditionOut->id, 'name' => $it->conditionOut->name]
+                'status' => $u->instrumentStock?->status,
+                'condition_out' => $u->conditionOut
+                    ? ['id' => $u->conditionOut->id, 'name' => $u->conditionOut->name]
                     : null,
             ])->values(),
-            'washing' => $w ? [
-                'id' => $w->id,
-                'washer_machine_id' => $w->washer_machine_id,
-                'washer_machine' => $w->washerMachine ? [
-                    'id' => $w->washerMachine->id,
-                    'code' => $w->washerMachine->code,
-                    'name' => $w->washerMachine->name,
+            'washing' => [
+                'washer_machine_id' => $washing->washer_machine_id,
+                'washer_machine' => $washing->washerMachine ? [
+                    'id' => $washing->washerMachine->id,
+                    'code' => $washing->washerMachine->code,
+                    'name' => $washing->washerMachine->name,
                 ] : null,
-                'machine_no' => $w->machine_no,
-                'operator' => $w->operator,
-                'temperature' => $w->temperature,
-                'washed_at' => $w->washed_at,
-                'duration_minutes' => $w->duration_minutes,
-                'detergent_type' => $w->detergent_type,
-                'status' => $w->status,
-                'alert' => $w->alert,
-                'alert_message' => $w->alert_message,
-                'failure_reason' => $w->failure_reason,
-                'completed_at' => $w->completed_at,
-            ] : null,
+                'machine_no' => $washing->machine_no,
+                'operator' => $washing->operator,
+                'temperature' => $washing->temperature,
+                'washed_at' => $washing->washed_at,
+                'duration_minutes' => $washing->duration_minutes,
+                'detergent_type' => $washing->detergent_type,
+                'status' => $washing->status,
+                'alert' => $washing->alert,
+                'alert_message' => $washing->alert_message,
+                'failure_reason' => $washing->failure_reason,
+                'completed_at' => $washing->completed_at,
+            ],
         ];
     }
 }

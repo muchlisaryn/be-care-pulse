@@ -9,11 +9,11 @@ class CategoriClinicalPathway extends Model
 {
     use HasAuditColumns;
 
-    protected $table = 'categori_clinical_pathway';
+    protected $table = 'clinical_pathway_categories';
 
-    protected $fillable = ['urutan', 'label', 'created_by', 'updated_by'];
+    protected $fillable = ['sort_order', 'label', 'created_by', 'updated_by'];
 
     protected $casts = [
-        'urutan' => 'integer',
+        'sort_order' => 'integer',
     ];
 }

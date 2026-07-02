@@ -10,22 +10,24 @@ class AsesmenPointClinicalPathway extends Model
 {
     use HasAuditColumns;
 
-    protected $table = 'asesmen_point_clinical_pathway';
+    protected $table = 'clinical_pathway_assessment_points';
 
     protected $fillable = [
-        'asesmen_id', 'point_id', 'checked_hari', 'keterangan',
+        'assessment_id', 'point_id', 'checked_days', 'note',
         'created_by', 'updated_by',
     ];
 
     protected $casts = [
-        'checked_hari' => 'array',
+        'checked_days' => 'array',
     ];
 
-    public function asesmen(): BelongsTo
+    /** Asesmen pemilik nilai ceklis ini. */
+    public function assessment(): BelongsTo
     {
-        return $this->belongsTo(AsesmenClinicalPathway::class, 'asesmen_id');
+        return $this->belongsTo(AsesmenClinicalPathway::class, 'assessment_id');
     }
 
+    /** Poin clinical pathway yang dinilai. */
     public function point(): BelongsTo
     {
         return $this->belongsTo(PointClinicalPathway::class, 'point_id');

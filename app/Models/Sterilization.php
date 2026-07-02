@@ -45,6 +45,7 @@ class Sterilization extends Model
 
     protected $fillable = [
         'order_id',
+        'packaging_code',
         'machine',
         'method',
         'cycle_number',
@@ -57,6 +58,10 @@ class Sterilization extends Model
         'biological_indicator',
         'status',
         'note',
+        'started_by',
+        'started_at',
+        'completed_by',
+        'completed_at',
         'created_by',
         'updated_by',
     ];
@@ -66,6 +71,8 @@ class Sterilization extends Model
         'expiry_date' => 'date',
         'temperature' => 'decimal:2',
         'duration_minutes' => 'integer',
+        'started_at' => 'datetime',
+        'completed_at' => 'datetime',
     ];
 
     protected static function generateUniqueCode($model): string
@@ -90,5 +97,11 @@ class Sterilization extends Model
     public function order()
     {
         return $this->belongsTo(Order::class);
+    }
+
+    /** Tahap packaging asal (via packaging_code). */
+    public function packaging()
+    {
+        return $this->belongsTo(Packaging::class, 'packaging_code', 'code');
     }
 }

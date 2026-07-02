@@ -7,15 +7,20 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     /**
-     * Catatan pencucian (Cleaning) — satu batch per order. Diisi operator CSSD di
-     * menu "Cleaning & Pengemasan": nomor mesin, ID operator, suhu, waktu, dan
-     * jenis deterjen/enzimatis. Status: dalam_proses → selesai (Selesai Cuci).
+     * Tahap Cleaning pada pipeline CSSD (produksi → cleaning → packaging → steril).
+     * Tabel mandiri: TIDAK menyimpan order_id — keterkaitan ke order hanya ada di
+     * tahap sterilisasi. Antar-tahap dirangkai lewat code: washing.production_code
+     * menunjuk ke code tahap produksi sebelumnya. Diisi operator CSSD di menu
+     * Cleaning: nomor mesin, operator, suhu, waktu, deterjen. Status: dalam_proses
+     * → selesai / gagal.
      */
     public function up(): void
     {
-        Schema::create('order_washing', function (Blueprint $table) {
+        Schema::create('washing', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('order_id')->unique()->constrained('order')->cascadeOnDelete();
+            $table->string('code')->unique();                        // WSH-NNN (auto)
+            // Penghubung ke tahap produksi sebelumnya (rantai antar-code).
+            $table->string('production_code')->nullable()->index();
             // Nomor mesin pencuci & ID/nama operator (teks bebas, seperti borrowed_by).
             $table->string('machine_no')->nullable();
             $table->string('operator')->nullable();
@@ -25,9 +30,12 @@ return new class extends Migration
             $table->timestamp('washed_at')->nullable();
             // Jenis deterjen / enzimatis yang dipakai.
             $table->string('detergent_type')->nullable();
-            // dalam_proses (default) | selesai
+            // dalam_proses (default) | selesai | gagal
             $table->string('status')->default('dalam_proses');
-            // Kapan ditandai "Selesai Cuci".
+            // Jejak user per tahap: yang memulai & yang menyelesaikan.
+            $table->string('started_by')->nullable();
+            $table->timestamp('started_at')->nullable();
+            $table->string('completed_by')->nullable();
             $table->timestamp('completed_at')->nullable();
             $table->string('created_by')->nullable();
             $table->string('updated_by')->nullable();
@@ -39,6 +47,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('order_washing');
+        Schema::dropIfExists('washing');
     }
 };

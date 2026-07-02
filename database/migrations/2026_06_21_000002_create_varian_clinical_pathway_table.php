@@ -13,14 +13,14 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('varian_clinical_pathway', function (Blueprint $table) {
+        Schema::create('clinical_pathway_variances', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('asesmen_id')->constrained('asesmen_clinical_pathway')->cascadeOnDelete();
+            $table->foreignId('assessment_id')->constrained('clinical_pathway_assessments')->cascadeOnDelete();
 
-            $table->dateTime('tanggal_waktu');       // tanggal & waktu varian terjadi
-            $table->text('varian');                  // varian yang terjadi
-            $table->text('alasan')->nullable();      // alasan varian terjadi
-            $table->string('paraf');                 // username user yang login saat mencatat
+            $table->dateTime('occurred_at');     // tanggal & waktu varian terjadi
+            $table->text('variance');            // varian yang terjadi
+            $table->text('reason')->nullable();  // alasan varian terjadi
+            $table->string('initials');          // paraf: username user yang login saat mencatat
 
             $table->string('updated_by')->nullable();
             $table->string('created_by')->nullable();
@@ -32,6 +32,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('varian_clinical_pathway');
+        Schema::dropIfExists('clinical_pathway_variances');
     }
 };

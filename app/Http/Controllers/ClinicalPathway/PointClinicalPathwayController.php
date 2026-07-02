@@ -15,9 +15,9 @@ class PointClinicalPathwayController extends Controller
     /** Semua poin untuk satu template (flat, urut) — frontend menyusun pohonnya. */
     public function index(TemplateClinicalPathway $template): JsonResponse
     {
-        $points = PointClinicalPathway::with('categori')
+        $points = PointClinicalPathway::with('category')
             ->where('template_id', $template->id)
-            ->orderBy('urutan')
+            ->orderBy('sort_order')
             ->orderBy('id')
             ->get();
 
@@ -28,7 +28,7 @@ class PointClinicalPathwayController extends Controller
      * Salin seluruh poin (beserta sub-poin & hierarkinya) dari satu formulir
      * sumber ke formulir ini. Berguna saat membuat formulir untuk diagnosa baru
      * tanpa menyusun ulang dari awal. Poin sumber ditambahkan (append) ke poin
-     * yang sudah ada. `hari_wajib` yang melebihi `maksimal_hari` formulir tujuan
+     * yang sudah ada. `required_days` yang melebihi `max_days` formulir tujuan
      * otomatis diabaikan.
      */
     public function copyFrom(Request $request, TemplateClinicalPathway $template): JsonResponse
@@ -38,7 +38,7 @@ class PointClinicalPathwayController extends Controller
                 'required',
                 'integer',
                 'different:'.$template->id,
-                Rule::exists('template_clinical_pathway', 'id'),
+                Rule::exists('clinical_pathway_templates', 'id'),
             ],
         ]);
 
@@ -46,7 +46,7 @@ class PointClinicalPathwayController extends Controller
             $source = TemplateClinicalPathway::findOrFail($validated['source_template_id']);
 
             $sourcePoints = PointClinicalPathway::where('template_id', $source->id)
-                ->orderBy('urutan')
+                ->orderBy('sort_order')
                 ->orderBy('id')
                 ->get();
 
@@ -58,16 +58,16 @@ class PointClinicalPathwayController extends Controller
             // disalin secara rekursif sambil memetakan parent_id ke id baru.
             $byParent = $sourcePoints->groupBy(fn ($p) => $p->parent_id ?? 0);
 
-            // Urutan per grup (categori_id + parent_id baru) dilanjutkan dari poin
+            // Urutan per grup (category_id + parent_id baru) dilanjutkan dari poin
             // yang sudah ada di formulir tujuan.
             $counters = [];
-            $nextUrutan = function (int $categoriId, ?int $parentId) use (&$counters, $template): int {
-                $key = $categoriId.':'.($parentId ?? 'root');
+            $nextSortOrder = function (int $categoryId, ?int $parentId) use (&$counters, $template): int {
+                $key = $categoryId.':'.($parentId ?? 'root');
                 if (! array_key_exists($key, $counters)) {
                     $counters[$key] = (int) PointClinicalPathway::where('template_id', $template->id)
-                        ->where('categori_id', $categoriId)
+                        ->where('category_id', $categoryId)
                         ->where('parent_id', $parentId)
-                        ->max('urutan');
+                        ->max('sort_order');
                 }
 
                 return ++$counters[$key];
@@ -75,22 +75,22 @@ class PointClinicalPathwayController extends Controller
 
             $copied = 0;
             $copyLevel = function (int $sourceParentKey, ?int $newParentId) use (
-                &$copyLevel, &$copied, $byParent, $template, $nextUrutan
+                &$copyLevel, &$copied, $byParent, $template, $nextSortOrder
             ) {
                 foreach ($byParent->get($sourceParentKey, collect()) as $src) {
-                    $hari = array_values(array_filter(
-                        $src->hari_wajib ?? [],
-                        fn ($d) => $d >= 1 && $d <= $template->maksimal_hari,
+                    $days = array_values(array_filter(
+                        $src->required_days ?? [],
+                        fn ($d) => $d >= 1 && $d <= $template->max_days,
                     ));
 
                     $new = PointClinicalPathway::create([
                         'template_id' => $template->id,
-                        'categori_id' => $src->categori_id,
+                        'category_id' => $src->category_id,
                         'parent_id' => $newParentId,
                         'label' => $src->label,
-                        'pengisi' => $src->pengisi,
-                        'hari_wajib' => $hari,
-                        'urutan' => $nextUrutan($src->categori_id, $newParentId),
+                        'filled_by' => $src->filled_by,
+                        'required_days' => $days,
+                        'sort_order' => $nextSortOrder($src->category_id, $newParentId),
                     ]);
                     $copied++;
 
@@ -101,9 +101,9 @@ class PointClinicalPathwayController extends Controller
 
             DB::transaction(fn () => $copyLevel(0, null));
 
-            $points = PointClinicalPathway::with('categori')
+            $points = PointClinicalPathway::with('category')
                 ->where('template_id', $template->id)
-                ->orderBy('urutan')
+                ->orderBy('sort_order')
                 ->orderBy('id')
                 ->get();
 
@@ -113,73 +113,75 @@ class PointClinicalPathwayController extends Controller
         }
     }
 
+    /** Tambah poin baru pada template. Sub-poin selalu ikut pengisi induknya. */
     public function store(Request $request, TemplateClinicalPathway $template): JsonResponse
     {
         $validated = $this->validatePoint($request, $template);
 
         try {
             // Urutan = jumlah saudara (parent + kategori sama) + 1.
-            $urutan = PointClinicalPathway::where('template_id', $template->id)
-                ->where('categori_id', $validated['categori_id'])
+            $sortOrder = PointClinicalPathway::where('template_id', $template->id)
+                ->where('category_id', $validated['category_id'])
                 ->where('parent_id', $validated['parent_id'] ?? null)
-                ->max('urutan');
+                ->max('sort_order');
 
             // Sub-poin selalu mengikuti pengisi induknya (tidak bisa beda).
             $parentId = $validated['parent_id'] ?? null;
-            $pengisi = $validated['pengisi'];
+            $filledBy = $validated['filled_by'];
             if ($parentId) {
-                $pengisi = PointClinicalPathway::find($parentId)?->pengisi ?? $pengisi;
+                $filledBy = PointClinicalPathway::find($parentId)?->filled_by ?? $filledBy;
             }
 
             $point = PointClinicalPathway::create([
                 'template_id' => $template->id,
-                'categori_id' => $validated['categori_id'],
+                'category_id' => $validated['category_id'],
                 'parent_id' => $parentId,
                 'label' => $validated['label'],
-                'pengisi' => $pengisi,
-                'hari_wajib' => $validated['hari_wajib'] ?? [],
-                'urutan' => (int) $urutan + 1,
+                'filled_by' => $filledBy,
+                'required_days' => $validated['required_days'] ?? [],
+                'sort_order' => (int) $sortOrder + 1,
             ]);
 
-            return $this->success('Poin berhasil ditambahkan.', $point->load('categori'), 201);
+            return $this->success('Poin berhasil ditambahkan.', $point->load('category'), 201);
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
     }
 
+    /** Perbarui poin. Perubahan pengisi otomatis diturunkan ke seluruh sub-poin. */
     public function update(Request $request, PointClinicalPathway $point): JsonResponse
     {
         $validated = $this->validatePoint($request, $point->template, $point);
 
         try {
             // Sub-poin mengikuti pengisi induk; poin level atas pakai input user.
-            $pengisi = $point->parent_id
-                ? (PointClinicalPathway::find($point->parent_id)?->pengisi ?? $validated['pengisi'])
-                : $validated['pengisi'];
+            $filledBy = $point->parent_id
+                ? (PointClinicalPathway::find($point->parent_id)?->filled_by ?? $validated['filled_by'])
+                : $validated['filled_by'];
 
             $point->update([
                 'label' => $validated['label'],
-                'pengisi' => $pengisi,
-                'hari_wajib' => $validated['hari_wajib'] ?? [],
+                'filled_by' => $filledBy,
+                'required_days' => $validated['required_days'] ?? [],
             ]);
 
             // Pengisi induk berubah → seluruh keturunan ikut menyesuaikan.
-            $this->cascadePengisi($point);
+            $this->cascadeFilledBy($point);
 
-            return $this->success('Poin berhasil diperbarui.', $point->load('categori'));
+            return $this->success('Poin berhasil diperbarui.', $point->load('category'));
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
     }
 
-    /** Samakan pengisi seluruh keturunan poin dengan pengisi poin ini. */
-    private function cascadePengisi(PointClinicalPathway $point): void
+    /** Samakan pengisi (filled_by) seluruh keturunan poin dengan pengisi poin ini. */
+    private function cascadeFilledBy(PointClinicalPathway $point): void
     {
         foreach ($point->children as $child) {
-            if ($child->pengisi !== $point->pengisi) {
-                $child->update(['pengisi' => $point->pengisi]);
+            if ($child->filled_by !== $point->filled_by) {
+                $child->update(['filled_by' => $point->filled_by]);
             }
-            $this->cascadePengisi($child);
+            $this->cascadeFilledBy($child);
         }
     }
 
@@ -195,6 +197,7 @@ class PointClinicalPathwayController extends Controller
         }
     }
 
+    /** Hapus poin beserta anak-anaknya secara rekursif (dari daun ke akar). */
     private function deleteWithChildren(PointClinicalPathway $point): void
     {
         foreach ($point->children as $child) {
@@ -203,21 +206,21 @@ class PointClinicalPathwayController extends Controller
         $point->delete();
     }
 
-    /** Validasi poin. hari_wajib dibatasi 1..maksimal_hari milik template. */
+    /** Validasi poin. required_days dibatasi 1..max_days milik template. */
     private function validatePoint(Request $request, TemplateClinicalPathway $template, ?PointClinicalPathway $point = null): array
     {
         return $request->validate([
-            'categori_id' => 'required|integer|exists:categori_clinical_pathway,id',
+            'category_id' => 'required|integer|exists:clinical_pathway_categories,id',
             // parent_id (untuk sub-poin) harus poin lain di template yang sama.
             'parent_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('point_clinical_pathway', 'id')->where('template_id', $template->id),
+                Rule::exists('clinical_pathway_points', 'id')->where('template_id', $template->id),
             ],
             'label' => 'required|string|max:255',
-            'pengisi' => ['required', Rule::in(PointClinicalPathway::PENGISI)],
-            'hari_wajib' => 'nullable|array',
-            'hari_wajib.*' => 'integer|min:1|max:'.$template->maksimal_hari,
+            'filled_by' => ['required', Rule::in(PointClinicalPathway::FILLED_BY)],
+            'required_days' => 'nullable|array',
+            'required_days.*' => 'integer|min:1|max:'.$template->max_days,
         ]);
     }
 }

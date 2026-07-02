@@ -7,20 +7,20 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     /**
-     * Tambah kolom kelas (kelas perawatan pasien) pada asesmen clinical pathway.
-     * Ditaruh setelah ruang_id karena saling berkaitan (ruang & kelas rawat).
+     * Tambah kolom ward_class (kelas perawatan pasien) pada asesmen clinical
+     * pathway. Ditaruh setelah room_id karena saling berkaitan (ruang & kelas rawat).
      */
     public function up(): void
     {
-        Schema::table('asesmen_clinical_pathway', function (Blueprint $table) {
-            $table->string('kelas')->nullable()->after('ruang_id');
+        Schema::table('clinical_pathway_assessments', function (Blueprint $table) {
+            $table->string('ward_class')->nullable()->after('room_id');
         });
     }
 
     public function down(): void
     {
-        Schema::table('asesmen_clinical_pathway', function (Blueprint $table) {
-            $table->dropColumn('kelas');
+        Schema::table('clinical_pathway_assessments', function (Blueprint $table) {
+            $table->dropColumn('ward_class');
         });
     }
 };
