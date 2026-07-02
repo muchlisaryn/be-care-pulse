@@ -23,8 +23,10 @@ use App\Http\Controllers\Transaction\DistributionController;
 use App\Http\Controllers\Transaction\MonitoringController;
 use App\Http\Controllers\Transaction\OrderController;
 use App\Http\Controllers\Transaction\OrderTransferController;
+use App\Http\Controllers\Transaction\PackagingController;
 use App\Http\Controllers\Transaction\ProductionController;
 use App\Http\Controllers\Transaction\ReportController;
+use App\Http\Controllers\Transaction\SterilizationPipelineController;
 use App\Http\Controllers\Transaction\SterilizationController;
 use App\Http\Controllers\Transaction\StorageController;
 use Illuminate\Support\Facades\Route;
@@ -111,7 +113,14 @@ Route::middleware('auth:sanctum')->group(function () {
         // Notifikasi kegagalan suhu/waktu pencucian (parameter di luar ambang mesin)
         Route::get('cleaning/alerts', [CleaningController::class, 'alerts']);
         Route::put('cleaning/{washing}/washing', [CleaningController::class, 'updateWashing']);
-        // Tahap Packaging: data kebutuhan unit, generate unit dari stok, lalu lanjut (selesai/siap steril)
+        // Pipeline produksi — Tahap Inspection & Packaging (record PKG): list & selesai
+        Route::get('packaging', [PackagingController::class, 'index']);
+        Route::post('packaging/{packaging}/complete', [PackagingController::class, 'complete']);
+        // Pipeline produksi — Tahap Sterilisasi (berbasis PKG): list siap-steril + batch, buat batch gabungan, validasi
+        Route::get('sterilization-pipeline', [SterilizationPipelineController::class, 'index']);
+        Route::post('sterilization-pipeline/batch', [SterilizationPipelineController::class, 'batch']);
+        Route::post('sterilization-pipeline/{sterilization}/validate', [SterilizationPipelineController::class, 'validateResult']);
+        // Tahap Packaging (order peminjaman): data kebutuhan unit, generate unit dari stok, lalu lanjut (selesai/siap steril)
         Route::get('orders/{order}/packaging', [OrderController::class, 'packaging']);
         Route::post('orders/{order}/pack', [OrderController::class, 'pack']);
         // Inspection checklist: scan barcode unit / centang manual komponen set
@@ -145,8 +154,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Tahap 5 — Penyimpanan (Storage Steril): simpan unit steril ke rak + inventaris
         Route::get('storage/incoming', [StorageController::class, 'incoming']);
+        // Batch steril pipeline PRODUKSI yang siap disimpan (tanpa order)
+        Route::get('storage/production-incoming', [StorageController::class, 'productionIncoming']);
         Route::get('storage/inventory', [StorageController::class, 'inventory']);
         Route::post('orders/{order}/store', [StorageController::class, 'store']);
+        Route::post('sterilization/{sterilization}/store', [StorageController::class, 'storeProduction']);
 
         // Sterilisasi CSSD: batch/siklus sterilisasi + unit di dalamnya
         Route::get('sterilizations/expiring', [SterilizationController::class, 'expiring']);

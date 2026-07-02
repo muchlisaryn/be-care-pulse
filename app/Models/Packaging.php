@@ -24,7 +24,9 @@ class Packaging extends Model
     protected $fillable = [
         'code',
         'washing_code',
+        'sterilization_id',
         'operator',
+        'chemical_indicator',
         'packaged_at',
         'note',
         'status',
@@ -61,5 +63,17 @@ class Packaging extends Model
     public function washing()
     {
         return $this->belongsTo(OrderWashing::class, 'washing_code', 'code');
+    }
+
+    /** Batch sterilisasi yang dibuat dari packaging ini (via packaging_code). */
+    public function sterilizations()
+    {
+        return $this->hasMany(Sterilization::class, 'packaging_code', 'code');
+    }
+
+    /** Batch sterilisasi (STR) yang menampung packaging ini (banyak PKG → satu STR). */
+    public function sterilization()
+    {
+        return $this->belongsTo(Sterilization::class, 'sterilization_id');
     }
 }

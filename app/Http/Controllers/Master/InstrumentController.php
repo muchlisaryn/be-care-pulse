@@ -73,13 +73,15 @@ class InstrumentController extends Controller
 
         return InstrumentStorage::withoutGlobalScopes()
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->join('order', 'order.id', '=', 'instrument_storages.order_id')
+            // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null) —
+            // tetap ikut terhitung sebagai stok steril siap-order.
+            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
             ->whereNull('order.deleted_by')
-            // Hanya stok milik produksi (room_id null) yang BELUM dialokasikan ke order
-            // peminjaman — begitu dialokasikan, kepemilikan baris gudang pindah ke order
-            // (room_id terisi) sehingga otomatis keluar dari hitungan ini.
+            // Hanya stok milik produksi yang BELUM dialokasikan ke order peminjaman —
+            // begitu dialokasikan, kepemilikan baris gudang pindah ke order (room_id
+            // terisi) sehingga otomatis keluar dari hitungan ini.
             ->whereNull('order.room_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)

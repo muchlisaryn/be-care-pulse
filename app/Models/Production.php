@@ -45,23 +45,24 @@ class Production extends Model
     ];
 
     /**
-     * Kode batch produksi berikutnya: PRD + tahun + bulan + hari + counter harian
-     * (3 digit), mis. PRD20260702001. Counter di-reset tiap hari.
+     * Kode batch produksi berikutnya: PRD + tahun(2) + bulan(2) + tanggal(2) +
+     * urutan harian(2 digit), mis. PRD26070201 (2026-07-02, produksi ke-1).
+     * Counter di-reset tiap hari.
      */
     protected static function generateUniqueCode($model): string
     {
-        $prefix = 'PRD'.now()->format('Ymd');
+        $prefix = 'PRD'.now()->format('ymd');
 
         $maxCode = static::withoutGlobalScopes()
             ->where('code', 'like', $prefix.'%')
             ->max('code');
 
         $sequence = 1;
-        if ($maxCode && preg_match('/(\d{3})$/', $maxCode, $matches)) {
+        if ($maxCode && preg_match('/(\d{2})$/', $maxCode, $matches)) {
             $sequence = (int) $matches[1] + 1;
         }
 
-        return $prefix.str_pad($sequence, 3, '0', STR_PAD_LEFT);
+        return $prefix.str_pad($sequence, 2, '0', STR_PAD_LEFT);
     }
 
     /**

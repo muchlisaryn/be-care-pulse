@@ -43,7 +43,10 @@ class InstrumentCatalogController extends Controller
         // belum kedaluwarsa. Dasar untuk available_sterile_sets (order = barang steril).
         $sterile = InstrumentStorage::withoutGlobalScopes()
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->join('order', 'order.id', '=', 'instrument_storages.order_id')
+            // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null) —
+            // tetap ikut. Baris yang sudah direservasi order-ruangan (room_id terisi)
+            // dikecualikan oleh whereNull('order.room_id') di bawah.
+            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
             ->whereNull('order.deleted_by')

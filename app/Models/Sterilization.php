@@ -104,4 +104,10 @@ class Sterilization extends Model
     {
         return $this->belongsTo(Packaging::class, 'packaging_code', 'code');
     }
+
+    /** Packaging (PKG) yang tergabung dalam batch ini — banyak PKG → satu STR. */
+    public function packagings()
+    {
+        return $this->hasMany(Packaging::class, 'sterilization_id');
+    }
 }

@@ -293,7 +293,11 @@ class CleaningController extends Controller
                 'instrument_stock_id' => $u->instrument_stock_id,
                 'code' => $u->instrumentStock?->code,
                 'instrument' => $u->instrumentStock?->instrument
-                    ? ['id' => $u->instrumentStock->instrument->id, 'name' => $u->instrumentStock->instrument->name]
+                    ? [
+                        'id' => $u->instrumentStock->instrument->id,
+                        'name' => $u->instrumentStock->instrument->name,
+                        'image_url' => $u->instrumentStock->instrument->image_url,
+                    ]
                     : null,
                 'status' => $u->instrumentStock?->status,
                 'condition_out' => $u->conditionOut
