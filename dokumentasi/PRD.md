@@ -1,164 +1,175 @@
-# PRD — MedAssist Backend
+# PRD — Care Pulse Backend (be-care-pulse)
 
-**Produk:** MedAssist — Sistem Manajemen Inventaris & Sterilisasi Instrumen Medis (CSSD)
-**Platform:** Laravel 12 (PHP 8.2+) REST API
-**Database:** MySQL (aktif), kompatibel SQLite/PostgreSQL
-**Versi Dokumen:** 1.2
-**Tanggal:** 2026-06-08
-**Sumber Kebenaran:** Disusun dari skema database (migrations) & model yang aktif saat ini.
+**Produk:** Care Pulse — Sistem Manajemen CSSD & Clinical Pathway Rumah Sakit
+**Komponen:** Backend REST API
+**Platform:** Laravel 12 (PHP 8.2+)
+**Database:** MySQL (aktif) · kompatibel SQLite (test in-memory) / PostgreSQL
+**Auth:** Laravel Sanctum (Bearer token)
+**Realtime:** Pusher (broadcasting) — dikonsumsi frontend via Laravel Echo
+**PDF:** barryvdh/laravel-dompdf · **QR:** simplesoftwareio/simple-qrcode
+**Versi Dokumen:** 2.0
+**Tanggal:** 2026-07-01
+**Sumber Kebenaran:** disusun dari migrations, models, controllers, dan `routes/api.php` yang aktif saat ini.
 
-> **Perubahan v1.2 (terhadap PDF v1.1):**
-> - Modul **Peminjaman (Order/OrderItem)** — sebelumnya "rencana" — kini **terimplementasi penuh** (model + controller + alur status + sinkron status unit).
-> - Kolom `room_id` pada `users` **dihapus** sesuai arahan v1.1 §7.
-> - **[BARU] Modul Sterilisasi CSSD** (`sterilizations` + `sterilization_items`): batch/siklus sterilisasi, metode, indikator kimia & biologis, dan **masa berlaku steril (expiry)**.
-> - **[BARU] Set/Tray instrumen** (`instrument_sets` + `instrument_set_items`): kelompok unit yang dikelola sebagai satu paket.
-> - **[BARU] Riwayat pergerakan unit** (`instrument_stock_logs`): catatan append-only setiap perubahan status unit, otomatis dari konteks (create/manual/order/sterilization).
-> - **[BARU] Endpoint expiry alert**: daftar batch steril yang sudah/akan kadaluarsa.
+> **Perubahan v2.0 (terhadap v1.2):** dokumen ditulis ulang penuh agar mencerminkan sistem aktual. Cakupan meluas jauh melampaui inventaris/sterilisasi dasar: kini mencakup **pipeline CSSD end-to-end** (Order → Cleaning → Packaging → Sterilisasi → Storage → Distribusi), **Produksi CSSD internal**, **Pinjam-alih (handover) antar peminjam**, **Monitoring & papan display**, **master mesin washer**, **BMHP**, **ICD-10**, dan **modul Clinical Pathway** lengkap (kategori, template/formulir, poin, asesmen per-pasien, varian, cetak PDF).
 
 ---
 
-## 1. Konsep Domain
+## 1. Tujuan Produk
 
+Care Pulse mendigitalkan dua alur kerja rumah sakit:
+
+1. **CSSD (Central Sterile Supply Department)** — melacak setiap unit instrumen medis dari permintaan (order) hingga pemrosesan (cuci, kemas, steril, simpan) dan distribusi ke ruangan, lengkap dengan riwayat pergerakan per-unit dan pelacakan masa berlaku steril.
+2. **Clinical Pathway** — menyediakan template alur perawatan berbasis diagnosa (ICD-10), pengisian asesmen per-pasien dengan ceklis poin, pencatatan varian (penyimpangan), verifikasi multi-peran, dan cetak PDF.
+
+**Sasaran pengguna:** petugas CSSD, perawat/ruangan peminjam, admin sistem, dan tim mutu (clinical pathway).
+
+---
+
+## 2. Arsitektur & Konvensi Lintas-Modul
+
+### 2.1 Format Response
+Semua controller memakai helper base `Controller`:
+
+```php
+$this->success(string $message, mixed $data = null, int $status = 200): JsonResponse  // status: true
+$this->error(string $message, int $status = 400, array $errors = []): JsonResponse     // status: false
+```
+
+Status sukses standar: GET/PUT/DELETE = 200, POST = 201.
+
+### 2.2 Global Exception Handler (`bootstrap/app.php`)
+| Exception | HTTP | Keterangan |
+|---|---|---|
+| `ValidationException` | 422 | menyertakan objek `errors` |
+| `ModelNotFoundException` / `NotFoundHttpException` | 404 | binding gagal / route tak terdaftar |
+| `AuthenticationException` | 401 | belum login / token invalid |
+| `Throwable` (catch-all) | 500 | selalu tampilkan `message`, `code`, `file`, `line` |
+
+Setiap `store`/`update`/`destroy` wajib dibungkus `try-catch (\Throwable)` dan mengembalikan pesan error asli.
+
+### 2.3 Audit & Soft Delete (`App\Traits\HasAuditColumns`)
+Setiap tabel domain memiliki 6 kolom: `created_at/by`, `updated_at/by`, `deleted_at/by`.
+- `created_by`/`updated_by` otomatis dari `auth()->user()->name`.
+- **Global scope `active`** memfilter `WHERE deleted_by IS NULL`.
+- `delete()` selalu soft delete; `forceDelete()` hard delete; `restore()` null-kan `deleted_at/by`.
+- `withTrashed()` / `onlyTrashed()` tersedia.
+
+### 2.4 Endpoint List
+Setiap index wajib: **search** via `?search=` (minimal kolom `name`/relevan) + **pagination** `->paginate(20)`. Response paginate Laravel menyertakan `data`, `current_page`, `last_page`, `per_page`, `total`.
+
+### 2.5 Dokumentasi Endpoint
+Struktur `dokumentasi/` mengikuti struktur `app/Http/Controllers/`, dibuat & diperbarui bersamaan dengan perubahan function.
+
+---
+
+## 3. Modul & Domain
+
+### 3.1 Autentikasi & Otorisasi (`Auth/`)
+- **AuthController** — login (publik), register (admin), logout, `me` (profil + menu untuk rehidrasi), update profil, ganti password (mencabut sesi perangkat lain), manajemen sesi (list/revoke/revoke-all).
+- **AuthorityController** — peran/hak akses. Setiap Authority menentukan **menu dinamis** yang dilihat user.
+- **Menu / TitleMenu** — struktur navigasi hierarkis (title → menu → submenu) yang dirakit per Authority menjadi flat list dan dibangun ke tree di frontend.
+
+### 3.2 Master Data (`Master/`)
 | Entitas | Deskripsi |
 |---|---|
-| Instrument | Jenis/katalog instrumen medis. `code` unik + `name`. |
-| InstrumentStock | Unit fisik individual sebuah Instrument. `code` auto `{KODE}-NNN`, `condition_id`, `status`. |
-| InstrumentStockLog | Riwayat append-only perubahan status sebuah unit (tracking). |
-| Condition | Lookup kondisi instrumen (mis. Baik, Rusak). |
-| Room | Ruangan rumah sakit. `code` 4-huruf unik. |
-| InstrumentSet | Set/tray: kumpulan unit yang dikelola sebagai satu paket. `code` auto `SET-NNN`. |
-| InstrumentSetItem | Anggota set: satu unit fisik dalam sebuah set. |
-| User / Authority | Akun & peran/hak akses (menentukan menu dinamis). |
-| Menu / TitleMenu | Struktur navigasi dinamis per Authority. |
-| Order / OrderItem | Peminjaman instrumen (header + unit yang dipinjam). `code` auto `ORD-NNN`. |
-| Sterilization / SterilizationItem | Batch/siklus sterilisasi + unit di dalamnya. `code` auto `STR-NNN`. |
+| **User** | akun pengguna, terkait Authority. |
+| **Condition** | lookup kondisi instrumen (Baik, Rusak, dst). |
+| **Room** | ruangan RS; `code` 4-huruf unik. |
+| **Instrument** | jenis/katalog instrumen; `code` unik + `name` + gambar opsional; endpoint `stats`. |
+| **InstrumentStock** | unit fisik individual; `code` auto `{KODE}-NNN`, `condition_id`, `status`; **QR scan & generate label**, **logs** riwayat pergerakan. |
+| **InstrumentCatalog / Item** | katalog Set/paket CSSD (definisi tray beserta komponennya) + gambar. |
+| **Bmhp** | Bahan Medis Habis Pakai (consumables). |
+| **Icd10** | master diagnosa ICD-10 + **impor massal Excel** (skip duplikat `code`+`version`). |
+| **WasherMachine** | mesin pencuci/disinfector; `code` `WSH-NNN`; **scan barcode** sebelum cuci. |
 
-**Relasi inti:**
-- `Instrument` (1)→(N) `InstrumentStock`
-- `InstrumentStock` (1)→(N) `InstrumentStockLog`
-- `InstrumentSet` (1)→(N) `InstrumentSetItem` (N)→(1) `InstrumentStock`
-- `Order` (1)→(N) `OrderItem` (N)→(1) `InstrumentStock`
-- `Sterilization` (1)→(N) `SterilizationItem` (N)→(1) `InstrumentStock`
+### 3.3 Transaksi CSSD — Pipeline (`Transaction/`)
 
----
+Alur unit instrumen bergerak melalui tahap-tahap berikut; status `order` merepresentasikan posisi dalam pipeline:
 
-## 2. Status & Enum
+```
+Order (diajukan) → Terima/Alokasi → Cleaning → Packaging → Sterilisasi
+     → Storage (penyimpanan steril) → Distribusi (ke ruangan/RM pasien) → Dikembalikan
+```
 
-### 2.1 Status Unit (`instrument_stocks.status`)
-`tersedia` (default) · `dipinjam` · `sterilisasi` · `dikembalikan`
+- **OrderController** — inti pipeline. `apiResource` + banyak aksi tahap:
+  - Permintaan: `store`, `index` (search+status+paginate), `show`, `update`, `destroy`.
+  - Scan & tracking: `scan` (ORD-NNN), `borrowable` (order pihak lain yang dipinjam).
+  - Penerimaan: `allocation`, `receive`.
+  - Cleaning/Packaging: `process`, `packaging`, `pack`, `pack/scan`, `pack/check`, `pack/uncheck`, `packagingComplete` (inspection checklist per-unit).
+  - Sterilisasi: `readyToSterilize`, `sterilize`, `sterilize/validate` (Steril/Gagal).
+  - Distribusi: `acceptDistribution` (alokasi unit steril FEFO), `readyToDistribute`, `distribute` (+ RM pasien).
+- **ProductionController** — Produksi CSSD internal: mulai batch dari stok milik CSSD langsung ke tahap Cleaning (tanpa order ruangan).
+- **CleaningController** — tahap cuci: `index`, `process`, `updateWashing`, `alerts` (notifikasi suhu/waktu di luar ambang mesin).
+- **SterilizationController** — batch/siklus sterilisasi: CRUD + `expiring` (batch steril kadaluarsa/akan kadaluarsa `?days=`). Mencatat metode, suhu, indikator kimia & biologis, **masa berlaku steril**.
+- **StorageController** — penyimpanan steril: `incoming`, `inventory`, `store` (simpan unit steril ke rak).
+- **DistributionController** — serah-terima alat steril CSSD → unit/ruangan (`apiResource`).
+- **OrderTransferController** — pinjam-alih (handover) antar peminjam tanpa order ulang ke CSSD: `incoming-count`, `index`, `store`, `accept`, `reject`, `cancel`.
+- **MonitoringController** — `rooms` (unit dipinjam per ruangan), `incoming` (order masuk lintas user), `returned` (riwayat), `board` (papan display TV).
+- **ReportController** — `reports/cssd-per-item` (satu baris per unit per batch sterilisasi).
 
-### 2.2 Status Order (`order.status`)
-`diajukan` (default) → `disetujui` → `dipinjam` → `dikembalikan` · `dibatalkan`
-- `dipinjam` → unit terkait → `dipinjam`
-- `dikembalikan` / `dibatalkan` → unit terkait → `tersedia`
-
-### 2.3 Status Sterilisasi (`sterilizations.status`)
-`diproses` (default) · `selesai` · `gagal`
-- `diproses` / `gagal` → unit → `sterilisasi`
-- `selesai` → unit → `tersedia` (steril & siap pakai)
-- Metode (`method`): `uap` · `eo` · `plasma` · `panas_kering`
-
-### 2.4 Konteks Log Unit (`instrument_stock_logs.context`)
-`create` · `manual` · `order` · `sterilization`
-
----
-
-## 3. Skema Database (modul baru v1.2)
-
-### 3.1 order / order_item
-Lihat PRD v1.1 §3.10–3.11 (skema tidak berubah; kini terimplementasi).
-
-### 3.2 sterilizations
-| Kolom | Tipe | Keterangan |
-|---|---|---|
-| id | bigint PK | |
-| code | string unique | Auto `STR-NNN` |
-| machine | string | Nama/no. mesin autoclave |
-| method | string default `uap` | uap/eo/plasma/panas_kering |
-| cycle_number | string nullable | No. siklus mesin |
-| temperature | decimal(5,2) nullable | Suhu (°C) |
-| duration_minutes | unsigned int nullable | Durasi (menit) |
-| operator | string nullable | Operator pelaksana |
-| sterilized_at | datetime | Waktu proses |
-| expiry_date | date nullable | Masa berlaku steril |
-| chemical_indicator | string nullable | Hasil indikator kimia |
-| biological_indicator | string nullable | Hasil indikator biologis |
-| status | string default `diproses` | diproses/selesai/gagal |
-| note | text nullable | |
-| + audit columns | | created_by, updated_by, deleted_at, deleted_by |
-
-### 3.3 sterilization_items
-| Kolom | Tipe | Keterangan |
-|---|---|---|
-| id | bigint PK | |
-| sterilization_id | FK → sterilizations | cascadeOnDelete |
-| instrument_stock_id | FK → instrument_stocks | restrictOnDelete |
-| result | string nullable | Hasil per unit (opsional) |
-| + audit columns | | unique(sterilization_id, instrument_stock_id) |
-
-### 3.4 instrument_sets
-| Kolom | Tipe | Keterangan |
-|---|---|---|
-| id | bigint PK | |
-| code | string unique | Auto `SET-NNN` |
-| name | string | mis. "Set Bedah Minor" |
-| room_id | FK → rooms nullable | nullOnDelete |
-| status | string default `tersedia` | mengikuti enum status unit |
-| note | text nullable | |
-| + audit columns | | |
-
-### 3.5 instrument_set_items
-| Kolom | Tipe | Keterangan |
-|---|---|---|
-| id | bigint PK | |
-| instrument_set_id | FK → instrument_sets | cascadeOnDelete |
-| instrument_stock_id | FK → instrument_stocks | restrictOnDelete |
-| + audit columns | | unique(instrument_set_id, instrument_stock_id) |
-
-### 3.6 instrument_stock_logs (append-only — tanpa soft delete)
-| Kolom | Tipe | Keterangan |
-|---|---|---|
-| id | bigint PK | |
-| instrument_stock_id | FK → instrument_stocks | cascadeOnDelete |
-| from_status | string nullable | Status sebelum (null saat create) |
-| to_status | string | Status sesudah |
-| context | string nullable | create/manual/order/sterilization |
-| reference_code | string nullable | mis. ORD-001, STR-001 |
-| note | text nullable | |
-| created_by | string nullable | + created_at/updated_at |
+### 3.4 Clinical Pathway (`ClinicalPathway/`)
+- **CategoriClinicalPathway** — kategori/section formulir (urutan unik + label).
+- **TemplateClinicalPathway** — template per diagnosa (ICD-10) + maksimal hari + keterangan + status. Tidak dihapus, hanya toggle aktif/non-aktif.
+- **PointClinicalPathway** — poin & sub-poin per template; penomoran mengikuti kategori (1 → 1.1 → 1.1.1); dukung `copy-points` dari formulir lain.
+- **AsesmenClinicalPathway** — pengisian CP per pasien (data pasien + kelas + ceklis poin). `savePoint` auto-save per poin; `verify` per peran (dokter/perawat/pelaksana) + batal; `pdf` cetak.
+- **VarianClinicalPathway** — pencatatan varian/penyimpangan per asesmen; paraf otomatis dari username login.
 
 ---
 
-## 4. Fitur & Endpoint (tambahan v1.2)
+## 4. Status & Enum
 
-Base URL `/api`. Semua endpoint butuh Bearer Token (Sanctum).
+### 4.1 Status Unit (`instrument_stocks.status`)
+`tersedia` (default) · `dipinjam` · `sterilisasi` · `dikembalikan` (+ status turunan pipeline pemrosesan).
 
-### F5 — Peminjaman Instrumen (`/api/master/orders`) — **terimplementasi**
-`apiResource('orders')`: index (search+status+paginate), store, show, update (alur status + pengembalian per-item), destroy.
+### 4.2 Status Order (`order.status`)
+Alur pipeline: `diajukan` → (terima) → `processing`/cleaning → packaging → sterilisasi → storage → `distribusi`/`dipinjam` → `dikembalikan` · `dibatalkan`.
+- Perubahan status order menyinkronkan status unit terkait.
 
-### F6 — Sterilisasi CSSD (`/api/master/sterilizations`)
-| Method | Endpoint | Fungsi |
-|---|---|---|
-| GET | `/sterilizations` | List (search + filter status/method) |
-| GET | `/sterilizations/expiring` | Batch steril yang sudah/akan kadaluarsa (`?days=`) |
-| POST | `/sterilizations` | Buat batch (status `diproses`, unit → sterilisasi) |
-| GET | `/sterilizations/{id}` | Detail batch + unit |
-| PUT/PATCH | `/sterilizations/{id}` | Ubah status (sinkron unit) & data batch |
-| DELETE | `/sterilizations/{id}` | Soft delete |
+### 4.3 Status Sterilisasi (`sterilizations.status`)
+`diproses` (default) · `selesai` · `gagal`. Metode: `uap` · `eo` · `plasma` · `panas_kering`.
+- `selesai` → unit → `tersedia` (steril siap pakai). `diproses`/`gagal` → unit → `sterilisasi`.
 
-### F7 — Set/Tray Instrumen (`/api/master/instrument-sets`)
-`apiResource('instrument-sets')`: CRUD + sinkronisasi anggota unit lewat field `items` pada store/update.
+### 4.4 Status Order Transfer
+`diajukan` → `accept` / `reject` / `cancel` (handover antar peminjam).
 
-### F8 — Riwayat Pergerakan Unit
-| Method | Endpoint | Fungsi |
-|---|---|---|
-| GET | `/instrument-stocks/{id}/logs` | Riwayat perubahan status unit (terbaru dulu) |
+### 4.5 Konteks Log Unit (`instrument_stock_logs.context`)
+`create` · `manual` · `order` · `sterilization` (append-only, tanpa soft delete).
 
 ---
 
-## 5. Catatan Implementasi
+## 5. Aturan Penting Implementasi
 
-- **Sinkron status unit** dilakukan via `InstrumentStock::transitionMany($ids, $status, $meta)` agar event logging & audit (`updated_by`) tetap jalan — jangan pakai `whereIn()->update()` langsung untuk perubahan status.
-- **Logging otomatis** lewat model event `created`/`updated` pada `InstrumentStock` (mencatat saat `status` berubah). Konteks & referensi diteruskan via properti transien `InstrumentStock::$logMeta`.
-- **Dokumentasi endpoint** mengikuti konvensi repo: folder per-controller, file per-function (`dokumentasi/{Subfolder}/{Controller}/{function}.md`).
-- **Expiry alert** saat ini berbasis batch (`status=selesai` + `expiry_date`). Bila perlu akurasi per-unit (unit yang disteril ulang), perlu agregasi batch terbaru per unit.
+- **Sinkron status unit** wajib via `InstrumentStock::transitionMany($ids, $status, $meta)` — **bukan** `whereIn()->update()` — agar event logging & audit (`updated_by`) tetap jalan. Konteks/referensi (mis. `ORD-001`, `STR-001`) diteruskan lewat properti transien `InstrumentStock::$logMeta`.
+- **Logging otomatis** lewat model event `created`/`updated` pada `InstrumentStock`.
+- **FEFO/expiry**: alokasi unit steril untuk distribusi mengikuti First-Expired-First-Out; `expiring` menghitung dari batch `selesai` + `expiry_date`.
+- **Broadcasting realtime** (Pusher) memicu update papan monitoring & notifikasi order masuk di frontend.
+- **Nama tabel `order`** adalah reserved keyword → `protected $table = 'order'`.
+
+---
+
+## 6. Referensi Endpoint
+
+Base URL `/api`. Semua endpoint (kecuali `POST /auth/login`) memerlukan Bearer token Sanctum.
+Daftar lengkap per-controller ada di `routes/api.php` dan didokumentasikan penuh (request/response) di `dokumentasi/{Subfolder}/{Controller}/{function}.md`.
+
+| Grup | Prefix | Isi |
+|---|---|---|
+| Auth | `/api/auth` | login, register, logout, me, profile, change-password, sessions |
+| Master | `/api/master` | authorities, title-menus, menus, users, conditions, icd10(+import), instruments(+stats,+image), instrument-stocks(+scan,+qr,+logs), instrument-catalogs(+image), bmhps, rooms, washer-machines(+scan) |
+| CSSD Transaksi | `/api/master` | monitoring/*, orders(+pipeline lengkap), production, cleaning(+alerts), order-transfers, distributions, storage/*, sterilizations(+expiring), reports/cssd-per-item |
+| Clinical Pathway | `/api/clinical-pathway` | categories, templates(+toggle,+points,+copy-points), points, asesmen(+savePoint,+verify,+pdf,+varian) |
+
+---
+
+## 7. Testing
+Test memakai SQLite in-memory (`DB_DATABASE=:memory:` di `phpunit.xml`). Suite `tests/Feature/` & `tests/Unit/`. Factory domain dibuat sesuai kebutuhan fitur.
+
+## 8. Perintah Utama
+```bash
+composer run setup   # setup pertama kali
+composer run dev     # server + queue + logs + vite konkuren
+composer run test    # php artisan test
+./vendor/bin/pint    # code style
+php artisan migrate:fresh --seed
+```
