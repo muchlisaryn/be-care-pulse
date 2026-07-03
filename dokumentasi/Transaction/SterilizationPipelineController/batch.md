@@ -24,7 +24,10 @@ ditandai `sterilization_id` batch tersebut. Batch berstatus `diproses` (menunggu
 ### Body Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| packaging_ids | array<int> | Ya | Daftar id PKG siap-steril yang digabung (min 1) |
+| packaging_ids | array<int> | Tidak* | Daftar id PKG (tray) siap-steril yang digabung |
+| reproc_stock_ids | array<int> | Tidak* | `instrument_stock_id` unit **re-proses lepas** (gagal steril sebelumnya) yang ikut di-batch. Hanya unit yang `sterilization_item` terbarunya `gagal` yang diterima. |
+
+> *Minimal salah satu dari `packaging_ids` atau `reproc_stock_ids` harus berisi unit valid.
 | machine | string | Ya | Nama/nomor mesin sterilisator |
 | method | string | Tidak | `uap` \| `eo` \| `plasma` \| `panas_kering` (default `uap`) |
 | cycle_number | string | Tidak | Nomor siklus |
@@ -32,7 +35,7 @@ ditandai `sterilization_id` batch tersebut. Batch berstatus `diproses` (menunggu
 | duration_minutes | integer | Tidak | Durasi (menit) |
 | operator | string | Tidak | Operator |
 | sterilized_at | datetime | Ya | Waktu sterilisasi |
-| expiry_date | date | Tidak | Kedaluwarsa (>= sterilized_at) |
+| expiry_date | date | Tidak | Kedaluwarsa steril. **Tidak diinput dari UI** — bila kosong, diisi otomatis dari **tgl pengemasan paling awal** (`packaged_at`) + masa simpan default 7 hari, mengikuti tgl kedaluwarsa yang sudah ditetapkan saat pengemasan. |
 | chemical_indicator | string | Tidak | Hasil indikator kimia |
 | biological_indicator | string | Tidak | Hasil indikator biologis |
 | note | string | Tidak | Catatan |

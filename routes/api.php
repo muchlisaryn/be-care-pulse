@@ -115,6 +115,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('cleaning/{washing}/washing', [CleaningController::class, 'updateWashing']);
         // Pipeline produksi — Tahap Inspection & Packaging (record PKG): list & selesai
         Route::get('packaging', [PackagingController::class, 'index']);
+        Route::get('packaging/{packaging}/label', [PackagingController::class, 'label']);
         Route::post('packaging/{packaging}/complete', [PackagingController::class, 'complete']);
         // Pipeline produksi — Tahap Sterilisasi (berbasis PKG): list siap-steril + batch, buat batch gabungan, validasi
         Route::get('sterilization-pipeline', [SterilizationPipelineController::class, 'index']);

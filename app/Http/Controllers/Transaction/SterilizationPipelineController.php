@@ -8,6 +8,7 @@ use App\Models\InstrumentStock;
 use App\Models\Packaging;
 use App\Models\PipelineEvent;
 use App\Models\Sterilization;
+use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -56,7 +57,23 @@ class SterilizationPipelineController extends Controller
             ->get()
             ->map(fn (Sterilization $b) => $this->batchPayload($b));
 
-        $items = $batches->concat($ready)->values();
+        // Unit re-proses: unit yang gagal steril (sterilization_item TERBARU-nya
+        // 'gagal') → kembali antre sebagai unit lepas, terpisah dari tray asalnya.
+        // Otomatis hilang dari antrean begitu unit di-batch ulang (item baru dibuat).
+        $latestItemIds = SterilizationItem::query()
+            ->selectRaw('MAX(id) as id')
+            ->groupBy('instrument_stock_id')
+            ->pluck('id');
+
+        $reproc = SterilizationItem::with(['instrumentStock.instrument', 'sterilization'])
+            ->whereIn('id', $latestItemIds)
+            ->where('result', Sterilization::RESULT_GAGAL)
+            ->when($search, fn ($q, $s) => $q->whereHas('instrumentStock', fn ($w) => $w->where('code', 'like', "%{$s}%")))
+            ->orderByDesc('id')
+            ->get()
+            ->map(fn (SterilizationItem $it) => $this->reprocPayload($it));
+
+        $items = $batches->concat($reproc)->concat($ready)->values();
 
         // Bentuk seperti paginator (satu halaman) agar cocok dengan pemanggil FE.
         return $this->success('Data pipeline sterilisasi berhasil diambil.', [
@@ -76,8 +93,10 @@ class SterilizationPipelineController extends Controller
     public function batch(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'packaging_ids' => 'required|array|min:1',
+            'packaging_ids' => 'nullable|array',
             'packaging_ids.*' => 'integer',
+            'reproc_stock_ids' => 'nullable|array',
+            'reproc_stock_ids.*' => 'integer',
             'machine' => 'required|string|max:255',
             'method' => ['nullable', Rule::in(Sterilization::METHODS)],
             'cycle_number' => 'nullable|string|max:100',
@@ -92,29 +111,54 @@ class SterilizationPipelineController extends Controller
         ]);
 
         $packagings = Packaging::with(self::CHAIN)
-            ->whereIn('id', $validated['packaging_ids'])
+            ->whereIn('id', $validated['packaging_ids'] ?? [])
             ->where('status', Packaging::STATUS_SELESAI)
             ->whereNull('sterilization_id')
             ->get();
 
-        if ($packagings->isEmpty()) {
-            return $this->error('Tidak ada batch packaging siap-steril yang valid dipilih.', 422);
-        }
-
+        // Unit dari tray (PKG) terpilih.
         $stockIds = $packagings
             ->flatMap(fn (Packaging $p) => ($p->washing?->production?->items ?? collect())->pluck('instrument_stock_id'))
-            ->filter()->unique()->values();
+            ->filter();
 
-        if ($stockIds->isEmpty()) {
-            return $this->error('Batch terpilih tidak punya unit untuk disterilkan.', 422);
+        // Unit re-proses lepas terpilih — hanya yang benar-benar butuh re-steril
+        // (sterilization_item terbaru = gagal), supaya tak bisa mem-batch sembarang unit.
+        $reprocIds = collect($validated['reproc_stock_ids'] ?? [])->filter()->unique();
+        if ($reprocIds->isNotEmpty()) {
+            $latestItemIds = SterilizationItem::query()->selectRaw('MAX(id) as id')->groupBy('instrument_stock_id')->pluck('id');
+            $validReproc = SterilizationItem::whereIn('id', $latestItemIds)
+                ->where('result', Sterilization::RESULT_GAGAL)
+                ->whereIn('instrument_stock_id', $reprocIds->all())
+                ->pluck('instrument_stock_id');
+            $stockIds = $stockIds->concat($validReproc);
         }
 
+        $stockIds = $stockIds->unique()->values();
+
+        if ($stockIds->isEmpty()) {
+            return $this->error('Tidak ada unit siap-steril yang valid dipilih.', 422);
+        }
+
+        // Tgl kedaluwarsa steril otomatis (tidak diinput manual): ikut yang sudah
+        // ditetapkan saat pengemasan, yaitu tgl kemas paling awal + masa simpan.
+        $expiryDate = $validated['expiry_date'] ?? null;
+        if ($expiryDate === null) {
+            $packagedAt = $packagings->map(fn (Packaging $p) => $p->packaged_at)->filter()->sort()->first();
+            $base = $packagedAt
+                ? \Illuminate\Support\Carbon::parse($packagedAt)
+                : \Illuminate\Support\Carbon::parse($validated['sterilized_at']);
+            $expiryDate = $base->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
+        }
+
+        $reprocCount = $stockIds->count() - $packagings->flatMap(fn (Packaging $p) => ($p->washing?->production?->items ?? collect())->pluck('instrument_stock_id'))->filter()->unique()->count();
+
         try {
-            $sterilization = DB::transaction(function () use ($validated, $packagings, $stockIds) {
+            $sterilization = DB::transaction(function () use ($validated, $packagings, $stockIds, $expiryDate, $reprocCount) {
                 $sterilization = Sterilization::create([
-                    ...collect($validated)->except('packaging_ids')->all(),
-                    'packaging_code' => $packagings->first()->code, // referensi utama
+                    ...collect($validated)->except(['packaging_ids', 'reproc_stock_ids'])->all(),
+                    'packaging_code' => $packagings->first()?->code ?? 'REPROSES', // referensi utama
                     'method' => $validated['method'] ?? Sterilization::METHOD_UAP,
+                    'expiry_date' => $expiryDate,
                     'status' => Sterilization::STATUS_DIPROSES,
                 ]);
 
@@ -123,15 +167,25 @@ class SterilizationPipelineController extends Controller
                 }
 
                 // Tandai tiap PKG masuk batch ini.
-                Packaging::whereIn('id', $packagings->pluck('id'))->update(['sterilization_id' => $sterilization->id]);
+                if ($packagings->isNotEmpty()) {
+                    Packaging::whereIn('id', $packagings->pluck('id'))->update(['sterilization_id' => $sterilization->id]);
+                }
 
                 InstrumentStock::transitionMany($stockIds->all(), InstrumentStock::STATUS_STERILISASI, [
                     'context' => 'sterilization',
                     'reference' => $sterilization->code,
                 ]);
 
+                $sumber = [];
+                if ($packagings->isNotEmpty()) {
+                    $sumber[] = $packagings->count().' packaging ('.$packagings->pluck('code')->implode(', ').')';
+                }
+                if ($reprocCount > 0) {
+                    $sumber[] = $reprocCount.' unit re-proses';
+                }
+
                 PipelineEvent::record(PipelineEvent::STAGE_STERILIZATION, $sterilization->code, PipelineEvent::ACTION_DIBUAT, [
-                    'note' => 'Batch sterilisasi dibuat dari '.$packagings->count().' packaging: '.$packagings->pluck('code')->implode(', '),
+                    'note' => 'Batch sterilisasi dibuat dari '.implode(' + ', $sumber),
                 ]);
 
                 return $sterilization;
@@ -144,9 +198,13 @@ class SterilizationPipelineController extends Controller
     }
 
     /**
-     * Validasi hasil sebuah batch sterilisasi (STR diproses).
-     * - selesai (Steril): batch selesai + expiry, unit → tersedia (steril).
-     * - gagal: batch gagal, unit dibebaskan; PKG anggota kembali siap-steril.
+     * Validasi hasil sterilisasi **per unit**: operator mencentang tiap alat
+     * berhasil / gagal steril. `failed_stock_ids` = daftar instrument_stock_id yang
+     * GAGAL; unit lain dianggap berhasil.
+     * - Unit berhasil → steril & siap rilis (status `tersedia`), item `result=berhasil`.
+     * - Unit gagal → tetap belum steril, item `result=gagal` → muncul lagi di antrean
+     *   sebagai **unit re-proses lepas** (tidak ikut batch berhasil).
+     * - Status batch: `selesai` bila ada ≥1 unit berhasil, selain itu `gagal`.
      */
     public function validateResult(Request $request, Sterilization $sterilization): JsonResponse
     {
@@ -155,59 +213,77 @@ class SterilizationPipelineController extends Controller
         }
 
         $validated = $request->validate([
-            'result' => ['required', Rule::in([Sterilization::STATUS_SELESAI, Sterilization::STATUS_GAGAL])],
+            'failed_stock_ids' => 'nullable|array',
+            'failed_stock_ids.*' => 'integer',
             'chemical_indicator' => 'nullable|string|max:100',
             'biological_indicator' => 'nullable|string|max:100',
-            'expiry_date' => 'nullable|date',
             'note' => 'nullable|string',
         ]);
 
         try {
-            DB::transaction(function () use ($validated, $sterilization) {
-                $steril = $validated['result'] === Sterilization::STATUS_SELESAI;
+            $result = DB::transaction(function () use ($validated, $sterilization) {
+                $failedIds = collect($validated['failed_stock_ids'] ?? [])->map(fn ($v) => (int) $v)->unique();
+
+                $passed = [];
+                $failed = [];
+                foreach ($sterilization->items()->get() as $item) {
+                    $isFailed = $failedIds->contains((int) $item->instrument_stock_id);
+                    $item->result = $isFailed ? Sterilization::RESULT_GAGAL : Sterilization::RESULT_BERHASIL;
+                    $item->save();
+                    $isFailed ? $failed[] = $item->instrument_stock_id : $passed[] = $item->instrument_stock_id;
+                }
+
+                $anyPassed = count($passed) > 0;
 
                 $sterilization->fill(array_filter([
                     'chemical_indicator' => $validated['chemical_indicator'] ?? null,
                     'biological_indicator' => $validated['biological_indicator'] ?? null,
-                    'expiry_date' => $validated['expiry_date'] ?? null,
                     'note' => $validated['note'] ?? null,
                 ], fn ($v) => $v !== null));
-                $sterilization->status = $validated['result'];
+                $sterilization->status = $anyPassed ? Sterilization::STATUS_SELESAI : Sterilization::STATUS_GAGAL;
                 $sterilization->completed_by = auth()->user()?->name;
                 $sterilization->completed_at = now();
 
-                if ($steril && $sterilization->expiry_date === null) {
+                if ($anyPassed && $sterilization->expiry_date === null) {
                     $base = $sterilization->sterilized_at ? $sterilization->sterilized_at->copy() : now();
                     $sterilization->expiry_date = $base->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
                 }
-
                 $sterilization->save();
 
-                $stockIds = $sterilization->items()->pluck('instrument_stock_id')->all();
-                InstrumentStock::transitionMany($stockIds, InstrumentStock::STATUS_TERSEDIA, [
-                    'context' => 'sterilization',
-                    'reference' => $sterilization->code,
-                ]);
+                // Unit berhasil → steril & siap rilis.
+                if ($passed) {
+                    InstrumentStock::transitionMany($passed, InstrumentStock::STATUS_TERSEDIA, [
+                        'context' => 'sterilization',
+                        'reference' => $sterilization->code,
+                    ]);
+                }
 
-                // Gagal → lepaskan PKG anggota agar bisa dibuatkan batch ulang.
-                if (! $steril) {
-                    Packaging::where('sterilization_id', $sterilization->id)->update(['sterilization_id' => null]);
+                // Unit gagal → tetap 'sterilisasi' (belum steril); muncul di antrean
+                // re-proses sebagai unit lepas (item terbaru = gagal).
+                if ($failed) {
+                    InstrumentStock::transitionMany($failed, InstrumentStock::STATUS_STERILISASI, [
+                        'context' => 'sterilization',
+                        'reference' => $sterilization->code.' — gagal, re-proses',
+                    ]);
                 }
 
                 PipelineEvent::record(
                     PipelineEvent::STAGE_STERILIZATION,
                     $sterilization->code,
-                    $steril ? PipelineEvent::ACTION_SELESAI : PipelineEvent::ACTION_GAGAL,
-                    ['note' => $steril ? 'Sterilisasi tervalidasi (steril & siap rilis)' : 'Gagal steril, wajib re-proses'],
+                    $anyPassed ? PipelineEvent::ACTION_SELESAI : PipelineEvent::ACTION_GAGAL,
+                    ['note' => 'Validasi per unit: '.count($passed).' berhasil, '.count($failed).' gagal (re-proses)'],
                 );
+
+                return ['passed' => count($passed), 'failed' => count($failed)];
             });
 
-            return $this->success(
-                $validated['result'] === Sterilization::STATUS_SELESAI
-                    ? 'Sterilisasi tervalidasi: alat steril & siap rilis.'
-                    : 'Sterilisasi ditandai gagal: batch kembali ke antrean siap-steril.',
-                ['sterilization_code' => $sterilization->code]
-            );
+            $msg = $result['failed'] === 0
+                ? "Validasi tersimpan: {$result['passed']} unit steril & siap rilis."
+                : ($result['passed'] === 0
+                    ? "Validasi tersimpan: semua {$result['failed']} unit gagal → kembali ke antrean re-proses."
+                    : "Validasi tersimpan: {$result['passed']} unit steril, {$result['failed']} unit gagal → antre re-proses.");
+
+            return $this->success($msg, ['sterilization_code' => $sterilization->code, ...$result]);
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
@@ -222,6 +298,8 @@ class SterilizationPipelineController extends Controller
         return [
             'id' => $packaging->id,     // id PKG → dipakai saat memilih untuk batch
             'kind' => 'ready',
+            'reprocess' => false,
+            'stock_id' => null,
             'code' => $packaging->code, // PKG-NNN
             'code_transaction' => $production?->code,
             'status' => 'selesai',
@@ -234,15 +312,71 @@ class SterilizationPipelineController extends Controller
         ];
     }
 
+    /** Id sintetis untuk entri re-proses unit lepas agar tidak bentrok dengan id PKG. */
+    private const REPROC_ID_BASE = 1000000000;
+
+    /**
+     * Item "siap-steril" untuk satu unit re-proses (gagal steril sebelumnya).
+     * Ditampilkan sebagai unit lepas — bukan tray — agar bisa di-batch sendiri.
+     */
+    private function reprocPayload(SterilizationItem $item): array
+    {
+        $stock = $item->instrumentStock;
+        $name = $stock?->instrument?->name ?? 'Instrumen';
+
+        return [
+            'id' => self::REPROC_ID_BASE + (int) $item->instrument_stock_id,
+            'kind' => 'ready',
+            'reprocess' => true,
+            'stock_id' => $item->instrument_stock_id,
+            'code' => $stock?->code ?? "#{$item->instrument_stock_id}",
+            'code_transaction' => $item->sterilization?->code, // batch asal yang gagal
+            'status' => 'selesai',
+            'borrowed_by' => $name,
+            'image_url' => $stock?->instrument?->image_url,
+            'processed_at' => $item->updated_at,
+            'unit_count' => 1,
+            'units' => [[
+                'id' => $item->id,
+                'instrument_stock_id' => $item->instrument_stock_id,
+                'code' => $stock?->code,
+                'instrument' => $name,
+                'image_url' => $stock?->instrument?->image_url,
+                'source' => 'satuan',
+                'package_name' => null,
+            ]],
+            'sterilization' => null,
+        ];
+    }
+
     /** Item "menunggu validasi" dari satu batch STR (gabungan PKG). */
     private function batchPayload(Sterilization $batch): array
     {
         $batch->loadMissing(['packagings.washing.production.items.instrumentStock.instrument', 'items.instrumentStock.instrument']);
 
-        // Kumpulan unit produksi dari semua PKG anggota (punya source/package_name).
-        $units = $batch->packagings
+        // Unit produksi dari PKG anggota (punya source/package_name) — untuk gambar &
+        // memperkaya info tiap unit. Unit re-proses lepas tidak punya PKG.
+        $prodUnits = $batch->packagings
             ->flatMap(fn (Packaging $p) => $p->washing?->production?->items ?? collect())
             ->values();
+        $prodByStock = $prodUnits->keyBy('instrument_stock_id');
+
+        // Daftar unit = sterilization_items batch (sumber kebenaran: termasuk unit
+        // re-proses lepas yang tidak berasal dari PKG).
+        $units = $batch->items->map(function ($item) use ($prodByStock) {
+            $prod = $prodByStock->get($item->instrument_stock_id);
+
+            return [
+                'id' => $item->id,
+                'instrument_stock_id' => $item->instrument_stock_id,
+                'code' => $item->instrumentStock?->code,
+                'instrument' => $item->instrumentStock?->instrument?->name,
+                'image_url' => $item->instrumentStock?->instrument?->image_url,
+                'source' => $prod?->source ?? 'satuan',
+                'package_name' => $prod?->package_name,
+                'result' => $item->result,
+            ];
+        })->values();
 
         // Nama gabungan (unik) dari tiap produksi anggota.
         $names = $batch->packagings
@@ -256,10 +390,10 @@ class SterilizationPipelineController extends Controller
             'code_transaction' => $batch->packagings->map(fn ($p) => $p->washing?->production?->code)->filter()->unique()->implode(', '),
             'status' => 'sterilisasi',
             'borrowed_by' => $names ?: 'Produksi CSSD',
-            'image_url' => $this->batchImage($units),
+            'image_url' => $this->batchImage($prodUnits),
             'processed_at' => $batch->sterilized_at,
             'unit_count' => $units->count(),
-            'units' => $units->map(fn ($u) => $this->unitRow($u))->values(),
+            'units' => $units,
             'sterilization' => [
                 'id' => $batch->id,
                 'code' => $batch->code,
@@ -282,6 +416,7 @@ class SterilizationPipelineController extends Controller
     {
         return [
             'id' => $u->id,
+            'instrument_stock_id' => $u->instrument_stock_id, // dipakai untuk validasi hasil per-unit
             'code' => $u->instrumentStock?->code,
             'instrument' => $u->instrumentStock?->instrument?->name,
             'image_url' => $u->instrumentStock?->instrument?->image_url,

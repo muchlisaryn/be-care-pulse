@@ -5,11 +5,12 @@
 **Endpoint:** /api/master/orders/{order}/distribute
 **Auth:** Bearer Token (wajib)
 
-Tahap 6 — Distribusikan order steril ke unit pelayanan (Double Verification +
-tautan RM pasien). Efek:
+Tahap 6 — Distribusikan order steril ke unit pelayanan (Double Verification).
+No RM & Nama Pasien **tidak** diinput di sini — sudah diisi saat pembuatan order
+dan dibawa apa adanya ke event distribusi. Efek:
 - Unit keluar gudang (storage `keluar`).
 - Unit → status `dipinjam` (Terdistribusi / Digunakan).
-- Order → status `dipinjam` + data RM pasien, event timeline `terdistribusi`.
+- Order → status `dipinjam`, event timeline `terdistribusi`.
 - Riwayat mengunci **full traceability loop** (alat → batch sterilisasi → RM pasien).
 
 ### Path Parameter
@@ -21,8 +22,6 @@ tautan RM pasien). Efek:
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | recipient | string | Ya | Ruangan / petugas penerima (hasil scan — double verification) |
-| medical_record_no | string | Tidak | No. Rekam Medis pasien |
-| patient_name | string | Tidak | Nama pasien |
 | note | string | Tidak | Catatan |
 
 ### Response — Success (200)

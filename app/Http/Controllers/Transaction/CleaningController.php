@@ -59,7 +59,9 @@ class CleaningController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $washings = $this->cleaningQuery()
+        // includeAdvanced=true → sertakan juga washing yang sudah selesai (lanjut ke
+        // packaging) sebagai riwayat cleaning; dibedakan lewat `stage_status`.
+        $washings = $this->cleaningQuery(true)
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
@@ -226,16 +228,26 @@ class CleaningController extends Controller
         }
     }
 
-    /** Query dasar batch cleaning: washing yang belum lanjut ke packaging. */
-    private function cleaningQuery()
+    /**
+     * Query dasar batch cleaning. Default: hanya washing yang BELUM lanjut ke
+     * packaging (proses). `$includeAdvanced=true` menyertakan juga yang sudah
+     * lanjut (riwayat cleaning).
+     */
+    private function cleaningQuery(bool $includeAdvanced = false)
     {
-        return OrderWashing::with([
+        $query = OrderWashing::with([
             'washerMachine',
             'production.items.instrumentStock.instrument',
             'production.items.conditionOut',
-        ])->whereNotIn('code', Packaging::query()
-            ->whereNotNull('washing_code')
-            ->select('washing_code'));
+        ]);
+
+        if (! $includeAdvanced) {
+            $query->whereNotIn('code', Packaging::query()
+                ->whereNotNull('washing_code')
+                ->select('washing_code'));
+        }
+
+        return $query;
     }
 
     /** Bentuk respons satu batch cleaning agar cocok dengan tipe CleaningOrder di frontend. */
@@ -277,6 +289,7 @@ class CleaningController extends Controller
             'code' => $washing->code,                          // WSH-NNN (id record cleaning)
             'code_transaction' => $production?->code,          // PRD-NNN (ditampilkan di kartu)
             'status' => 'pencucian',
+            'stage_status' => $washing->status === OrderWashing::STATUS_SELESAI ? 'selesai' : 'proses', // proses | selesai (riwayat)
             'borrowed_by' => $production?->displayName(),
             'room' => null,
             'order_date' => $production?->created_at?->toDateString(),

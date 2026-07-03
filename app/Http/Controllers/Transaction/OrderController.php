@@ -113,7 +113,9 @@ class OrderController extends Controller
 
                 // Timeline: order dibuat (code_transaction masih null, diisi saat diterima).
                 OrderEvent::record(OrderEvent::TYPE_DIBUAT, $order, [
-                    'note' => 'Order peminjaman diajukan',
+                    'note' => 'Order peminjaman diajukan'
+                        .($order->medical_record_no ? ' · RM '.$order->medical_record_no : '')
+                        .($order->patient_name ? ' · '.$order->patient_name : ''),
                 ]);
 
                 return $order;
@@ -1062,11 +1064,12 @@ class OrderController extends Controller
 
     /**
      * Distribusikan order steril ke unit pelayanan (Double Verification).
-     * Body: `recipient` (ruangan/petugas penerima hasil scan), `medical_record_no`
-     * & `patient_name` (tautan RM pasien, full traceability loop).
+     * Body: `recipient` (ruangan/petugas penerima hasil scan). No RM & Nama Pasien
+     * tidak lagi diinput di sini — diisi saat pembuatan order (tautan RM pasien,
+     * full traceability loop) dan dibawa apa adanya ke event distribusi.
      *
      * Efek: unit keluar gudang (storage `keluar`), unit → `dipinjam`, order →
-     * `dipinjam` (Terdistribusi/Digunakan) + data RM, event `terdistribusi`.
+     * `dipinjam` (Terdistribusi/Digunakan), event `terdistribusi`.
      */
     public function distribute(Request $request, Order $order): JsonResponse
     {
@@ -1076,8 +1079,6 @@ class OrderController extends Controller
 
         $validated = $request->validate([
             'recipient' => 'required|string|max:255',
-            'medical_record_no' => 'nullable|string|max:100',
-            'patient_name' => 'nullable|string|max:255',
             'note' => 'nullable|string',
         ]);
 
@@ -1108,12 +1109,11 @@ class OrderController extends Controller
                 $order->status = Order::STATUS_DIPINJAM;
                 $order->distributed_to = $validated['recipient'];
                 $order->distributed_at = now();
-                $order->medical_record_no = $validated['medical_record_no'] ?? null;
-                $order->patient_name = $validated['patient_name'] ?? null;
                 $order->save();
 
-                $rm = $validated['medical_record_no'] ?? null;
-                $patient = $validated['patient_name'] ?? null;
+                // No RM & Nama Pasien diisi saat pembuatan order (bukan di distribusi).
+                $rm = $order->medical_record_no;
+                $patient = $order->patient_name;
                 OrderEvent::record(OrderEvent::TYPE_TERDISTRIBUSI, $order, [
                     'note' => 'Diterima '.$validated['recipient']
                         .($rm ? ' · RM '.$rm : '')
@@ -1141,6 +1141,11 @@ class OrderController extends Controller
         $expiry = $order->relationLoaded('sterilizations')
             ? optional($order->sterilizations->first())->expiry_date
             : null;
+        // Fallback: tgl kedaluwarsa dari unit steril di gudang (paling awal) bila
+        // batch sterilisasi order tidak menyimpan expiry.
+        if ($expiry === null && $order->relationLoaded('storages')) {
+            $expiry = $order->storages->pluck('expiry_date')->filter()->sort()->first();
+        }
 
         return [
             'id' => $order->id,

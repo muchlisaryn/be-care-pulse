@@ -11,9 +11,10 @@
 **Endpoint:** /api/master/sterilization-pipeline
 **Auth:** Bearer Token (wajib)
 
-Daftar pipeline sterilisasi produksi, gabungan dua jenis item:
-- **`kind: "ready"`** — PKG selesai packaging yang **belum masuk batch** (`sterilization_id` null). `id` = id PKG (dipakai untuk memilih ke batch).
-- **`kind: "batch"`** — batch STR berstatus `diproses` (gabungan beberapa PKG) yang **menunggu validasi**. `id` = id STR (dipakai untuk validasi).
+Daftar pipeline sterilisasi produksi, gabungan tiga jenis item:
+- **`kind: "ready"`, `reprocess: false`** — PKG (tray) selesai packaging yang **belum masuk batch** (`sterilization_id` null). `id` = id PKG (dipakai untuk memilih ke batch).
+- **`kind: "ready"`, `reprocess: true`** — **unit re-proses lepas**: unit yang gagal steril (`sterilization_item` terbarunya `gagal`), kembali antre sebagai satu unit terpisah dari tray asalnya. `id` = id sintetis (1_000_000_000 + `stock_id`), field `stock_id` = `instrument_stock_id` (dikirim sbg `reproc_stock_ids` saat mem-batch). Otomatis hilang begitu unit di-batch ulang.
+- **`kind: "batch"`** — batch STR berstatus `diproses` yang **menunggu validasi**. `id` = id STR (dipakai untuk validasi). Field `units[].result` = hasil per unit (`berhasil`/`gagal`/null).
 
 Respons dibentuk seperti paginator satu halaman.
 
