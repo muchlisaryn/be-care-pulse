@@ -95,6 +95,9 @@ class ProductionController extends Controller
                     'note' => 'Masuk tahap Cleaning (dari produksi '.$production->code.')',
                 ]);
 
+                // Perbarui tahap unit (→ pencucian).
+                InstrumentStock::syncStages($pickedStockIds);
+
                 return $production;
             });
 

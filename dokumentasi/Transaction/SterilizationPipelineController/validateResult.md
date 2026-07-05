@@ -36,8 +36,10 @@ operator mencentang tiap alat berhasil / gagal steril. Body mengirim
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | failed_stock_ids | array<int> | Tidak | `instrument_stock_id` unit yang **gagal** steril. Kosong/absen = semua unit berhasil. |
-| chemical_indicator | string | Tidak | Hasil indikator kimia (level batch) |
-| biological_indicator | string | Tidak | Hasil indikator biologis (level batch) |
+| chemical_indicator | string | Ya | Hasil indikator kimia (level batch) — wajib diisi |
+| biological_indicator | string | Tidak | (Legacy) hasil indikator biologis tunggal |
+| bio_indicator_control | string | Tidak | Indikator biologi **pembanding** — `Negatif` / `Positif` |
+| bio_indicator_test | string | Tidak | Indikator biologi **uji** — `Negatif` / `Positif` |
 | note | string | Tidak | Catatan |
 
 > Catatan: `expiry_date` **tidak** lagi diinput dari UI — otomatis (lihat `batch`).

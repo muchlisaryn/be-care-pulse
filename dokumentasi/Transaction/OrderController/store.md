@@ -27,10 +27,11 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
 | room_id | integer | Ya | Ruangan tujuan, harus ada di tabel rooms |
 | user_id | integer | Tidak | Petugas/penanggung jawab, harus ada di tabel users |
 | borrowed_by | string | Tidak | Nama peminjam (teks bebas), maksimal 255 karakter |
-| medical_record_no | string | Tidak | No. rekam medis pasien, maksimal 255 karakter |
-| patient_name | string | Tidak | Nama pasien, maksimal 255 karakter |
+| medical_record_no | string | Ya | No. rekam medis pasien, maksimal 255 karakter |
+| patient_name | string | Ya | Nama pasien, maksimal 255 karakter |
 | order_date | date | Ya | Tanggal pengajuan/pinjam (format `YYYY-MM-DD`) |
-| return_plan_date | date | Tidak | Rencana tanggal kembali |
+| order_time | string | Ya | Jam pinjam, format `H:i` (mis. `14:30`) |
+| return_plan_date | date | Tidak | Rencana tanggal kembali (satu-satunya field jadwal yang opsional) |
 | note | string | Tidak | Catatan/keperluan |
 | items | array | Ya | Minimal 1 baris permintaan |
 | items[].type | string | Ya | Jenis permintaan: `satuan` atau `paket` |
@@ -48,6 +49,7 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
   "medical_record_no": "00-12-34-56",
   "patient_name": "Budi Santoso",
   "order_date": "2026-06-08",
+  "order_time": "14:30",
   "return_plan_date": "2026-06-10",
   "note": "Untuk operasi minor",
   "items": [
@@ -73,6 +75,7 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
     "medical_record_no": "00-12-34-56",
     "patient_name": "Budi Santoso",
     "order_date": "2026-06-08",
+    "order_time": "14:30:00",
     "return_plan_date": "2026-06-10",
     "return_actual_date": null,
     "status": "diajukan",

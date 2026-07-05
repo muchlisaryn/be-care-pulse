@@ -71,6 +71,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('instrument-stocks/{instrument_stock}/qr', [InstrumentStockController::class, 'qr']);
         // Riwayat pergerakan/perubahan status unit
         Route::get('instrument-stocks/{instrument_stock}/logs', [InstrumentStockController::class, 'logs']);
+        // Tracking posisi unit di pipeline CSSD (tahap saat ini + kode produksi)
+        Route::get('instrument-stocks/{instrument_stock}/tracking', [InstrumentStockController::class, 'tracking']);
         Route::apiResource('instrument-stocks', InstrumentStockController::class);
         // Katalog instrumen CSSD (definisi Set: satuan/paket)
         Route::post('instrument-catalogs/{instrument_catalog}/image', [InstrumentCatalogController::class, 'uploadImage']);
@@ -113,6 +115,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Notifikasi kegagalan suhu/waktu pencucian (parameter di luar ambang mesin)
         Route::get('cleaning/alerts', [CleaningController::class, 'alerts']);
         Route::put('cleaning/{washing}/washing', [CleaningController::class, 'updateWashing']);
+        // Batalkan batch cleaning yang belum diproses → stok dikembalikan ke semula
+        Route::delete('cleaning/{washing}/cancel', [CleaningController::class, 'cancelWashing']);
         // Pipeline produksi — Tahap Inspection & Packaging (record PKG): list & selesai
         Route::get('packaging', [PackagingController::class, 'index']);
         Route::get('packaging/{packaging}/label', [PackagingController::class, 'label']);

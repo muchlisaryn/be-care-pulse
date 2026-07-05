@@ -14,7 +14,7 @@
 Daftar pipeline sterilisasi produksi, gabungan tiga jenis item:
 - **`kind: "ready"`, `reprocess: false`** — PKG (tray) selesai packaging yang **belum masuk batch** (`sterilization_id` null). `id` = id PKG (dipakai untuk memilih ke batch).
 - **`kind: "ready"`, `reprocess: true`** — **unit re-proses lepas**: unit yang gagal steril (`sterilization_item` terbarunya `gagal`), kembali antre sebagai satu unit terpisah dari tray asalnya. `id` = id sintetis (1_000_000_000 + `stock_id`), field `stock_id` = `instrument_stock_id` (dikirim sbg `reproc_stock_ids` saat mem-batch). Otomatis hilang begitu unit di-batch ulang.
-- **`kind: "batch"`** — batch STR berstatus `diproses` yang **menunggu validasi**. `id` = id STR (dipakai untuk validasi). Field `units[].result` = hasil per unit (`berhasil`/`gagal`/null).
+- **`kind: "batch"`** — batch STR dari pipeline produksi. Mencakup yang **menunggu validasi** (`sterilization.status = diproses`) **dan** yang sudah divalidasi sebagai **riwayat** (`sterilization.status = selesai`/`gagal`) — agar batch steril tidak hilang setelah divalidasi. `id` = id STR (dipakai untuk validasi saat `diproses`). Field `units[].result` = hasil per unit (`berhasil`/`gagal`/null). Bedakan menunggu-validasi vs riwayat lewat `sterilization.status`.
 
 Respons dibentuk seperti paginator satu halaman.
 

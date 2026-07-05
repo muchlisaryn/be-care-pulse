@@ -33,14 +33,14 @@ class InstrumentController extends Controller
                 $request->search,
                 fn ($q, $s) => $q->where('name', 'like', "%{$s}%")->orWhere('code', 'like', "%{$s}%")
             )
-            // Urutkan berdasarkan jumlah unit stok (stocks_count adalah alias withCount).
+            // Urutkan berdasarkan SISA stok (unit `tersedia`), bukan total unit.
             ->when(
                 $request->sort === 'stock_asc',
-                fn ($q) => $q->orderBy('stocks_count', 'asc')
+                fn ($q) => $q->orderBy('available_stocks_count', 'asc')
             )
             ->when(
                 $request->sort === 'stock_desc',
-                fn ($q) => $q->orderBy('stocks_count', 'desc')
+                fn ($q) => $q->orderBy('available_stocks_count', 'desc')
             )
             ->paginate(20);
 

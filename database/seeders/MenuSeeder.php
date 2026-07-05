@@ -68,10 +68,12 @@ class MenuSeeder extends Seeder
         ]);
 
         $masterCssdChildren = [
-            ['name' => 'Ruangan',       'url' => '/master/ruangan',           'sort_order' => 1],
-            ['name' => 'Set Instrumen', 'url' => '/master/katalog-instrumen', 'sort_order' => 2],
-            ['name' => 'Kondisi',       'url' => '/master/kondisi',           'sort_order' => 3],
-            ['name' => 'BMHP',          'url' => '/master/bmhp',              'sort_order' => 4],
+            ['name' => 'Ruangan',       'url' => '/master/ruangan',           'icon' => null,              'sort_order' => 1],
+            ['name' => 'Set Instrumen', 'url' => '/master/katalog-instrumen', 'icon' => null,              'sort_order' => 2],
+            ['name' => 'Kondisi',       'url' => '/master/kondisi',           'icon' => null,              'sort_order' => 3],
+            ['name' => 'BMHP',          'url' => '/master/bmhp',              'icon' => null,              'sort_order' => 4],
+            // Master mesin washer — acuan scan barcode mesin pada tahap Cleaning.
+            ['name' => 'Mesin Washer',  'url' => '/master/mesin-washer',      'icon' => 'washing-machine', 'sort_order' => 5],
         ];
 
         foreach ($masterCssdChildren as $child) {
@@ -80,6 +82,7 @@ class MenuSeeder extends Seeder
                 'parent_id' => $masterCssdParent->id,
                 'name' => $child['name'],
                 'url' => $child['url'],
+                'icon' => $child['icon'],
                 'sort_order' => $child['sort_order'],
                 'is_open' => false,
             ]);

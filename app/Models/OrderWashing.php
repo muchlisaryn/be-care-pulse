@@ -24,6 +24,9 @@ class OrderWashing extends Model
 
     public const STATUS_GAGAL = 'gagal';
 
+    // Batch dibatalkan sebelum diproses — tetap disimpan sebagai riwayat.
+    public const STATUS_BATAL = 'batal';
+
     protected $fillable = [
         'code',
         'production_code',
@@ -42,6 +45,8 @@ class OrderWashing extends Model
         'started_at',
         'completed_by',
         'completed_at',
+        'canceled_by',
+        'canceled_at',
         'created_by',
         'updated_by',
     ];
@@ -50,6 +55,7 @@ class OrderWashing extends Model
         'washed_at' => 'datetime',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
+        'canceled_at' => 'datetime',
         'duration_minutes' => 'integer',
         'alert' => 'boolean',
     ];

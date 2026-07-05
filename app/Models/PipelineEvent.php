@@ -29,6 +29,8 @@ class PipelineEvent extends Model
 
     public const ACTION_GAGAL = 'gagal';
 
+    public const ACTION_BATAL = 'batal';
+
     protected $table = 'pipeline_events';
 
     // Append-only: hanya created_at, tanpa updated_at.

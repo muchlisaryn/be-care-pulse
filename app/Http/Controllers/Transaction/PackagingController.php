@@ -85,6 +85,10 @@ class PackagingController extends Controller
                 PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $packaging->code, PipelineEvent::ACTION_SELESAI, [
                     'note' => 'Packaging selesai — indikator kimia '.$validated['chemical_indicator'].' — siap sterilisasi',
                 ]);
+
+                // Perbarui tahap unit (keluar dari pengemasan → siap sterilisasi).
+                $stockIds = $packaging->washing?->production?->items()->pluck('instrument_stock_id')->all() ?? [];
+                \App\Models\InstrumentStock::syncStages($stockIds);
             });
 
             $packaging->refresh();
@@ -180,8 +184,11 @@ class PackagingController extends Controller
             'borrowed_by' => $production?->displayName(),
             'processed_at' => $production?->completed_at ?? $packaging->started_at,
             'processed_by' => $packaging->started_by,
+            // Petugas yang menyelesaikan pengemasan + waktunya (untuk riwayat).
+            'completed_by' => $packaging->completed_by,
+            'completed_at' => $packaging->completed_at,
             'operator' => $packaging->operator,
-            'chemical_indicator' => $packaging->chemical_indicator,
+            'chemical_indicator' => $packaging->chemical_indicator, // = No. Lot indikator kimia
             'packaged_at' => $packaging->packaged_at,
             'units_count' => $units->count(),
             'items' => $items,

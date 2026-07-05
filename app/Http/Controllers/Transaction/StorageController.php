@@ -115,6 +115,9 @@ class StorageController extends Controller
                         'note' => 'Seluruh unit tersimpan di gudang steril',
                     ]);
                 }
+
+                // Perbarui tahap unit (→ disimpan di rak).
+                \App\Models\InstrumentStock::syncStages($orderStockIds);
             });
 
             $order->load([
@@ -298,6 +301,9 @@ class StorageController extends Controller
                         'note' => 'Seluruh unit tersimpan di gudang steril',
                     ]);
                 }
+
+                // Perbarui tahap unit (→ disimpan di rak).
+                \App\Models\InstrumentStock::syncStages($batchStockIds);
             });
 
             return $this->success('Unit berhasil disimpan ke gudang steril.', $this->productionIncomingPayload($sterilization->refresh()));

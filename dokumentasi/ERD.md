@@ -1,17 +1,20 @@
 # ERD — Care Pulse Backend (be-care-pulse)
 
 **Sumber:** disusun dari seluruh migrasi aktif di `database/migrations/` (kolom hasil `create` + `alter` sudah digabung).
-**Database:** MySQL (Laravel 12). **Tanggal:** 2026-07-01.
+**Database:** MySQL (Laravel 12). **Tanggal:** 2026-07-05.
 
 ## Catatan baca diagram
 
 - **Kolom audit** dimiliki hampir semua tabel domain dan **tidak ditulis ulang** di tiap entitas agar ringkas:
   `created_at`, `created_by`, `updated_at`, `updated_by`, `deleted_at`, `deleted_by` (pola `HasAuditColumns` + soft delete via `deleted_by`).
-  Pengecualian append-only (tanpa soft delete): `instrument_stock_logs` & `order_events` (hanya `created_by`/`created_at`).
+  Pengecualian append-only (tanpa soft delete): `instrument_stock_logs`, `order_events`, `pipeline_events` (hanya `created_by`/`created_at`).
 - Tabel infrastruktur Laravel (`sessions`, `cache`, `cache_locks`, `jobs`, `job_batches`, `failed_jobs`,
   `password_reset_tokens`, `personal_access_tokens`) dikecualikan dari ERD domain.
 - Nama tabel `order` adalah reserved keyword SQL (di-quote Laravel; model `Order` pakai `protected $table = 'order'`).
 - Notasi kardinalitas Mermaid: `||--o{` = satu-ke-banyak (opsional), `||--||` = satu-ke-satu.
+- **Pipeline CSSD dirangkai lewat KODE (soft link, bukan FK):** `washing.production_code → production.code`,
+  `packaging.washing_code → washing.code`, `sterilizations.packaging_code → packaging.code`,
+  `production.reference_code → order.code`. Digambar sebagai relasi putus-putus (`..o{`).
 
 ---
 
@@ -34,7 +37,7 @@ erDiagram
     instruments ||--o{ instrument_catalog_items : ""
     conditions ||--o{ instrument_catalog_items : "std kondisi"
 
-    %% ========== CSSD — ORDER & PIPELINE ==========
+    %% ========== ORDER / PEMINJAMAN ==========
     rooms ||--o{ order : "peminjam"
     users ||--o{ order : "pembuat"
     order ||--o{ order_item : "unit dipinjam"
@@ -45,16 +48,8 @@ erDiagram
     instrument_catalogs ||--o{ order_request_item : ""
     order ||--o{ order_events : "timeline"
     rooms ||--o{ order_events : ""
-    order ||--|| order_washing : "cleaning"
-    washer_machines ||--o{ order_washing : "mesin"
-    order ||--o{ sterilizations : "batch steril"
-    sterilizations ||--o{ sterilization_items : "unit"
-    instrument_stocks ||--o{ sterilization_items : ""
-    order ||--o{ instrument_storages : "penyimpanan"
-    sterilizations ||--o{ instrument_storages : ""
-    instrument_stocks ||--o{ instrument_storages : ""
 
-    %% ========== CSSD — HANDOVER (PINJAM-ALIH) ==========
+    %% ========== HANDOVER (PINJAM-ALIH) ==========
     order ||--o{ order_transfers : "asal (from)"
     order ||--o{ order_transfers : "hasil (new)"
     users ||--o{ order_transfers : "holder/requester"
@@ -62,22 +57,40 @@ erDiagram
     order_transfers ||--o{ order_transfer_items : "unit"
     instrument_stocks ||--o{ order_transfer_items : ""
 
-    %% ========== CSSD — DISTRIBUSI BMHP ==========
+    %% ========== PIPELINE CSSD (produksi -> cleaning -> packaging -> steril -> storage) ==========
+    production ||--o{ production_item : "unit batch"
+    instrument_stocks ||--o{ production_item : ""
+    conditions ||--o{ production_item : "kondisi out"
+    washer_machines ||--o{ washing : "mesin"
+    sterilizations ||--o{ packaging : "batch steril"
+    order ||--o{ sterilizations : "batch steril (nullable)"
+    sterilizations ||--o{ sterilization_items : "unit"
+    instrument_stocks ||--o{ sterilization_items : ""
+    order ||--o{ instrument_storages : "penyimpanan"
+    sterilizations ||--o{ instrument_storages : ""
+    instrument_stocks ||--o{ instrument_storages : ""
+    %% Rantai antar-tahap via kode (soft link, bukan FK):
+    production ..o{ washing : "production_code"
+    washing ..o{ packaging : "washing_code"
+    packaging ..o{ sterilizations : "packaging_code"
+    order ..o{ production : "reference_code (reprocessing)"
+
+    %% ========== DISTRIBUSI BMHP ==========
     rooms ||--o{ distributions : "tujuan"
     users ||--o{ distributions : "sender/receiver"
     distributions ||--o{ distribution_items : "isi"
     bmhps ||--o{ distribution_items : ""
 
     %% ========== CLINICAL PATHWAY ==========
-    icd10 ||--o{ template_clinical_pathway : "diagnosa"
-    template_clinical_pathway ||--o{ point_clinical_pathway : "poin"
-    categori_clinical_pathway ||--o{ point_clinical_pathway : "kategori"
-    point_clinical_pathway ||--o{ point_clinical_pathway : "sub-poin"
-    template_clinical_pathway ||--o{ asesmen_clinical_pathway : "formulir"
-    rooms ||--o{ asesmen_clinical_pathway : "ruang rawat"
-    asesmen_clinical_pathway ||--o{ asesmen_point_clinical_pathway : "ceklis"
-    point_clinical_pathway ||--o{ asesmen_point_clinical_pathway : ""
-    asesmen_clinical_pathway ||--o{ varian_clinical_pathway : "varian"
+    icd10 ||--o{ clinical_pathway_templates : "diagnosa"
+    clinical_pathway_templates ||--o{ clinical_pathway_points : "poin"
+    clinical_pathway_categories ||--o{ clinical_pathway_points : "kategori"
+    clinical_pathway_points ||--o{ clinical_pathway_points : "sub-poin"
+    clinical_pathway_templates ||--o{ clinical_pathway_assessments : "formulir"
+    rooms ||--o{ clinical_pathway_assessments : "ruang rawat"
+    clinical_pathway_assessments ||--o{ clinical_pathway_assessment_points : "ceklis"
+    clinical_pathway_points ||--o{ clinical_pathway_assessment_points : ""
+    clinical_pathway_assessments ||--o{ clinical_pathway_variances : "varian"
 
     %% ================= ENTITAS =================
     users {
@@ -144,7 +157,7 @@ erDiagram
     }
     rooms {
         bigint id PK
-        string code UK
+        string code UK "4 huruf"
         string name UK
     }
     instrument_catalogs {
@@ -165,7 +178,7 @@ erDiagram
     }
     bmhps {
         bigint id PK
-        string code UK
+        string code UK "BMHP-NNN"
         string name
         string unit
         int stock_qty
@@ -179,7 +192,7 @@ erDiagram
     }
     washer_machines {
         bigint id PK
-        string code UK
+        string code UK "WSH-NNN"
         string name
         string location
         decimal min_temperature
@@ -192,12 +205,13 @@ erDiagram
 
     order {
         bigint id PK
-        string code UK
-        string code_transaction "index; bisa dibagi antar rantai handover"
+        string code UK "ORD-NNN"
+        string code_transaction UK "INV..."
         bigint room_id FK "nullable (produksi CSSD)"
         bigint user_id FK
         string borrowed_by
         date order_date
+        time order_time
         date return_plan_date
         date return_actual_date
         string returned_by
@@ -261,9 +275,29 @@ erDiagram
         string note
         timestamp created_at
     }
-    order_washing {
+
+    production {
         bigint id PK
-        bigint order_id FK "UK (1:1)"
+        string code UK "PRD-NNN"
+        string source "internal|reprocessing"
+        string reference_code "-> order.code (soft)"
+        string status "diproses|selesai"
+        string started_by
+        string completed_by
+        text note
+    }
+    production_item {
+        bigint id PK
+        bigint production_id FK
+        bigint instrument_stock_id FK
+        string source "satuan|paket"
+        string package_name
+        bigint condition_out_id FK
+    }
+    washing {
+        bigint id PK
+        string code UK "WSH-NNN"
+        string production_code "-> production.code (soft)"
         bigint washer_machine_id FK
         string machine_no
         string operator
@@ -274,13 +308,29 @@ erDiagram
         bool alert
         string alert_message
         string failure_reason
-        string status "dalam_proses|selesai"
-        timestamp completed_at
+        string status "dalam_proses|selesai|gagal|batal"
+        string started_by
+        string completed_by
+        string canceled_by
+        timestamp canceled_at
+    }
+    packaging {
+        bigint id PK
+        string code UK "PKG-NNN"
+        string washing_code "-> washing.code (soft)"
+        bigint sterilization_id FK "nullable"
+        string operator
+        timestamp packaged_at
+        string chemical_indicator
+        string status "diproses|selesai"
+        string started_by
+        string completed_by
     }
     sterilizations {
         bigint id PK
         bigint order_id FK "nullable"
-        string code UK
+        string code UK "STR-NNN"
+        string packaging_code "-> packaging.code (soft)"
         string machine
         string method "uap|eo|plasma|panas_kering"
         string cycle_number
@@ -291,6 +341,8 @@ erDiagram
         date expiry_date
         string chemical_indicator
         string biological_indicator
+        string bio_indicator_control "Negatif|Positif"
+        string bio_indicator_test "Negatif|Positif"
         string status "diproses|selesai|gagal"
         text note
     }
@@ -311,9 +363,19 @@ erDiagram
         timestamp stored_at
         timestamp removed_at
     }
+    pipeline_events {
+        bigint id PK
+        string stage "production|washing|packaging|sterilization"
+        string code "PRD/WSH/PKG/STR-NNN"
+        string action
+        string actor
+        text note
+        timestamp created_at
+    }
+
     distributions {
         bigint id PK
-        string code UK
+        string code UK "DST-NNN"
         bigint room_id FK
         bigint sender_id FK
         bigint receiver_id FK
@@ -329,70 +391,70 @@ erDiagram
         string note
     }
 
-    categori_clinical_pathway {
+    clinical_pathway_categories {
         bigint id PK
-        int urutan UK
+        int sort_order UK
         string label
     }
-    template_clinical_pathway {
+    clinical_pathway_templates {
         bigint id PK
         bigint icd10_id FK
-        int maksimal_hari
-        text keterangan
+        int max_days
+        text description
         bool is_active
     }
-    point_clinical_pathway {
+    clinical_pathway_points {
         bigint id PK
         bigint template_id FK
-        bigint categori_id FK
+        bigint category_id FK
         bigint parent_id FK
         string label
-        string pengisi "dokter|perawat|farmasi|penunjang"
-        json hari_wajib
-        int urutan
+        string filled_by "dokter|perawat|farmasi|penunjang"
+        json required_days
+        int sort_order
     }
-    asesmen_clinical_pathway {
+    clinical_pathway_assessments {
         bigint id PK
         bigint template_id FK
-        string no_rm
-        string nama_pasien
-        string jenis_kelamin "L|P"
-        date tanggal_lahir
-        string diagnosa_masuk
-        string penyakit_utama
-        string penyakit_penyerta
-        string komplikasi
-        string tindakan
-        decimal bb
-        decimal tb
-        datetime tanggal_jam_masuk
-        datetime tanggal_jam_keluar
-        int lama_rawat
-        string rencana_rawat
-        bigint ruang_id FK
-        string kelas
-        bool rujukan
-        string verifikasi_dokter_by
-        timestamp verifikasi_dokter_at
-        string verifikasi_perawat_by
-        timestamp verifikasi_perawat_at
-        string verifikasi_pelaksana_by
-        timestamp verifikasi_pelaksana_at
+        string medical_record_no
+        string patient_name
+        string gender "L|P"
+        date birth_date
+        string admission_diagnosis
+        string primary_disease
+        string comorbidity
+        string complication
+        string procedure
+        decimal weight
+        decimal height
+        datetime admitted_at
+        datetime discharged_at
+        int length_of_stay
+        string care_plan
+        bigint room_id FK
+        string ward_class
+        bool is_referral
+        string doctor_verified_by
+        timestamp doctor_verified_at
+        string nurse_verified_by
+        timestamp nurse_verified_at
+        string executor_verified_by
+        timestamp executor_verified_at
     }
-    asesmen_point_clinical_pathway {
+    clinical_pathway_assessment_points {
         bigint id PK
-        bigint asesmen_id FK
+        bigint assessment_id FK
         bigint point_id FK
-        json checked_hari
-        text keterangan
+        json checked_days
+        text note
     }
-    varian_clinical_pathway {
+    clinical_pathway_variances {
         bigint id PK
-        bigint asesmen_id FK
-        datetime tanggal_waktu
-        text varian
-        text alasan
-        string paraf
+        bigint assessment_id FK
+        datetime occurred_at
+        text variance
+        text reason
+        string initials
     }
 ```
 
@@ -419,7 +481,7 @@ erDiagram
 | instruments | instrument_catalog_items | instrument_id | cascade |
 | conditions | instrument_catalog_items | standard_condition_id | set null |
 
-### CSSD — Order & Pipeline
+### Order & Handover
 | Parent | Child | FK | onDelete |
 |---|---|---|---|
 | rooms | order | room_id | restrict (kolom nullable) |
@@ -430,19 +492,8 @@ erDiagram
 | order | order_request_item | order_id | cascade |
 | instruments | order_request_item | instrument_id | null |
 | instrument_catalogs | order_request_item | instrument_catalog_id | null |
-| order | order_washing | order_id (**unique → 1:1**) | cascade |
-| washer_machines | order_washing | washer_machine_id | null |
-| order | sterilizations | order_id (nullable) | null |
-| sterilizations | sterilization_items | sterilization_id | cascade |
-| instrument_stocks | sterilization_items | instrument_stock_id | restrict, **unique(sterilization_id, instrument_stock_id)** |
-| order / sterilizations | instrument_storages | order_id / sterilization_id | null |
-| instrument_stocks | instrument_storages | instrument_stock_id | restrict |
 | order | order_events | order_id | cascade (append-only) |
 | rooms | order_events | room_id | null |
-
-### CSSD — Handover (Pinjam-alih)
-| Parent | Child | FK | onDelete |
-|---|---|---|---|
 | order | order_transfers | from_order_id | cascade |
 | order | order_transfers | new_order_id | null |
 | users | order_transfers | holder_user_id / requested_by_user_id | cascade |
@@ -450,7 +501,23 @@ erDiagram
 | order_transfers | order_transfer_items | order_transfer_id | cascade |
 | instrument_stocks | order_transfer_items | instrument_stock_id | cascade |
 
-### CSSD — Distribusi BMHP
+### Pipeline CSSD
+| Parent | Child | FK / Link | onDelete |
+|---|---|---|---|
+| production | production_item | production_id | cascade |
+| instrument_stocks | production_item | instrument_stock_id | restrict |
+| conditions | production_item | condition_out_id | null |
+| washer_machines | washing | washer_machine_id | null |
+| sterilizations | packaging | sterilization_id (nullable) | null |
+| order | sterilizations | order_id (nullable) | null |
+| sterilizations | sterilization_items | sterilization_id | cascade |
+| instrument_stocks | sterilization_items | instrument_stock_id | restrict, **unique(sterilization_id, instrument_stock_id)** |
+| order / sterilizations | instrument_storages | order_id / sterilization_id | null |
+| instrument_stocks | instrument_storages | instrument_stock_id | restrict |
+| production → washing → packaging → sterilizations | (rantai) | *_code | **soft link (bukan FK)** |
+| pipeline_events | — | standalone (append-only, index `stage`+`code`) | — |
+
+### Distribusi BMHP
 | Parent | Child | FK | onDelete |
 |---|---|---|---|
 | rooms | distributions | room_id | restrict |
@@ -461,15 +528,15 @@ erDiagram
 ### Clinical Pathway
 | Parent | Child | FK | onDelete |
 |---|---|---|---|
-| icd10 | template_clinical_pathway | icd10_id | cascade |
-| template_clinical_pathway | point_clinical_pathway | template_id | cascade |
-| categori_clinical_pathway | point_clinical_pathway | categori_id | cascade |
-| point_clinical_pathway | point_clinical_pathway (self) | parent_id | (di-handle aplikasi) |
-| template_clinical_pathway | asesmen_clinical_pathway | template_id | cascade |
-| rooms | asesmen_clinical_pathway | ruang_id | null |
-| asesmen_clinical_pathway | asesmen_point_clinical_pathway | asesmen_id | cascade, **unique(asesmen_id, point_id)** |
-| point_clinical_pathway | asesmen_point_clinical_pathway | point_id | cascade |
-| asesmen_clinical_pathway | varian_clinical_pathway | asesmen_id | cascade |
+| icd10 | clinical_pathway_templates | icd10_id | cascade |
+| clinical_pathway_templates | clinical_pathway_points | template_id | cascade |
+| clinical_pathway_categories | clinical_pathway_points | category_id | cascade |
+| clinical_pathway_points | clinical_pathway_points (self) | parent_id | (di-handle aplikasi) |
+| clinical_pathway_templates | clinical_pathway_assessments | template_id | cascade |
+| rooms | clinical_pathway_assessments | room_id | null |
+| clinical_pathway_assessments | clinical_pathway_assessment_points | assessment_id | cascade, **unique(assessment_id, point_id)** |
+| clinical_pathway_points | clinical_pathway_assessment_points | point_id | cascade |
+| clinical_pathway_assessments | clinical_pathway_variances | assessment_id | cascade |
 
 ---
 

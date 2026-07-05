@@ -48,9 +48,12 @@ class SterilizationPipelineController extends Controller
             ->get()
             ->map(fn (Packaging $p) => $this->readyPayload($p));
 
-        // Batch STR yang sedang diproses (menunggu validasi) dari pipeline produksi.
+        // Batch STR dari pipeline produksi: yang sedang diproses (menunggu validasi)
+        // + yang sudah divalidasi (selesai/gagal) sebagai RIWAYAT — agar batch steril
+        // tidak hilang dari tampilan setelah divalidasi. FE memisahkan lewat
+        // `sterilization.status`.
         $batches = Sterilization::with(['packagings.washing.production.items.instrumentStock.instrument', 'items.instrumentStock.instrument'])
-            ->where('status', Sterilization::STATUS_DIPROSES)
+            ->whereIn('status', [Sterilization::STATUS_DIPROSES, Sterilization::STATUS_SELESAI, Sterilization::STATUS_GAGAL])
             ->whereNull('order_id')
             ->when($search, fn ($q, $s) => $q->where('code', 'like', "%{$s}%"))
             ->orderByDesc('id')
@@ -176,6 +179,9 @@ class SterilizationPipelineController extends Controller
                     'reference' => $sterilization->code,
                 ]);
 
+                // Perbarui tahap unit (→ sterilisasi).
+                InstrumentStock::syncStages($stockIds->all());
+
                 $sumber = [];
                 if ($packagings->isNotEmpty()) {
                     $sumber[] = $packagings->count().' packaging ('.$packagings->pluck('code')->implode(', ').')';
@@ -215,8 +221,12 @@ class SterilizationPipelineController extends Controller
         $validated = $request->validate([
             'failed_stock_ids' => 'nullable|array',
             'failed_stock_ids.*' => 'integer',
-            'chemical_indicator' => 'nullable|string|max:100',
+            // Indikator kimia wajib diisi saat validasi hasil sterilisasi.
+            'chemical_indicator' => 'required|string|max:100',
             'biological_indicator' => 'nullable|string|max:100',
+            // Indikator biologis: pembanding (kontrol) & uji — Negatif / Positif.
+            'bio_indicator_control' => ['nullable', Rule::in(['Negatif', 'Positif'])],
+            'bio_indicator_test' => ['nullable', Rule::in(['Negatif', 'Positif'])],
             'note' => 'nullable|string',
         ]);
 
@@ -238,6 +248,8 @@ class SterilizationPipelineController extends Controller
                 $sterilization->fill(array_filter([
                     'chemical_indicator' => $validated['chemical_indicator'] ?? null,
                     'biological_indicator' => $validated['biological_indicator'] ?? null,
+                    'bio_indicator_control' => $validated['bio_indicator_control'] ?? null,
+                    'bio_indicator_test' => $validated['bio_indicator_test'] ?? null,
                     'note' => $validated['note'] ?? null,
                 ], fn ($v) => $v !== null));
                 $sterilization->status = $anyPassed ? Sterilization::STATUS_SELESAI : Sterilization::STATUS_GAGAL;
@@ -266,6 +278,10 @@ class SterilizationPipelineController extends Controller
                         'reference' => $sterilization->code.' — gagal, re-proses',
                     ]);
                 }
+
+                // Perbarui tahap unit setelah validasi (berhasil → tersedia/lanjut simpan;
+                // gagal → kembali antre proses).
+                InstrumentStock::syncStages(array_merge($passed, $failed));
 
                 PipelineEvent::record(
                     PipelineEvent::STAGE_STERILIZATION,
@@ -406,7 +422,14 @@ class SterilizationPipelineController extends Controller
                 'expiry_date' => $batch->expiry_date,
                 'chemical_indicator' => $batch->chemical_indicator,
                 'biological_indicator' => $batch->biological_indicator,
+                'bio_indicator_control' => $batch->bio_indicator_control,
+                'bio_indicator_test' => $batch->bio_indicator_test,
+                'note' => $batch->note,
                 'status' => $batch->status,
+                // Jejak petugas: yang membuat/menjalankan batch & yang memvalidasi hasil.
+                'processed_by' => $batch->created_by,
+                'validated_by' => $batch->completed_by,
+                'validated_at' => $batch->completed_at,
             ],
         ];
     }

@@ -50,6 +50,8 @@ fisik sudah dikunci sejak tahap Produksi.
         "borrowed_by": "SET PARTUS",
         "processed_at": "2026-07-02T08:00:00.000000Z",
         "processed_by": "Admin",
+        "completed_by": null,
+        "completed_at": null,
         "operator": null,
         "chemical_indicator": null,
         "packaged_at": null,

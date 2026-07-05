@@ -61,6 +61,8 @@ class Sterilization extends Model
         'expiry_date',
         'chemical_indicator',
         'biological_indicator',
+        'bio_indicator_control',
+        'bio_indicator_test',
         'status',
         'note',
         'started_by',
