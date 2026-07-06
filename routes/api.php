@@ -15,6 +15,7 @@ use App\Http\Controllers\Master\InstrumentController;
 use App\Http\Controllers\Master\InstrumentStockController;
 use App\Http\Controllers\Master\MenuController;
 use App\Http\Controllers\Master\RoomController;
+use App\Http\Controllers\Master\RackController;
 use App\Http\Controllers\Master\TitleMenuController;
 use App\Http\Controllers\Master\UserController;
 use App\Http\Controllers\Master\WasherMachineController;
@@ -89,6 +90,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('washer-machines/scan', [WasherMachineController::class, 'scan']);
         Route::apiResource('washer-machines', WasherMachineController::class)
             ->parameters(['washer-machines' => 'washer_machine']);
+
+        // Master rak gudang steril — pilihan lokasi rak saat "Simpan ke Gudang"
+        Route::get('racks/options', [RackController::class, 'options']);
+        Route::apiResource('racks', RackController::class);
 
         // Monitoring ruangan: unit instrumen yang sedang dipinjam per ruangan
         Route::get('monitoring/rooms', [MonitoringController::class, 'rooms']);

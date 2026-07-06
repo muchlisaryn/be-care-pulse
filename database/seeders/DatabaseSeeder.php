@@ -18,6 +18,8 @@ class DatabaseSeeder extends Seeder
             TitleMenuSeeder::class,
             MenuSeeder::class,
             AuthoritySeeder::class,
+            // Menu tambahan pasca-rilis (idempotent) — aman untuk DB lama & baru.
+            RakMenuSeeder::class,
             AdminUserSeeder::class,
             RoomSeeder::class,
             ConditionSeeder::class,

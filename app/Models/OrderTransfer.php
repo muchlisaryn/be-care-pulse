@@ -33,6 +33,8 @@ class OrderTransfer extends Model
         'requested_by_user_id',
         'to_room_id',
         'borrowed_by',
+        'medical_record_no',
+        'patient_name',
         'note',
         'status',
         'responded_at',

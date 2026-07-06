@@ -71,6 +71,9 @@ class OrderTransferController extends Controller
             'from_order_id' => 'required|integer|exists:order,id',
             'to_room_id' => 'required|integer|exists:rooms,id',
             'borrowed_by' => 'nullable|string|max:255',
+            // Pinjam-alih bisa untuk pasien berbeda dari order sumber → dicatat per permintaan.
+            'medical_record_no' => 'required|string|max:255',
+            'patient_name' => 'required|string|max:255',
             'note' => 'nullable|string',
             'instrument_stock_ids' => 'required|array|min:1',
             'instrument_stock_ids.*' => 'integer',
@@ -115,6 +118,8 @@ class OrderTransferController extends Controller
                     'requested_by_user_id' => auth()->id(),
                     'to_room_id' => $validated['to_room_id'],
                     'borrowed_by' => $validated['borrowed_by'] ?? null,
+                    'medical_record_no' => $validated['medical_record_no'],
+                    'patient_name' => $validated['patient_name'],
                     'note' => $validated['note'] ?? null,
                     'status' => OrderTransfer::STATUS_PENDING,
                 ]);
@@ -178,6 +183,9 @@ class OrderTransferController extends Controller
                     'user_id' => $orderTransfer->requested_by_user_id,
                     'code_transaction' => $fromOrder->code_transaction,
                     'borrowed_by' => $orderTransfer->borrowed_by,
+                    // Pasien pinjam-alih (bisa berbeda dari order sumber); fallback ke sumber.
+                    'medical_record_no' => $orderTransfer->medical_record_no ?? $fromOrder->medical_record_no,
+                    'patient_name' => $orderTransfer->patient_name ?? $fromOrder->patient_name,
                     'order_date' => now()->toDateString(),
                     'return_plan_date' => $fromOrder->return_plan_date,
                     'status' => Order::STATUS_DIPINJAM,

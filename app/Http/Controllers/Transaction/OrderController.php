@@ -213,6 +213,8 @@ class OrderController extends Controller
             'code' => $o->code,
             'code_transaction' => $o->code_transaction,
             'borrowed_by' => $o->borrowed_by ?? $o->user?->name,
+            'medical_record_no' => $o->medical_record_no,
+            'patient_name' => $o->patient_name,
             'room' => $o->room ? ['id' => $o->room->id, 'name' => $o->room->name] : null,
             'order_date' => $o->order_date,
             'return_plan_date' => $o->return_plan_date,

@@ -74,6 +74,8 @@ class MenuSeeder extends Seeder
             ['name' => 'BMHP',          'url' => '/master/bmhp',              'icon' => null,              'sort_order' => 4],
             // Master mesin washer — acuan scan barcode mesin pada tahap Cleaning.
             ['name' => 'Mesin Washer',  'url' => '/master/mesin-washer',      'icon' => 'washing-machine', 'sort_order' => 5],
+            // Master rak — pilihan lokasi rak saat menyimpan unit steril ke gudang.
+            ['name' => 'Rak',           'url' => '/master/rak',               'icon' => 'archive',         'sort_order' => 6],
         ];
 
         foreach ($masterCssdChildren as $child) {
