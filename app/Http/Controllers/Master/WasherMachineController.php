@@ -106,6 +106,8 @@ class WasherMachineController extends Controller
             'max_temperature' => ['nullable', 'numeric', Rule::when($request->filled('min_temperature'), 'gte:min_temperature')],
             'min_duration_minutes' => 'nullable|integer|min:0',
             'max_duration_minutes' => ['nullable', 'integer', 'min:0', Rule::when($request->filled('min_duration_minutes'), 'gte:min_duration_minutes')],
+            // Batas steril: masa simpan steril (hari) untuk alat yang dicuci di mesin ini.
+            'sterile_shelf_life_days' => 'nullable|integer|min:1',
             'status' => 'nullable|in:aktif,nonaktif',
             'note' => 'nullable|string',
         ]);

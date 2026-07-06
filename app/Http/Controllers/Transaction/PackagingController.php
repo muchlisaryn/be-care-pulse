@@ -24,6 +24,7 @@ class PackagingController extends Controller
     private const CHAIN = [
         'washing.production.items.instrumentStock.instrument',
         'washing.production.items.conditionOut',
+        'washing.washerMachine',
     ];
 
     /**
@@ -128,7 +129,10 @@ class PackagingController extends Controller
         $units = $production ? $production->items : collect();
 
         $packagedAt = $packaging->packaged_at ?? now();
-        $expiry = $packagedAt->copy()->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
+        // Batas steril ikut mesin washer yang dipakai saat cleaning; fallback default.
+        $shelfLifeDays = $packaging->washing?->washerMachine?->sterile_shelf_life_days
+            ?? Sterilization::STERILE_SHELF_LIFE_DAYS;
+        $expiry = $packagedAt->copy()->addDays($shelfLifeDays)->toDateString();
 
         return [
             'batch' => $production?->code ?? $packaging->code, // Nomor Batch (PRD / PKG)

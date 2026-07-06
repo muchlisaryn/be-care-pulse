@@ -27,6 +27,7 @@ class WasherMachine extends Model
         'max_temperature',
         'min_duration_minutes',
         'max_duration_minutes',
+        'sterile_shelf_life_days',
         'status',
         'note',
         'created_by',
@@ -38,6 +39,7 @@ class WasherMachine extends Model
         'max_temperature' => 'decimal:2',
         'min_duration_minutes' => 'integer',
         'max_duration_minutes' => 'integer',
+        'sterile_shelf_life_days' => 'integer',
     ];
 
     protected static function generateUniqueCode($model): string
