@@ -43,6 +43,11 @@ class Sterilization extends Model
     // operator tidak mengisinya saat validasi: expiry = tgl sterilisasi + N hari.
     public const STERILE_SHELF_LIFE_DAYS = 7;
 
+    // Hasil validasi per unit (kolom `result` pada sterilization_items).
+    public const RESULT_BERHASIL = 'berhasil';
+
+    public const RESULT_GAGAL = 'gagal';
+
     protected $fillable = [
         'order_id',
         'packaging_code',
@@ -56,6 +61,8 @@ class Sterilization extends Model
         'expiry_date',
         'chemical_indicator',
         'biological_indicator',
+        'bio_indicator_control',
+        'bio_indicator_test',
         'status',
         'note',
         'started_by',

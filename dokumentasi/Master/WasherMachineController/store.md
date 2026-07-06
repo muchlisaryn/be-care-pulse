@@ -18,9 +18,9 @@ Tambah master mesin pencuci. `code` (barcode WSH-NNN) di-generate otomatis.
 | name | string | Ya | Nama mesin |
 | location | string | Tidak | Lokasi penempatan |
 | min_temperature | numeric | Tidak | Ambang suhu minimum (°C) |
-| max_temperature | numeric | Tidak | Ambang suhu maksimum (°C), ≥ min_temperature |
+| max_temperature | numeric | Tidak | Ambang suhu maksimum (°C); wajib ≥ min_temperature **hanya bila** min_temperature diisi |
 | min_duration_minutes | integer | Tidak | Ambang durasi minimum (menit) |
-| max_duration_minutes | integer | Tidak | Ambang durasi maksimum (menit), ≥ min_duration_minutes |
+| max_duration_minutes | integer | Tidak | Ambang durasi maksimum (menit); wajib ≥ min_duration_minutes **hanya bila** min_duration_minutes diisi |
 | status | string | Tidak | `aktif` (default) / `nonaktif` |
 | note | string | Tidak | Catatan |
 

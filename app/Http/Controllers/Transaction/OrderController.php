@@ -10,7 +10,10 @@ use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\OrderItem;
 use App\Models\OrderTransfer;
+use App\Models\OrderWashing;
+use App\Models\ProductionItem;
 use App\Models\Sterilization;
+use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -67,10 +70,12 @@ class OrderController extends Controller
             'room_id' => 'required|integer|exists:rooms,id',
             'user_id' => 'nullable|integer|exists:users,id',
             'borrowed_by' => 'nullable|string|max:255',
-            // Identitas pasien (opsional) — no. rekam medis & nama pasien.
-            'medical_record_no' => 'nullable|string|max:255',
-            'patient_name' => 'nullable|string|max:255',
+            // Identitas pasien (WAJIB) — no. rekam medis & nama pasien.
+            'medical_record_no' => 'required|string|max:255',
+            'patient_name' => 'required|string|max:255',
             'order_date' => 'required|date',
+            // Jam pinjam WAJIB; hanya rencana kembali yang opsional.
+            'order_time' => 'required|date_format:H:i',
             'return_plan_date' => 'nullable|date',
             'note' => 'nullable|string',
             // Baris permintaan: hanya jumlah. Unit fisik (order_item) di-generate
@@ -92,9 +97,10 @@ class OrderController extends Controller
                     'user_id' => $validated['user_id'] ?? auth()->id(),
                     // Nama peminjam (teks bebas) — diisi manual di form.
                     'borrowed_by' => $validated['borrowed_by'] ?? null,
-                    'medical_record_no' => $validated['medical_record_no'] ?? null,
-                    'patient_name' => $validated['patient_name'] ?? null,
+                    'medical_record_no' => $validated['medical_record_no'],
+                    'patient_name' => $validated['patient_name'],
                     'order_date' => $validated['order_date'],
+                    'order_time' => $validated['order_time'],
                     'return_plan_date' => $validated['return_plan_date'] ?? null,
                     'note' => $validated['note'] ?? null,
                     'status' => Order::STATUS_DIAJUKAN,
@@ -113,7 +119,9 @@ class OrderController extends Controller
 
                 // Timeline: order dibuat (code_transaction masih null, diisi saat diterima).
                 OrderEvent::record(OrderEvent::TYPE_DIBUAT, $order, [
-                    'note' => 'Order peminjaman diajukan',
+                    'note' => 'Order peminjaman diajukan'
+                        .($order->medical_record_no ? ' · RM '.$order->medical_record_no : '')
+                        .($order->patient_name ? ' · '.$order->patient_name : ''),
                 ]);
 
                 return $order;
@@ -1062,11 +1070,12 @@ class OrderController extends Controller
 
     /**
      * Distribusikan order steril ke unit pelayanan (Double Verification).
-     * Body: `recipient` (ruangan/petugas penerima hasil scan), `medical_record_no`
-     * & `patient_name` (tautan RM pasien, full traceability loop).
+     * Body: `recipient` (ruangan/petugas penerima hasil scan). No RM & Nama Pasien
+     * tidak lagi diinput di sini — diisi saat pembuatan order (tautan RM pasien,
+     * full traceability loop) dan dibawa apa adanya ke event distribusi.
      *
      * Efek: unit keluar gudang (storage `keluar`), unit → `dipinjam`, order →
-     * `dipinjam` (Terdistribusi/Digunakan) + data RM, event `terdistribusi`.
+     * `dipinjam` (Terdistribusi/Digunakan), event `terdistribusi`.
      */
     public function distribute(Request $request, Order $order): JsonResponse
     {
@@ -1076,8 +1085,6 @@ class OrderController extends Controller
 
         $validated = $request->validate([
             'recipient' => 'required|string|max:255',
-            'medical_record_no' => 'nullable|string|max:100',
-            'patient_name' => 'nullable|string|max:255',
             'note' => 'nullable|string',
         ]);
 
@@ -1108,12 +1115,11 @@ class OrderController extends Controller
                 $order->status = Order::STATUS_DIPINJAM;
                 $order->distributed_to = $validated['recipient'];
                 $order->distributed_at = now();
-                $order->medical_record_no = $validated['medical_record_no'] ?? null;
-                $order->patient_name = $validated['patient_name'] ?? null;
                 $order->save();
 
-                $rm = $validated['medical_record_no'] ?? null;
-                $patient = $validated['patient_name'] ?? null;
+                // No RM & Nama Pasien diisi saat pembuatan order (bukan di distribusi).
+                $rm = $order->medical_record_no;
+                $patient = $order->patient_name;
                 OrderEvent::record(OrderEvent::TYPE_TERDISTRIBUSI, $order, [
                     'note' => 'Diterima '.$validated['recipient']
                         .($rm ? ' · RM '.$rm : '')
@@ -1141,6 +1147,11 @@ class OrderController extends Controller
         $expiry = $order->relationLoaded('sterilizations')
             ? optional($order->sterilizations->first())->expiry_date
             : null;
+        // Fallback: tgl kedaluwarsa dari unit steril di gudang (paling awal) bila
+        // batch sterilisasi order tidak menyimpan expiry.
+        if ($expiry === null && $order->relationLoaded('storages')) {
+            $expiry = $order->storages->pluck('expiry_date')->filter()->sort()->first();
+        }
 
         return [
             'id' => $order->id,
@@ -1336,10 +1347,8 @@ class OrderController extends Controller
             $orderIds = collect([$order->id]);
         }
 
-        $events = OrderEvent::with('room')
+        $orderEvents = OrderEvent::with('room')
             ->whereIn('order_id', $orderIds)
-            ->orderBy('created_at')
-            ->orderBy('id')
             ->get()
             ->map(fn (OrderEvent $e) => [
                 'id' => $e->id,
@@ -1351,7 +1360,109 @@ class OrderController extends Controller
                 'created_at' => $e->created_at,
             ]);
 
+        // Riwayat pipeline CSSD (Produksi → Cleaning → Sterilisasi → Simpan Rak)
+        // yang menghasilkan unit yang dipinjam — ditelusuri dari KODE PRODUKSI tiap
+        // unit, dibaca langsung dari tabel tiap tahap agar semuanya terekam.
+        $stockIds = OrderItem::whereIn('order_id', $orderIds)
+            ->pluck('instrument_stock_id')->filter()->unique();
+        $pipeline = $this->pipelineTimeline($stockIds);
+
+        // Gabung & urut kronologis (produksi/steril/simpan terjadi sebelum dipinjam).
+        $events = $orderEvents->concat($pipeline)
+            ->sortBy(fn ($e) => optional($e['created_at'])->timestamp ?? 0)
+            ->values();
+
         $order->setAttribute('timeline', $events);
+    }
+
+    /**
+     * Rangkai riwayat pipeline CSSD untuk sekumpulan unit (instrument_stock_id):
+     * Produksi (batch terbaru tiap unit) → Cleaning (via production_code) →
+     * Sterilisasi (batch terbaru tiap unit) → Simpan di Rak (instrument_storages).
+     * Setiap tahap dibaca dari tabelnya langsung agar dijamin ter-record.
+     *
+     * @param  \Illuminate\Support\Collection<int,int>  $stockIds
+     * @return \Illuminate\Support\Collection<int,array<string,mixed>>
+     */
+    private function pipelineTimeline($stockIds): \Illuminate\Support\Collection
+    {
+        $stockIds = collect($stockIds)->filter()->unique()->values();
+        if ($stockIds->isEmpty()) {
+            return collect();
+        }
+
+        $events = collect();
+        $seq = 0;
+        $push = function (string $type, $at, ?string $actor, ?string $note) use (&$events, &$seq) {
+            $events->push([
+                // Id sintetis negatif → unik & tidak bentrok dengan id OrderEvent.
+                'id' => -(++$seq),
+                'type' => $type,
+                'room' => null,
+                'actor' => $actor,
+                'borrowed_by' => null,
+                'note' => $note,
+                'created_at' => $at,
+            ]);
+        };
+
+        // 1. Produksi — batch produksi TERBARU tiap unit (siklus aktif), dedup per batch.
+        $prodItemIds = ProductionItem::selectRaw('MAX(id) as id')
+            ->whereIn('instrument_stock_id', $stockIds)
+            ->groupBy('instrument_stock_id')
+            ->pluck('id');
+        $productions = ProductionItem::with('production')
+            ->whereIn('id', $prodItemIds)
+            ->get()
+            ->pluck('production')->filter()->unique('id');
+
+        foreach ($productions as $p) {
+            $push('produksi', $p->completed_at ?? $p->created_at, $p->completed_by ?? $p->created_by, "Batch produksi {$p->code}");
+        }
+
+        // 2. Cleaning — tahap washing yang mengalir dari batch produksi (via production_code).
+        $washings = OrderWashing::whereIn('production_code', $productions->pluck('code'))->get();
+        foreach ($washings as $w) {
+            $type = match ($w->status) {
+                OrderWashing::STATUS_SELESAI => 'selesai_cuci',
+                OrderWashing::STATUS_GAGAL => 'gagal_cuci',
+                default => 'diproses',
+            };
+            $push($type, $w->completed_at ?? $w->started_at ?? $w->created_at, $w->completed_by ?? $w->started_by, "Cleaning {$w->code}");
+        }
+
+        // 3. Sterilisasi — batch steril TERBARU tiap unit, dedup per batch.
+        $sterItemIds = SterilizationItem::selectRaw('MAX(id) as id')
+            ->whereIn('instrument_stock_id', $stockIds)
+            ->groupBy('instrument_stock_id')
+            ->pluck('id');
+        $sters = SterilizationItem::with('sterilization')
+            ->whereIn('id', $sterItemIds)
+            ->get()
+            ->pluck('sterilization')->filter()->unique('id');
+
+        foreach ($sters as $s) {
+            $type = match ($s->status) {
+                Sterilization::STATUS_SELESAI => 'steril',
+                Sterilization::STATUS_GAGAL => 'gagal_steril',
+                default => 'disterilkan',
+            };
+            $push($type, $s->completed_at ?? $s->sterilized_at ?? $s->created_at, $s->completed_by ?? $s->created_by, "Sterilisasi {$s->code}");
+        }
+
+        // 4. Simpan di Rak — penempatan TERBARU tiap unit di gudang steril (siklus
+        // aktif), dikelompokkan per rak.
+        $storageIds = InstrumentStorage::selectRaw('MAX(id) as id')
+            ->whereIn('instrument_stock_id', $stockIds)
+            ->groupBy('instrument_stock_id')
+            ->pluck('id');
+        $storages = InstrumentStorage::whereIn('id', $storageIds)->get();
+        foreach ($storages->groupBy('rack_code') as $rack => $rows) {
+            $first = $rows->sortBy('stored_at')->first();
+            $push('disimpan', $first->stored_at ?? $first->created_at, $first->created_by, "Disimpan di rak {$rack} ({$rows->count()} unit)");
+        }
+
+        return $events;
     }
 
     public function update(Request $request, Order $order): JsonResponse

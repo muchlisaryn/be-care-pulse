@@ -11,12 +11,16 @@
 **Endpoint:** /api/master/sterilization-pipeline/{sterilization}/validate
 **Auth:** Bearer Token (wajib)
 
-Memvalidasi hasil sebuah batch sterilisasi (STR berstatus `diproses`) pada pipeline produksi.
+Memvalidasi hasil sebuah batch sterilisasi (STR berstatus `diproses`) **per unit**:
+operator mencentang tiap alat berhasil / gagal steril. Body mengirim
+`failed_stock_ids` = daftar `instrument_stock_id` yang **gagal**; unit lain dianggap berhasil.
 
-- `result = selesai` (Steril): batch → `selesai`, `expiry_date` otomatis bila kosong
-  (= tgl sterilisasi + masa simpan default 7 hari), seluruh unit → `tersedia` (steril).
-- `result = gagal`: batch → `gagal`, unit dibebaskan, dan **semua PKG anggota** dilepas
-  (`sterilization_id` di-null-kan) sehingga kembali muncul sebagai siap-steril.
+- **Unit berhasil** → item `result = berhasil`, unit → `tersedia` (steril & siap rilis).
+- **Unit gagal** → item `result = gagal`, unit tetap belum steril (`sterilisasi`) dan
+  **muncul kembali sebagai unit re-proses lepas** di `GET /master/sterilization-pipeline`
+  (`reprocess: true`) — tidak ikut batch yang berhasil.
+- **Status batch:** `selesai` bila ada ≥1 unit berhasil, selain itu `gagal`. `expiry_date`
+  diisi otomatis bila kosong (= tgl sterilisasi + masa simpan default 7 hari) saat ada unit berhasil.
 
 ### Path Parameters
 | Parameter | Type | Keterangan |
@@ -31,11 +35,14 @@ Memvalidasi hasil sebuah batch sterilisasi (STR berstatus `diproses`) pada pipel
 ### Body Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| result | string | Ya | `selesai` (Steril) atau `gagal` |
-| chemical_indicator | string | Tidak | Hasil indikator kimia |
-| biological_indicator | string | Tidak | Hasil indikator biologis |
-| expiry_date | date | Tidak | Kedaluwarsa steril (override otomatis) |
+| failed_stock_ids | array<int> | Tidak | `instrument_stock_id` unit yang **gagal** steril. Kosong/absen = semua unit berhasil. |
+| chemical_indicator | string | Ya | Hasil indikator kimia (level batch) — wajib diisi |
+| biological_indicator | string | Tidak | (Legacy) hasil indikator biologis tunggal |
+| bio_indicator_control | string | Tidak | Indikator biologi **pembanding** — `Negatif` / `Positif` |
+| bio_indicator_test | string | Tidak | Indikator biologi **uji** — `Negatif` / `Positif` |
 | note | string | Tidak | Catatan |
+
+> Catatan: `expiry_date` **tidak** lagi diinput dari UI — otomatis (lihat `batch`).
 
 ### Response
 
@@ -43,8 +50,8 @@ Memvalidasi hasil sebuah batch sterilisasi (STR berstatus `diproses`) pada pipel
 ```json
 {
   "status": true,
-  "message": "Sterilisasi tervalidasi: alat steril & siap rilis.",
-  "data": { "sterilization_code": "STR-007" }
+  "message": "Validasi tersimpan: 5 unit steril, 1 unit gagal → antre re-proses.",
+  "data": { "sterilization_code": "STR-007", "passed": 5, "failed": 1 }
 }
 ```
 

@@ -12,9 +12,12 @@
 **Auth:** Bearer Token (wajib)
 
 Daftar batch pada tahap **Inspection & Packaging** pipeline produksi: record
-`packaging` (PKG-NNN) yang masih berstatus `diproses` (belum ditandai selesai).
-Dirangkai ke tahap cleaning lewat `washing_code`, dan ke produksi lewat rantai
-`washing.production_code`. Unit fisik sudah dikunci sejak tahap Produksi.
+`packaging` (PKG-NNN) berstatus `diproses` (belum ditandai selesai) **maupun**
+`selesai` (sudah dikemas — agar labelnya bisa dilihat/dicetak ulang lewat
+`GET /master/packaging/{packaging}/label`). Field `stage_status` (`diproses` |
+`selesai`) menandai kondisi tiap batch. Dirangkai ke tahap cleaning lewat
+`washing_code`, dan ke produksi lewat rantai `washing.production_code`. Unit
+fisik sudah dikunci sejak tahap Produksi.
 
 ### Headers
 | Key | Value | Required |
@@ -43,9 +46,12 @@ Dirangkai ke tahap cleaning lewat `washing_code`, dan ke produksi lewat rantai
         "code_transaction": "PRD20260702004",
         "washing_code": "WSH-003",
         "status": "pengemasan",
+        "stage_status": "diproses",
         "borrowed_by": "SET PARTUS",
         "processed_at": "2026-07-02T08:00:00.000000Z",
         "processed_by": "Admin",
+        "completed_by": null,
+        "completed_at": null,
         "operator": null,
         "chemical_indicator": null,
         "packaged_at": null,

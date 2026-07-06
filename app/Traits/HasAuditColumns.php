@@ -29,15 +29,21 @@ trait HasAuditColumns
     protected function initializeHasAuditColumns(): void
     {
         $this->casts['deleted_at'] = 'datetime';
+        $this->casts['deleted_user_id'] = 'integer';
     }
 
     /**
-     * Soft delete: set deleted_at + deleted_by, never hard-deletes.
+     * Soft delete: set deleted_at + deleted_by (username) + deleted_user_id (id user),
+     * never hard-deletes. `deleted_by` menyimpan username sebagai jejak yang terbaca,
+     * `deleted_user_id` menyimpan id user penghapus.
      */
     public function delete(): ?bool
     {
+        $user = auth()->user();
+
         $this->deleted_at = now();
-        $this->deleted_by = auth()->user()?->name ?? 'system';
+        $this->deleted_by = $user?->username ?? 'system';
+        $this->deleted_user_id = $user?->id;
 
         return $this->save();
     }
@@ -57,6 +63,7 @@ trait HasAuditColumns
     {
         $this->deleted_at = null;
         $this->deleted_by = null;
+        $this->deleted_user_id = null;
 
         return $this->save();
     }

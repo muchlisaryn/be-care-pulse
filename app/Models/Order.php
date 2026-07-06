@@ -58,6 +58,7 @@ class Order extends Model
         'code_transaction',
         'borrowed_by',
         'order_date',
+        'order_time',
         'return_plan_date',
         'return_actual_date',
         'returned_by',

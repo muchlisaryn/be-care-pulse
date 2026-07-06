@@ -115,6 +115,9 @@ class StorageController extends Controller
                         'note' => 'Seluruh unit tersimpan di gudang steril',
                     ]);
                 }
+
+                // Perbarui tahap unit (→ disimpan di rak).
+                \App\Models\InstrumentStock::syncStages($orderStockIds);
             });
 
             $order->load([
@@ -250,8 +253,12 @@ class StorageController extends Controller
             'items.*.rack_code' => 'required|string|max:255',
         ]);
 
-        // Unit fisik batch ini — hanya ini yang boleh disimpan.
-        $batchStockIds = $sterilization->items()->pluck('instrument_stock_id')->all();
+        // Unit fisik batch ini yang BOLEH disimpan = hanya yang BERHASIL steril.
+        // Unit gagal (result 'gagal') dikecualikan — mereka antre re-proses, bukan
+        // masuk gudang steril. (result null = batch lama pra per-unit → dianggap berhasil.)
+        $batchStockIds = $sterilization->items()
+            ->where(fn ($q) => $q->whereNull('result')->orWhere('result', Sterilization::RESULT_BERHASIL))
+            ->pluck('instrument_stock_id')->all();
         $expiry = $sterilization->expiry_date;
 
         // Asal unit (satuan/paket) dari production_item, untuk denormalisasi ke gudang.
@@ -294,6 +301,9 @@ class StorageController extends Controller
                         'note' => 'Seluruh unit tersimpan di gudang steril',
                     ]);
                 }
+
+                // Perbarui tahap unit (→ disimpan di rak).
+                \App\Models\InstrumentStock::syncStages($batchStockIds);
             });
 
             return $this->success('Unit berhasil disimpan ke gudang steril.', $this->productionIncomingPayload($sterilization->refresh()));
@@ -339,7 +349,11 @@ class StorageController extends Controller
             ($production?->items ?? collect())->where('source', 'paket')->pluck('package_name')
         );
 
-        $unitRows = $batch->items->map(function ($it) use ($stored, $originByStock, $packageImages) {
+        // Hanya unit BERHASIL steril yang jadi isi batch gudang (unit gagal → re-proses,
+        // tidak ikut disimpan). result null = batch lama pra per-unit → dianggap berhasil.
+        $unitRows = $batch->items
+            ->filter(fn ($it) => $it->result !== Sterilization::RESULT_GAGAL)
+            ->map(function ($it) use ($stored, $originByStock, $packageImages) {
             $row = $stored->get($it->instrument_stock_id);
             $origin = $originByStock->get($it->instrument_stock_id);
             $stock = $it->instrumentStock;

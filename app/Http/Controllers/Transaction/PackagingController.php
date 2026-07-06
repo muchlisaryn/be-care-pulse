@@ -33,7 +33,7 @@ class PackagingController extends Controller
     public function index(Request $request): JsonResponse
     {
         $packagings = Packaging::with(self::CHAIN)
-            ->where('status', Packaging::STATUS_DIPROSES)
+            ->whereIn('status', [Packaging::STATUS_DIPROSES, Packaging::STATUS_SELESAI])
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
@@ -85,6 +85,10 @@ class PackagingController extends Controller
                 PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $packaging->code, PipelineEvent::ACTION_SELESAI, [
                     'note' => 'Packaging selesai — indikator kimia '.$validated['chemical_indicator'].' — siap sterilisasi',
                 ]);
+
+                // Perbarui tahap unit (keluar dari pengemasan → siap sterilisasi).
+                $stockIds = $packaging->washing?->production?->items()->pluck('instrument_stock_id')->all() ?? [];
+                \App\Models\InstrumentStock::syncStages($stockIds);
             });
 
             $packaging->refresh();
@@ -96,6 +100,19 @@ class PackagingController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Ambil ulang data Label Barcode Sterilisasi sebuah batch (untuk dilihat /
+     * dicetak ulang kapan saja setelah packaging selesai). Data label tetap
+     * dihitung dari record packaging yang tersimpan, jadi tidak hilang meski
+     * modal label sebelumnya sudah ditutup.
+     */
+    public function label(Packaging $packaging): JsonResponse
+    {
+        return $this->success('Label sterilisasi berhasil diambil.', [
+            'label' => $this->labelPayload($packaging),
+        ]);
     }
 
     /**
@@ -163,11 +180,15 @@ class PackagingController extends Controller
             'code_transaction' => $production?->code,         // PRD-NNN (ditampilkan di kartu)
             'washing_code' => $packaging->washing_code,       // WSH-NNN
             'status' => 'pengemasan',
+            'stage_status' => $packaging->status,             // diproses | selesai (batch sudah dikemas)
             'borrowed_by' => $production?->displayName(),
             'processed_at' => $production?->completed_at ?? $packaging->started_at,
             'processed_by' => $packaging->started_by,
+            // Petugas yang menyelesaikan pengemasan + waktunya (untuk riwayat).
+            'completed_by' => $packaging->completed_by,
+            'completed_at' => $packaging->completed_at,
             'operator' => $packaging->operator,
-            'chemical_indicator' => $packaging->chemical_indicator,
+            'chemical_indicator' => $packaging->chemical_indicator, // = No. Lot indikator kimia
             'packaged_at' => $packaging->packaged_at,
             'units_count' => $units->count(),
             'items' => $items,

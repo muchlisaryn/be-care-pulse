@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
+use App\Models\InstrumentStock;
 use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\OrderWashing;
@@ -59,7 +60,9 @@ class CleaningController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $washings = $this->cleaningQuery()
+        // includeAdvanced=true → sertakan juga washing yang sudah selesai (lanjut ke
+        // packaging) sebagai riwayat cleaning; dibedakan lewat `stage_status`.
+        $washings = $this->cleaningQuery(true)
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
@@ -107,14 +110,20 @@ class CleaningController extends Controller
      */
     public function updateWashing(Request $request, OrderWashing $washing): JsonResponse
     {
+        // Field parameter pencucian WAJIB hanya pada aksi Simpan biasa. Aksi
+        // "Selesai" (complete) mengirim payload minimal, dan "Tandai Gagal" (fail)
+        // hanya butuh alasan — keduanya tidak boleh dipaksa mengisi parameter.
+        $isSave = ! $request->boolean('complete') && ! $request->boolean('fail');
+        $req = $isSave ? 'required' : 'nullable';
+
         $validated = $request->validate([
             'washer_machine_id' => 'nullable|exists:washer_machines,id',
-            'machine_no' => 'nullable|string|max:255',
+            'machine_no' => "$req|string|max:255",
             'operator' => 'nullable|string|max:255',
-            'temperature' => 'nullable|string|max:50',
-            'washed_at' => 'nullable|date',
-            'duration_minutes' => 'nullable|integer|min:0',
-            'detergent_type' => 'nullable|string|max:255',
+            'temperature' => "$req|string|max:50",
+            'washed_at' => "$req|date",
+            'duration_minutes' => "$req|integer|min:0",
+            'detergent_type' => "$req|string|max:255",
             'complete' => 'sometimes|boolean',
             'completed_at' => 'nullable|date',
             'fail' => 'sometimes|boolean',
@@ -124,6 +133,21 @@ class CleaningController extends Controller
         try {
             $result = DB::transaction(function () use ($validated, $washing) {
                 $actor = auth()->user()?->name;
+
+                // Tandai Gagal → HANYA penanda (wajib diulang). Tidak memproses/menyimpan
+                // parameter pencucian dan tidak menyelesaikan tahap: parameter yang ada
+                // dibiarkan apa adanya, cukup ubah status + alasan.
+                if (! empty($validated['fail'])) {
+                    $washing->status = OrderWashing::STATUS_GAGAL;
+                    $washing->failure_reason = $validated['failure_reason'] ?? 'Pencucian gagal.';
+                    $washing->save();
+
+                    PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_GAGAL, [
+                        'note' => 'Pencucian ditandai gagal: '.$washing->failure_reason,
+                    ]);
+
+                    return ['blocked' => false, 'failed' => true];
+                }
 
                 $washing->fill(array_intersect_key(
                     $validated,
@@ -144,21 +168,6 @@ class CleaningController extends Controller
                 }
                 $washing->alert = ! empty($alerts);
                 $washing->alert_message = $alerts ? implode(' ', $alerts) : null;
-
-                // Tandai Gagal → wajib diulang.
-                if (! empty($validated['fail'])) {
-                    $washing->status = OrderWashing::STATUS_GAGAL;
-                    $washing->failure_reason = $validated['failure_reason']
-                        ?? $washing->alert_message
-                        ?? 'Pencucian gagal.';
-                    $washing->save();
-
-                    PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_GAGAL, [
-                        'note' => 'Pencucian gagal: '.$washing->failure_reason,
-                    ]);
-
-                    return ['blocked' => false, 'failed' => true];
-                }
 
                 $completing = ! empty($validated['complete']);
 
@@ -193,6 +202,10 @@ class CleaningController extends Controller
                         'note' => 'Masuk tahap Packaging (dari cleaning '.$washing->code.')',
                     ]);
 
+                    // Perbarui tahap unit (→ pengemasan).
+                    $stockIds = $washing->production?->items()->pluck('instrument_stock_id')->all() ?? [];
+                    InstrumentStock::syncStages($stockIds);
+
                     return ['blocked' => false, 'failed' => false];
                 }
 
@@ -226,16 +239,101 @@ class CleaningController extends Controller
         }
     }
 
-    /** Query dasar batch cleaning: washing yang belum lanjut ke packaging. */
-    private function cleaningQuery()
+    /**
+     * Batalkan batch cleaning yang BELUM diproses (parameter pencucian belum diisi
+     * & belum selesai). Batch TIDAK dihapus — statusnya menjadi `batal` dan tetap
+     * tampil sebagai riwayat cleaning (mencatat siapa & kapan membatalkan). Seluruh
+     * unit yang tadinya dipotong dikembalikan ke stok semula (`tersedia`).
+     */
+    public function cancelWashing(OrderWashing $washing): JsonResponse
     {
-        return OrderWashing::with([
+        if ($washing->status === OrderWashing::STATUS_SELESAI) {
+            return $this->error('Pencucian sudah selesai dan tidak bisa dibatalkan.', 422);
+        }
+        if ($washing->status === OrderWashing::STATUS_BATAL) {
+            return $this->error('Pencucian sudah dibatalkan.', 422);
+        }
+
+        // Sudah diproses (parameter terisi) → tidak boleh dibatalkan; gunakan
+        // "Tandai Gagal" bila perlu diulang.
+        if ($this->isWashingProcessed($washing)) {
+            return $this->error('Pencucian sudah diproses. Tandai gagal bila perlu diulang, tidak bisa dibatalkan.', 422);
+        }
+
+        try {
+            DB::transaction(function () use ($washing) {
+                $actor = auth()->user()?->name;
+                $production = $washing->production;
+
+                if ($production) {
+                    // Kembalikan stok unit terkunci ke status semula: `tersedia`.
+                    $stockIds = $production->items()->pluck('instrument_stock_id')->all();
+                    if (! empty($stockIds)) {
+                        InstrumentStock::transitionMany($stockIds, InstrumentStock::STATUS_TERSEDIA, [
+                            'context' => 'production',
+                            'reference' => $production->code,
+                            'note' => 'Produksi dibatalkan — stok dikembalikan ke tersedia',
+                        ]);
+                    }
+
+                    PipelineEvent::record(PipelineEvent::STAGE_PRODUCTION, $production->code, PipelineEvent::ACTION_BATAL, [
+                        'note' => 'Batch produksi dibatalkan, '.count($stockIds).' unit dikembalikan ke stok',
+                    ]);
+                }
+
+                // Tandai batch cleaning sebagai batal — TETAP tersimpan sebagai riwayat,
+                // mencatat siapa & kapan membatalkan.
+                $washing->status = OrderWashing::STATUS_BATAL;
+                $washing->canceled_by = $actor;
+                $washing->canceled_at = now();
+                $washing->save();
+
+                PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_BATAL, [
+                    'note' => 'Cleaning dibatalkan sebelum diproses',
+                ]);
+            });
+
+            return $this->success('Pencucian dibatalkan & stok dikembalikan ke semula.', $this->transform($washing->refresh()));
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * "Sudah diproses" = operator telah mengisi salah satu parameter pencucian.
+     * Sejalan dengan `isWashingFilled()` di frontend.
+     */
+    private function isWashingProcessed(OrderWashing $washing): bool
+    {
+        return (bool) ($washing->washer_machine_id
+            || $washing->machine_no
+            || $washing->operator
+            || $washing->temperature
+            || $washing->washed_at
+            || $washing->duration_minutes
+            || $washing->detergent_type);
+    }
+
+    /**
+     * Query dasar batch cleaning. Default: hanya washing yang BELUM lanjut ke
+     * packaging (proses). `$includeAdvanced=true` menyertakan juga yang sudah
+     * lanjut (riwayat cleaning).
+     */
+    private function cleaningQuery(bool $includeAdvanced = false)
+    {
+        $query = OrderWashing::with([
             'washerMachine',
             'production.items.instrumentStock.instrument',
             'production.items.conditionOut',
-        ])->whereNotIn('code', Packaging::query()
-            ->whereNotNull('washing_code')
-            ->select('washing_code'));
+        ]);
+
+        if (! $includeAdvanced) {
+            $query->whereNotIn('code', Packaging::query()
+                ->whereNotNull('washing_code')
+                ->select('washing_code'));
+        }
+
+        return $query;
     }
 
     /** Bentuk respons satu batch cleaning agar cocok dengan tipe CleaningOrder di frontend. */
@@ -277,6 +375,11 @@ class CleaningController extends Controller
             'code' => $washing->code,                          // WSH-NNN (id record cleaning)
             'code_transaction' => $production?->code,          // PRD-NNN (ditampilkan di kartu)
             'status' => 'pencucian',
+            'stage_status' => match ($washing->status) { // proses | selesai | batal (riwayat)
+                OrderWashing::STATUS_SELESAI => 'selesai',
+                OrderWashing::STATUS_BATAL => 'batal',
+                default => 'proses',
+            },
             'borrowed_by' => $production?->displayName(),
             'room' => null,
             'order_date' => $production?->created_at?->toDateString(),
@@ -321,7 +424,13 @@ class CleaningController extends Controller
                 'alert' => $washing->alert,
                 'alert_message' => $washing->alert_message,
                 'failure_reason' => $washing->failure_reason,
+                // Jejak pelaku tiap aksi + waktunya.
+                'started_by' => $washing->started_by,     // yang memproses
+                'started_at' => $washing->started_at,
+                'completed_by' => $washing->completed_by,  // yang menyelesaikan
                 'completed_at' => $washing->completed_at,
+                'canceled_by' => $washing->canceled_by,    // yang membatalkan
+                'canceled_at' => $washing->canceled_at,
             ],
         ];
     }

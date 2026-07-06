@@ -22,6 +22,13 @@ return new class extends Migration
             ->whereNull('parent_id')
             ->first();
 
+        // Fresh migrate: grup belum dibuat (seeder jalan setelah migrasi).
+        // Lewati agar tidak membuat menu "mengambang" tanpa grup — MenuSeeder
+        // yang menjadi sumber kebenaran untuk instalasi baru.
+        if (! $parent) {
+            return;
+        }
+
         $menuId = DB::table('menus')->insertGetId([
             'title_menu_id' => $parent?->title_menu_id,
             'parent_id' => $parent?->id,

@@ -53,7 +53,7 @@ Full domain & endpoint reference (v1.2): see `dokumentasi/PRD.md`.
 
 ### Audit Columns & Soft Delete Pattern
 
-All domain models use the `App\Traits\HasAuditColumns` trait. Every domain table must have these 6 columns:
+All domain models use the `App\Traits\HasAuditColumns` trait. Every domain table must have these 7 columns:
 
 | Column | Type | Keterangan |
 |---|---|---|
@@ -62,14 +62,15 @@ All domain models use the `App\Traits\HasAuditColumns` trait. Every domain table
 | `updated_at` | timestamp | di-set otomatis oleh Laravel |
 | `updated_by` | string nullable | nama user yang login saat update |
 | `deleted_at` | timestamp nullable | di-set saat soft delete |
-| `deleted_by` | string nullable | nama user yang login saat delete |
+| `deleted_by` | string nullable | **username** user yang login saat delete |
+| `deleted_user_id` | bigint nullable | id user yang login saat delete (snapshot, bukan FK) |
 
 **Perilaku trait:**
 - `created_by` dan `updated_by` diisi otomatis dari `auth()->user()->name` via model events `creating` / `updating`.
 - **Global scope** `active` otomatis memfilter `WHERE deleted_by IS NULL` pada setiap query. `deleted_by` adalah satu-satunya penentu apakah record sudah dihapus atau belum.
-- `$model->delete()` → **selalu soft delete** (set `deleted_at` + `deleted_by`), tidak pernah hard delete.
+- `$model->delete()` → **selalu soft delete** (set `deleted_at` + `deleted_by` = **username** + `deleted_user_id` = id user), tidak pernah hard delete.
 - `$model->forceDelete()` → hard delete, hanya untuk kebutuhan khusus.
-- `$model->restore()` → null-kan `deleted_at` dan `deleted_by`.
+- `$model->restore()` → null-kan `deleted_at`, `deleted_by`, dan `deleted_user_id`.
 - `Model::withTrashed()` → query termasuk record yang sudah di-soft-delete.
 - `Model::onlyTrashed()` → query hanya record yang sudah di-soft-delete.
 

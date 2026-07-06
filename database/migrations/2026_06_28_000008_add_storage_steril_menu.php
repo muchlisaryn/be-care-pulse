@@ -23,6 +23,12 @@ return new class extends Migration
             ->whereNull('parent_id')
             ->first();
 
+        // Fresh migrate: grup Transaksi belum ada (seeder jalan setelah migrasi).
+        // Lewati agar tidak membuat menu mengambang — seeder sudah menambah item ini.
+        if (! $parent) {
+            return;
+        }
+
         // Geser Distribusi BMHP agar Storage Steril menyelip sebelumnya.
         DB::table('menus')->where('url', '/cssd/distribusi')->update(['sort_order' => 4, 'updated_at' => now()]);
 

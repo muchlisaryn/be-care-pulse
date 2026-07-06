@@ -46,23 +46,16 @@ class Production extends Model
 
     /**
      * Kode batch produksi berikutnya: PRD + tahun(2) + bulan(2) + tanggal(2) +
-     * urutan harian(2 digit), mis. PRD26070201 (2026-07-02, produksi ke-1).
-     * Counter di-reset tiap hari.
+     * urutan KUMULATIF (2 digit, tidak reset harian), mis. PRD26070301 lalu
+     * PRD26070302, PRD26070403, ... Angka urut = jumlah total produksi yang pernah
+     * dibuat + 1 (termasuk yang sudah di-soft-delete agar nomor tidak dipakai ulang).
+     * Bila melebihi 99 otomatis jadi 3+ digit.
      */
     protected static function generateUniqueCode($model): string
     {
-        $prefix = 'PRD'.now()->format('ymd');
+        $sequence = static::withoutGlobalScopes()->count() + 1;
 
-        $maxCode = static::withoutGlobalScopes()
-            ->where('code', 'like', $prefix.'%')
-            ->max('code');
-
-        $sequence = 1;
-        if ($maxCode && preg_match('/(\d{2})$/', $maxCode, $matches)) {
-            $sequence = (int) $matches[1] + 1;
-        }
-
-        return $prefix.str_pad($sequence, 2, '0', STR_PAD_LEFT);
+        return 'PRD'.now()->format('ymd').str_pad($sequence, 2, '0', STR_PAD_LEFT);
     }
 
     /**

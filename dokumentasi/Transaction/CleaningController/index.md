@@ -5,9 +5,10 @@
 **Endpoint:** /api/master/cleaning
 **Auth:** Bearer Token (wajib)
 
-Daftar order yang sedang berada di tahap Cleaning & Pengemasan
-(status `pencucian` atau `pengemasan`), beserta catatan pencucian & ringkasan
-permintaan. Mendukung `search` + pagination (20/halaman).
+Daftar batch pada tahap Cleaning, beserta catatan pencucian & ringkasan
+permintaan. Mencakup batch yang **masih diproses** maupun yang **sudah selesai**
+cuci (riwayat/sudah lanjut ke packaging) — dibedakan lewat field `stage_status`
+(`proses` | `selesai`). Mendukung `search` + pagination (20/halaman).
 
 > `items` = baris permintaan (jenis + jumlah). `units` = unit fisik yang dikunci
 > ke batch (kode stock, instrumen, kondisi). Untuk batch **Produksi CSSD** (`PRD-NNN`)
@@ -41,6 +42,7 @@ permintaan. Mendukung `search` + pagination (20/halaman).
         "id": 12,
         "code": "ORD-012",
         "status": "pencucian",
+        "stage_status": "proses",
         "borrowed_by": "Ruang OK",
         "room": { "id": 3, "name": "OK 1" },
         "processed_at": "2026-06-25T08:00:00.000000Z",

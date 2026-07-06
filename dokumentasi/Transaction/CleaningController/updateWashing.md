@@ -16,7 +16,10 @@ Menyimpan / memperbarui catatan pencucian (Tahap 2 — Cleaning & Disinfection).
   `pengemasan` (mencatat event `selesai_cuci`). **Ditolak (422)** selama masih
   ada `alert` parameter.
 - `fail = true` menandai pencucian **"Gagal"** (wajib diulang); status washing
-  menjadi `gagal`, order tetap di tahap `pencucian` (mencatat event `gagal_cuci`).
+  menjadi `gagal`, order tetap di tahap `pencucian` (mencatat event `gagal`).
+  **Hanya penanda** — parameter pencucian **tidak** diproses/diperbarui dan tahap
+  **tidak** diselesaikan (field parameter pada payload diabaikan; cukup kirim
+  `fail` + `failure_reason`).
 
 ### Headers
 | Key | Value | Required |
@@ -32,16 +35,18 @@ Menyimpan / memperbarui catatan pencucian (Tahap 2 — Cleaning & Disinfection).
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | washer_machine_id | integer | Tidak | ID mesin washer yang dipindai (FK `washer_machines`) |
-| machine_no | string | Tidak | Nomor mesin (teks bebas; terisi otomatis dari kode mesin bila kosong) |
+| machine_no | string | Ya¹ | Nomor mesin (teks bebas; terisi otomatis dari kode mesin bila kosong) |
 | operator | string | Tidak | ID / nama operator |
-| temperature | string | Tidak | Suhu pencucian (°C) |
-| washed_at | date | Tidak | Waktu mulai pencucian |
-| duration_minutes | integer | Tidak | Durasi pencucian (menit) |
-| detergent_type | string | Tidak | Jenis deterjen / enzimatis |
+| temperature | string | Ya¹ | Suhu pencucian (°C) |
+| washed_at | date | Ya¹ | Waktu mulai pencucian |
+| duration_minutes | integer | Ya¹ | Durasi pencucian (menit) |
+| detergent_type | string | Ya¹ | Jenis deterjen / enzimatis |
 | complete | boolean | Tidak | Tandai "Selesai Cuci" |
 | completed_at | date | Tidak | Waktu selesai (default now) |
 | fail | boolean | Tidak | Tandai "Gagal" (wajib diulang) |
 | failure_reason | string | Tidak | Alasan gagal (default: pesan alert / "Pencucian gagal.") |
+
+> ¹ **Wajib hanya pada aksi Simpan biasa** (tanpa `complete`/`fail`). Saat `complete=true` (Selesai Cuci) atau `fail=true` (Tandai Gagal), field parameter di atas bersifat opsional.
 
 ### Response
 

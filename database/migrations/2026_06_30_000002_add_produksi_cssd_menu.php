@@ -30,6 +30,12 @@ return new class extends Migration
             ->whereNull('parent_id')
             ->first();
 
+        // Fresh migrate: grup Transaksi belum ada (seeder jalan setelah migrasi).
+        // Lewati agar tidak membuat menu mengambang — seeder sudah menambah item ini.
+        if (! $parent) {
+            return;
+        }
+
         // Geser item lain agar Produksi CSSD menempati urutan pertama.
         foreach ($this->shift as $url => $sort) {
             DB::table('menus')->where('url', $url)->update(['sort_order' => $sort, 'updated_at' => now()]);
