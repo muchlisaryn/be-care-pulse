@@ -177,8 +177,8 @@ class MenuSeeder extends Seeder
                 'sort_order' => 2,
                 'children' => [
                     // Pantau & lacak data (read-only)
-                    ['name' => 'Alat Kedaluwarsa',   'url' => '/cssd/kedaluwarsa', 'sort_order' => 1],
-                    ['name' => 'Laporan Per Alat',   'url' => '/cssd/laporan',     'sort_order' => 2],
+                    ['name' => 'Alat Kedaluwarsa Steril', 'url' => '/cssd/kedaluwarsa', 'sort_order' => 1],
+                    ['name' => 'Laporan Alat CSSD',  'url' => '/cssd/laporan',     'sort_order' => 2],
                     ['name' => 'Papan Monitor (TV)', 'url' => '/monitor',          'sort_order' => 3],
                 ],
             ],
