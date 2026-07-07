@@ -46,16 +46,32 @@ class Production extends Model
 
     /**
      * Kode batch produksi berikutnya: PRD + tahun(2) + bulan(2) + tanggal(2) +
-     * urutan KUMULATIF (2 digit, tidak reset harian), mis. PRD26070301 lalu
-     * PRD26070302, PRD26070403, ... Angka urut = jumlah total produksi yang pernah
-     * dibuat + 1 (termasuk yang sudah di-soft-delete agar nomor tidak dipakai ulang).
-     * Bila melebihi 99 otomatis jadi 3+ digit.
+     * urutan HARIAN (2 digit, reset tiap hari), mis. PRD26070701 lalu PRD26070702,
+     * dan besok kembali ke PRD26070801. Bila melebihi 99 otomatis jadi 3+ digit.
+     *
+     * Nomor urut = angka terkecil yang BELUM dipakai pada tanggal hari ini. Batch
+     * yang dibatalkan di tahap cleaning di-hard delete, sehingga slot nomornya
+     * kosong kembali dan dipakai ulang oleh produksi berikutnya (mengisi celah,
+     * aman dari tabrakan `code` unik walau yang dibatalkan bukan nomor terakhir).
      */
     protected static function generateUniqueCode($model): string
     {
-        $sequence = static::withoutGlobalScopes()->count() + 1;
+        $prefix = 'PRD'.now()->format('ymd');
 
-        return 'PRD'.now()->format('ymd').str_pad($sequence, 2, '0', STR_PAD_LEFT);
+        // Nomor urut yang sedang terpakai hari ini (dibaca dari code, lintas scope
+        // agar mencakup record apa pun yang masih menempati index unik `code`).
+        $used = static::withoutGlobalScopes()
+            ->where('code', 'like', $prefix.'%')
+            ->pluck('code')
+            ->map(fn ($code) => (int) substr($code, strlen($prefix)))
+            ->flip();
+
+        $sequence = 1;
+        while ($used->has($sequence)) {
+            $sequence++;
+        }
+
+        return $prefix.str_pad($sequence, 2, '0', STR_PAD_LEFT);
     }
 
     /**

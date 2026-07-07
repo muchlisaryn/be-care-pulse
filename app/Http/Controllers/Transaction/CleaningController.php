@@ -279,6 +279,12 @@ class CleaningController extends Controller
                     PipelineEvent::record(PipelineEvent::STAGE_PRODUCTION, $production->code, PipelineEvent::ACTION_BATAL, [
                         'note' => 'Batch produksi dibatalkan, '.count($stockIds).' unit dikembalikan ke stok',
                     ]);
+
+                    // Hard delete batch produksi (item ikut terhapus via cascade DB)
+                    // agar slot nomor PRD-nya kosong kembali & dipakai ulang produksi
+                    // berikutnya. Kode produksi tetap tersimpan di washing.production_code
+                    // untuk riwayat cleaning yang dibatalkan.
+                    $production->forceDelete();
                 }
 
                 // Tandai batch cleaning sebagai batal — TETAP tersimpan sebagai riwayat,
@@ -373,7 +379,7 @@ class CleaningController extends Controller
         return [
             'id' => $washing->id,
             'code' => $washing->code,                          // WSH-NNN (id record cleaning)
-            'code_transaction' => $production?->code,          // PRD-NNN (ditampilkan di kartu)
+            'code_transaction' => $production?->code ?? $washing->production_code, // PRD-NNN (fallback ke kode tersimpan bila batch batal sudah dihapus)
             'status' => 'pencucian',
             'stage_status' => match ($washing->status) { // proses | selesai | batal (riwayat)
                 OrderWashing::STATUS_SELESAI => 'selesai',
