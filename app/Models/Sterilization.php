@@ -117,4 +117,16 @@ class Sterilization extends Model
     {
         return $this->hasMany(Packaging::class, 'sterilization_id');
     }
+
+    /**
+     * Tanggal kedaluwarsa steril default bila operator tak mengisinya manual:
+     * = tgl sterilisasi + masa simpan steril default (STERILE_SHELF_LIFE_DAYS).
+     * Base pakai `sterilized_at`; bila kosong, pakai sekarang.
+     */
+    public function computeExpiryDate(): string
+    {
+        $base = $this->sterilized_at ? $this->sterilized_at->copy() : now();
+
+        return $base->addDays(self::STERILE_SHELF_LIFE_DAYS)->toDateString();
+    }
 }

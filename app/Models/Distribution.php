@@ -22,8 +22,8 @@ class Distribution extends Model
     protected $fillable = [
         'code',
         'room_id',
-        'sender_id',
-        'receiver_id',
+        'sender',
+        'receiver',
         'distributed_at',
         'status',
         'note',
@@ -52,16 +52,6 @@ class Distribution extends Model
     public function room()
     {
         return $this->belongsTo(Room::class);
-    }
-
-    public function sender()
-    {
-        return $this->belongsTo(User::class, 'sender_id');
-    }
-
-    public function receiver()
-    {
-        return $this->belongsTo(User::class, 'receiver_id');
     }
 
     public function items()

@@ -33,8 +33,8 @@ Detail satu distribusi beserta item BMHP dan penerima/pengirim.
     "distributed_at": "2026-06-11T14:24:00.000000Z",
     "note": null,
     "room": { "id": 1, "code": "RWIN", "name": "RAWAT INAP" },
-    "sender": { "id": 1, "name": "tri.aji" },
-    "receiver": { "id": 2, "name": "AMBAR MELANI" },
+    "sender": "tri.aji",
+    "receiver": "AMBAR MELANI",
     "items": [
       {
         "id": 1, "bmhp_id": 1, "quantity": 10, "note": "Kasa untuk ranap",

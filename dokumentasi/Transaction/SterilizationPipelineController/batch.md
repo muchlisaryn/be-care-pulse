@@ -35,7 +35,7 @@ ditandai `sterilization_id` batch tersebut. Batch berstatus `diproses` (menunggu
 | duration_minutes | integer | Tidak | Durasi (menit) |
 | operator | string | Tidak | Operator |
 | sterilized_at | datetime | Ya | Waktu sterilisasi |
-| expiry_date | date | Tidak | Kedaluwarsa steril. **Tidak diinput dari UI** — bila kosong, diisi otomatis dari **tgl pengemasan paling awal** (`packaged_at`) + masa simpan default 7 hari, mengikuti tgl kedaluwarsa yang sudah ditetapkan saat pengemasan. |
+| expiry_date | date | Tidak | Kedaluwarsa steril. Diisi manual operator; bila kosong, diisi otomatis = **tgl sterilisasi + masa simpan default 7 hari** (`STERILE_SHELF_LIFE_DAYS`). |
 | chemical_indicator | string | Tidak | Hasil indikator kimia |
 | biological_indicator | string | Tidak | Hasil indikator biologis |
 | note | string | Tidak | Catatan |

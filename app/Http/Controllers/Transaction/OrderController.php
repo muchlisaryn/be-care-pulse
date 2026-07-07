@@ -813,10 +813,9 @@ class OrderController extends Controller
                 $batch->status = $validated['result'];
 
                 // Bila hasil steril & operator tak mengisi kedaluwarsa: set otomatis
-                // = tgl sterilisasi + masa simpan default (agar gudang punya expiry).
+                // = base + batas steril mesin washer (master), fallback default.
                 if ($steril && $batch->expiry_date === null) {
-                    $base = $batch->sterilized_at ? $batch->sterilized_at->copy() : now();
-                    $batch->expiry_date = $base->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
+                    $batch->expiry_date = $batch->computeExpiryDate();
                 }
 
                 $batch->save();

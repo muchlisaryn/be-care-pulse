@@ -144,22 +144,11 @@ class SterilizationPipelineController extends Controller
         }
 
         // Tgl kedaluwarsa steril: pakai input operator bila diisi; bila kosong,
-        // hitung dari tgl kemas paling awal + batas steril mesin washer yang dipakai
-        // saat cleaning. Bila beberapa tray beda mesin, ambil masa simpan TERPENDEK
-        // (paling aman). Fallback ke masa simpan default bila mesin tak punya batas.
-        $expiryDate = $validated['expiry_date'] ?? null;
-        if ($expiryDate === null) {
-            $shelfLifeDays = $packagings
-                ->map(fn (Packaging $p) => $p->washing?->washerMachine?->sterile_shelf_life_days)
-                ->filter()
-                ->min() ?? Sterilization::STERILE_SHELF_LIFE_DAYS;
-
-            $packagedAt = $packagings->map(fn (Packaging $p) => $p->packaged_at)->filter()->sort()->first();
-            $base = $packagedAt
-                ? \Illuminate\Support\Carbon::parse($packagedAt)
-                : \Illuminate\Support\Carbon::parse($validated['sterilized_at']);
-            $expiryDate = $base->addDays($shelfLifeDays)->toDateString();
-        }
+        // pakai default = tgl sterilisasi + masa simpan steril default.
+        $expiryDate = $validated['expiry_date']
+            ?? \Illuminate\Support\Carbon::parse($validated['sterilized_at'])
+                ->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)
+                ->toDateString();
 
         $reprocCount = $stockIds->count() - $packagings->flatMap(fn (Packaging $p) => ($p->washing?->production?->items ?? collect())->pluck('instrument_stock_id'))->filter()->unique()->count();
 
@@ -265,8 +254,8 @@ class SterilizationPipelineController extends Controller
                 $sterilization->completed_at = now();
 
                 if ($anyPassed && $sterilization->expiry_date === null) {
-                    $base = $sterilization->sterilized_at ? $sterilization->sterilized_at->copy() : now();
-                    $sterilization->expiry_date = $base->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
+                    // Batas steril mengikuti mesin washer (master), fallback default.
+                    $sterilization->expiry_date = $sterilization->computeExpiryDate();
                 }
                 $sterilization->save();
 

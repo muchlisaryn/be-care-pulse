@@ -9,7 +9,7 @@ Membuat distribusi BMHP (bahan medis habis pakai). Saat berhasil, `bmhp.stock_qt
 
 > Catatan: distribusi alat instrumen (pakai-ulang) **tidak** lewat endpoint ini, melainkan lewat **Order Instrumen** karena alat harus dikembalikan dan disterilkan ulang.
 
-Pengirim (`sender_id`) otomatis = user yang login. Status awal `terdistribusi`.
+Pengirim & penerima kini **free text** (`sender` / `receiver`, bukan lagi FK ke users) dan keduanya **wajib** diisi. Status awal `terdistribusi`.
 
 ## Request
 
@@ -23,7 +23,8 @@ Pengirim (`sender_id`) otomatis = user yang login. Status awal `terdistribusi`.
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | room_id | integer | Ya | Unit/ruangan tujuan |
-| receiver_id | integer | Ya | User penerima |
+| sender | string | Ya | Nama pengirim (free text) |
+| receiver | string | Ya | Nama penerima (free text) |
 | distributed_at | datetime | Tidak | Default sekarang |
 | note | string | Tidak | Keterangan |
 | items | array | Ya | Minimal 1 item |
@@ -35,7 +36,8 @@ Pengirim (`sender_id`) otomatis = user yang login. Status awal `terdistribusi`.
 ```json
 {
   "room_id": 1,
-  "receiver_id": 2,
+  "sender": "tri.aji",
+  "receiver": "AMBAR MELANI",
   "note": "Distribusi pagi",
   "items": [
     { "bmhp_id": 1, "quantity": 10 },
@@ -56,8 +58,8 @@ Pengirim (`sender_id`) otomatis = user yang login. Status awal `terdistribusi`.
     "code": "DST-001",
     "status": "terdistribusi",
     "room": { "id": 1, "name": "RAWAT INAP" },
-    "sender": { "id": 1, "name": "tri.aji" },
-    "receiver": { "id": 2, "name": "AMBAR MELANI" },
+    "sender": "tri.aji",
+    "receiver": "AMBAR MELANI",
     "items": [
       {
         "id": 1, "bmhp_id": 1, "quantity": 10, "note": null,

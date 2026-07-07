@@ -12,6 +12,10 @@ kadaluarsa harus diproses ulang sebelum dipakai.
 > Catatan: endpoint ini harus dideklarasikan sebelum `apiResource('sterilizations')` pada routes
 > agar tidak tertangkap sebagai parameter `{sterilization}`.
 
+`machine` = mesin sterilisasi (autoclave) yang dipakai batch (teks bebas). `expiry_date` = tanggal
+kedaluwarsa steril: **diisi manual operator**; bila dikosongkan dipakai default **tgl sterilisasi +
+`STERILE_SHELF_LIFE_DAYS` (7 hari)**. Tidak bergantung pada mesin (washer maupun autoclave).
+
 ## Request
 
 ### Headers

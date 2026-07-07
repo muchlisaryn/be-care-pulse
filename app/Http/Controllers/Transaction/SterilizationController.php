@@ -166,6 +166,13 @@ class SterilizationController extends Controller
     private function applyStatusTransition(Sterilization $sterilization, string $status): void
     {
         $sterilization->status = $status;
+
+        // Saat batch dinyatakan selesai & kedaluwarsa belum diisi operator, hitung
+        // otomatis = base + batas steril mesin washer (master), fallback default.
+        if ($status === Sterilization::STATUS_SELESAI && $sterilization->expiry_date === null) {
+            $sterilization->expiry_date = $sterilization->computeExpiryDate();
+        }
+
         $stockIds = $sterilization->items()->pluck('instrument_stock_id');
 
         $unitStatus = match ($status) {

@@ -16,21 +16,22 @@ class DistributionController extends Controller
     /** Relasi yang dimuat saat menampilkan detail distribusi. */
     private const DETAIL_RELATIONS = [
         'room',
-        'sender',
-        'receiver',
         'items.bmhp',
     ];
 
     public function index(Request $request): JsonResponse
     {
-        $data = Distribution::with(['room', 'sender', 'receiver'])
+        $data = Distribution::with(['room'])
             ->withCount('items')
             ->when($request->status, fn ($q, $s) => $q->where('status', $s))
             ->when(
                 $request->search,
-                fn ($q, $s) => $q->where('code', 'like', "%{$s}%")
-                    ->orWhereHas('room', fn ($q) => $q->where('name', 'like', "%{$s}%"))
-                    ->orWhereHas('receiver', fn ($q) => $q->where('name', 'like', "%{$s}%"))
+                fn ($q, $s) => $q->where(function ($q) use ($s) {
+                    $q->where('code', 'like', "%{$s}%")
+                        ->orWhere('sender', 'like', "%{$s}%")
+                        ->orWhere('receiver', 'like', "%{$s}%")
+                        ->orWhereHas('room', fn ($q) => $q->where('name', 'like', "%{$s}%"));
+                })
             )
             ->latest()
             ->paginate(20);
@@ -42,7 +43,8 @@ class DistributionController extends Controller
     {
         $validated = $request->validate([
             'room_id' => 'required|integer|exists:rooms,id',
-            'receiver_id' => 'required|integer|exists:users,id',
+            'sender' => 'required|string|max:255',
+            'receiver' => 'required|string|max:255',
             'distributed_at' => 'sometimes|nullable|date',
             'note' => 'nullable|string',
             'items' => 'required|array|min:1',
@@ -53,11 +55,11 @@ class DistributionController extends Controller
 
         try {
             $distribution = DB::transaction(function () use ($validated) {
-                // Buat header distribusi.
+                // Buat header distribusi. Pengirim & penerima free text (wajib).
                 $distribution = Distribution::create([
                     'room_id' => $validated['room_id'],
-                    'sender_id' => auth()->id(),
-                    'receiver_id' => $validated['receiver_id'],
+                    'sender' => $validated['sender'],
+                    'receiver' => $validated['receiver'],
                     'distributed_at' => $validated['distributed_at'] ?? now(),
                     'status' => Distribution::STATUS_TERDISTRIBUSI,
                     'note' => $validated['note'] ?? null,

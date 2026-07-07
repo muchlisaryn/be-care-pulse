@@ -35,15 +35,13 @@ Daftar distribusi BMHP (serah-terima bahan medis habis pakai CSSD → unit/ruang
         "id": 1,
         "code": "DST-001",
         "room_id": 1,
-        "sender_id": 1,
-        "receiver_id": 2,
+        "sender": "tri.aji",
+        "receiver": "AMBAR MELANI",
         "distributed_at": "2026-06-11T14:24:00.000000Z",
         "status": "terdistribusi",
         "note": null,
         "items_count": 2,
-        "room": { "id": 1, "code": "RWIN", "name": "RAWAT INAP" },
-        "sender": { "id": 1, "name": "tri.aji" },
-        "receiver": { "id": 2, "name": "AMBAR MELANI" }
+        "room": { "id": 1, "code": "RWIN", "name": "RAWAT INAP" }
       }
     ],
     "per_page": 20,
