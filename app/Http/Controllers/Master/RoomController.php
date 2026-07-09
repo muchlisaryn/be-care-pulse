@@ -23,6 +23,7 @@ class RoomController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|string|max:255|unique:rooms,name',
+            'layanan' => 'nullable|in:igd,rawat_jalan,rawat_inap',
         ]);
 
         try {
@@ -43,6 +44,7 @@ class RoomController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|string|max:255|unique:rooms,name,'.$room->id,
+            'layanan' => 'nullable|in:igd,rawat_jalan,rawat_inap',
         ]);
 
         try {

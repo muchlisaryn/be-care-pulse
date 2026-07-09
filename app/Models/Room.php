@@ -10,7 +10,7 @@ class Room extends Model
 {
     use HasAuditColumns, HasAutoCode;
 
-    protected $fillable = ['name', 'created_by', 'updated_by'];
+    protected $fillable = ['name', 'layanan', 'created_by', 'updated_by'];
 
     public function orders()
     {

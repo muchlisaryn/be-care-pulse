@@ -15,6 +15,7 @@
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | name | string | Ya | Nama ruangan, harus unik (kecuali milik diri sendiri) |
+| layanan | string | Tidak | Layanan ruangan: `igd` \| `rawat_jalan` \| `rawat_inap` |
 
 ## Response
 

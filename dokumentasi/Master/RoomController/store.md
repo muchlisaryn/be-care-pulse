@@ -10,6 +10,7 @@
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | name | string | Ya | Nama ruangan, harus unik |
+| layanan | string | Tidak | Layanan ruangan: `igd` | `rawat_jalan` | `rawat_inap` |
 
 > `code` dibuat otomatis oleh sistem (4 huruf acak unik) — tidak perlu dikirim.
 

@@ -74,13 +74,19 @@ class OrderController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        // Layanan ruangan menentukan wajib/tidaknya identitas pasien:
+        // hanya RAWAT INAP yang mewajibkan No. RM & Nama Pasien; rawat jalan / IGD
+        // boleh kosong.
+        $room = \App\Models\Room::find($request->input('room_id'));
+        $patientRequired = $room && $room->layanan === 'rawat_inap';
+
         $validated = $request->validate([
             'room_id' => 'required|integer|exists:rooms,id',
             'user_id' => 'nullable|integer|exists:users,id',
             'borrowed_by' => 'nullable|string|max:255',
-            // Identitas pasien (WAJIB) — no. rekam medis & nama pasien.
-            'medical_record_no' => 'required|string|max:255',
-            'patient_name' => 'required|string|max:255',
+            // Identitas pasien wajib HANYA untuk layanan rawat inap.
+            'medical_record_no' => ($patientRequired ? 'required' : 'nullable').'|string|max:255',
+            'patient_name' => ($patientRequired ? 'required' : 'nullable').'|string|max:255',
             'order_date' => 'required|date',
             // Jam pinjam WAJIB; hanya rencana kembali yang opsional.
             'order_time' => 'required|date_format:H:i',
@@ -105,8 +111,8 @@ class OrderController extends Controller
                     'user_id' => $validated['user_id'] ?? auth()->id(),
                     // Nama peminjam (teks bebas) — diisi manual di form.
                     'borrowed_by' => $validated['borrowed_by'] ?? null,
-                    'medical_record_no' => $validated['medical_record_no'],
-                    'patient_name' => $validated['patient_name'],
+                    'medical_record_no' => $validated['medical_record_no'] ?? null,
+                    'patient_name' => $validated['patient_name'] ?? null,
                     'order_date' => $validated['order_date'],
                     'order_time' => $validated['order_time'],
                     'return_plan_date' => $validated['return_plan_date'] ?? null,
