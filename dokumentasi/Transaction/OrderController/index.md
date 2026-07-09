@@ -19,8 +19,10 @@
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| search | string | Tidak | Filter berdasarkan `code` order atau `name` ruangan (like) |
+| search | string | Tidak | Filter (like) berdasarkan `code` order, `borrowed_by` (nama peminjam), `medical_record_no` (no. RM pasien), `patient_name` (nama pasien), atau `name` ruangan |
 | status | string | Tidak | Filter berdasarkan status order (`diajukan`, `disetujui`, `dipinjam`, `dikembalikan`, `dibatalkan`) |
+| date_from | date (YYYY-MM-DD) | Tidak | Batas awal (inklusif) rentang `order_date` (tanggal pinjam) |
+| date_to | date (YYYY-MM-DD) | Tidak | Batas akhir (inklusif) rentang `order_date` (tanggal pinjam) |
 | page | integer | Tidak | Nomor halaman (default: 1) |
 
 ## Response

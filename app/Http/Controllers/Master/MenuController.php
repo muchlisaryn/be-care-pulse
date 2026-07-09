@@ -32,11 +32,13 @@ class MenuController extends Controller
                     'icon' => $parent->icon,
                     'sort_order' => $parent->sort_order,
                     'is_open' => (bool) $parent->is_open,
+                    'open_sidebar' => (bool) $parent->open_sidebar,
                     'menu' => ($childrenByParent->get($parent->id) ?? collect())
                         ->map(fn ($child) => [
                             'id' => $child->id,
                             'name' => $child->name,
                             'url' => $child->url,
+                            'open_sidebar' => (bool) $child->open_sidebar,
                         ])->values(),
                 ])->values(),
             ])->values();
@@ -54,6 +56,7 @@ class MenuController extends Controller
             'icon' => 'nullable|string|max:100',
             'sort_order' => 'nullable|integer|min:0',
             'is_open' => 'nullable|boolean',
+            'open_sidebar' => 'nullable|boolean',
         ]);
 
         try {
@@ -83,6 +86,7 @@ class MenuController extends Controller
             'icon' => 'nullable|string|max:100',
             'sort_order' => 'nullable|integer|min:0',
             'is_open' => 'nullable|boolean',
+            'open_sidebar' => 'nullable|boolean',
         ]);
 
         try {

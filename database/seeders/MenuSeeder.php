@@ -14,6 +14,7 @@ class MenuSeeder extends Seeder
         $masterData = TitleMenus::where('title', 'Master Data')->first();
         $cssd = TitleMenus::where('title', 'Cssd')->first();
         $clinicalPathway = TitleMenus::where('title', 'Clinical Pathway')->first();
+        $pengaturan = TitleMenus::where('title', 'Pengaturan')->first();
 
         // Dashboard — langsung link, tidak ada sub_menu
         Menu::create([
@@ -209,5 +210,30 @@ class MenuSeeder extends Seeder
                 ]);
             }
         }
+
+        // Pengaturan — menu ber-url (/pengaturan). Di sidebar utama tampil sebagai
+        // satu link (anak disembunyikan); sub-nav-nya (Master Printer, dst.) tampil
+        // di sidebar kedua yang dibangun dari anak-anak menu ini.
+        // open_sidebar=false → sidebar utama otomatis menutup saat halaman dibuka.
+        $pengaturanParent = Menu::create([
+            'title_menu_id' => $pengaturan?->id,
+            'name' => 'Pengaturan',
+            'url' => '/pengaturan',
+            'icon' => 'settings',
+            'sort_order' => 1,
+            'is_open' => false,
+            'open_sidebar' => false,
+        ]);
+
+        Menu::create([
+            'title_menu_id' => $pengaturan?->id,
+            'parent_id' => $pengaturanParent->id,
+            'name' => 'Master Printer',
+            'url' => '/pengaturan/master-printer',
+            'icon' => 'printer',
+            'sort_order' => 1,
+            'is_open' => false,
+            'open_sidebar' => false,
+        ]);
     }
 }

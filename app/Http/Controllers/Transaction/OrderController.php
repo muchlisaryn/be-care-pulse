@@ -55,9 +55,17 @@ class OrderController extends Controller
             ->when(
                 $request->search,
                 // Bungkus dalam grup agar OR tidak membocorkan order milik akun lain.
+                // Cari berdasarkan: kode order, nama peminjam, no. RM pasien,
+                // nama pasien, dan nama ruangan.
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
+                    ->orWhere('borrowed_by', 'like', "%{$s}%")
+                    ->orWhere('medical_record_no', 'like', "%{$s}%")
+                    ->orWhere('patient_name', 'like', "%{$s}%")
                     ->orWhereHas('room', fn ($q) => $q->where('name', 'like', "%{$s}%")))
             )
+            // Filter rentang tanggal pinjam (order_date), inklusif.
+            ->when($request->date_from, fn ($q, $d) => $q->whereDate('order_date', '>=', $d))
+            ->when($request->date_to, fn ($q, $d) => $q->whereDate('order_date', '<=', $d))
             ->latest()
             ->paginate(20);
 

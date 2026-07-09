@@ -12,10 +12,11 @@ class Menu extends Model
 {
     use HasAuditColumns;
 
-    protected $fillable = ['title_menu_id', 'parent_id', 'name', 'url', 'icon', 'sort_order', 'is_open', 'created_by', 'updated_by'];
+    protected $fillable = ['title_menu_id', 'parent_id', 'name', 'url', 'icon', 'sort_order', 'is_open', 'open_sidebar', 'created_by', 'updated_by'];
 
     protected $casts = [
         'is_open' => 'boolean',
+        'open_sidebar' => 'boolean',
     ];
 
     public function titleMenu(): BelongsTo

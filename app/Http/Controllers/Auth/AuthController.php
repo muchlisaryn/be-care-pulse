@@ -160,9 +160,12 @@ class AuthController extends Controller
                         'icon' => $menu->icon,
                         'sort_order' => $menu->sort_order,
                         'is_open' => (bool) $menu->is_open,
+                        'open_sidebar' => (bool) $menu->open_sidebar,
                         'menu' => $children->map(fn ($child) => [
                             'name' => $child->name,
                             'url' => $child->url,
+                            'icon' => $child->icon,
+                            'open_sidebar' => (bool) $child->open_sidebar,
                         ])->values()->toArray(),
                     ];
                 })->values()->toArray(),

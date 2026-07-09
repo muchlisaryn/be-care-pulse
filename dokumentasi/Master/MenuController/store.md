@@ -22,6 +22,7 @@
 | icon | string | Tidak | Nama icon, maks 100 karakter |
 | sort_order | integer | Tidak | Urutan tampil (default: 0) |
 | is_open | boolean | Tidak | Status accordion terbuka (default: false) |
+| open_sidebar | boolean | Tidak | Untuk menu ber-URL: saat halaman dibuka, sidebar utama tetap terbuka (`true`) atau otomatis collapse (`false`). Default: `true` |
 
 ## Response
 
