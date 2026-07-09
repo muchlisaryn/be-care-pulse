@@ -262,7 +262,6 @@ class CleaningController extends Controller
 
         try {
             DB::transaction(function () use ($washing) {
-                $actor = auth()->user()?->name;
                 $production = $washing->production;
 
                 if ($production) {
@@ -281,25 +280,21 @@ class CleaningController extends Controller
                     ]);
 
                     // Hard delete batch produksi (item ikut terhapus via cascade DB)
-                    // agar slot nomor PRD-nya kosong kembali & dipakai ulang produksi
-                    // berikutnya. Kode produksi tetap tersimpan di washing.production_code
-                    // untuk riwayat cleaning yang dibatalkan.
+                    // agar slot nomor PRD-nya kosong kembali & dipakai ulang produksi berikutnya.
                     $production->forceDelete();
                 }
 
-                // Tandai batch cleaning sebagai batal — TETAP tersimpan sebagai riwayat,
-                // mencatat siapa & kapan membatalkan.
-                $washing->status = OrderWashing::STATUS_BATAL;
-                $washing->canceled_by = $actor;
-                $washing->canceled_at = now();
-                $washing->save();
-
+                // Catat pembatalan di jejak pipeline (audit terpisah) sebelum record dihapus.
                 PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_BATAL, [
-                    'note' => 'Cleaning dibatalkan sebelum diproses',
+                    'note' => 'Cleaning dibatalkan sebelum diproses — record dihapus permanen',
                 ]);
+
+                // Hapus permanen record cleaning: pembatalan tidak menyisakan riwayat
+                // di database sama sekali (bukan hanya ditandai batal).
+                $washing->forceDelete();
             });
 
-            return $this->success('Pencucian dibatalkan & stok dikembalikan ke semula.', $this->transform($washing->refresh()));
+            return $this->success('Pencucian dibatalkan, stok dikembalikan & record dihapus.');
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }

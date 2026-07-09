@@ -9,13 +9,15 @@ Membatalkan batch cleaning (record `washing`) yang **belum diproses** — yaitu
 belum ada satu pun parameter pencucian yang diisi operator dan belum selesai.
 
 **Perilaku:**
-- Batch **tidak dihapus** — status `washing` menjadi `batal` dan **tetap tampil
-  sebagai riwayat cleaning**, mencatat `canceled_by` & `canceled_at`.
+- Record `washing` **dihapus permanen** (`forceDelete`) — pembatalan **tidak
+  menyisakan riwayat** apa pun di database (tidak lagi ditandai `batal`), sehingga
+  batch hilang total dari daftar & riwayat cleaning.
+- Batch produksi asal juga di-`forceDelete` (slot nomor PRD kosong kembali).
 - Seluruh unit yang tadinya dipotong dikembalikan ke stok **semula** (`tersedia`)
   lewat `InstrumentStock::transitionMany` (riwayat status tercatat).
-- Mencatat event pipeline `batal` pada tahap `washing` & `production`.
-- Respons mengembalikan data batch (hasil `transform`) dengan `stage_status = batal`
-  dan blok `washing` berisi jejak `started_by/at`, `completed_by/at`, `canceled_by/at`.
+- Mencatat event pipeline `batal` pada tahap `washing` & `production` (audit
+  terpisah — `pipeline_events` tetap tersimpan meski record washing dihapus).
+- Respons **tidak** mengembalikan data batch (hanya pesan), karena record sudah dihapus.
 
 **Ditolak (422) bila:**
 - Batch sudah **selesai** (`status = selesai`) atau sudah **dibatalkan** (`batal`).
@@ -39,21 +41,8 @@ belum ada satu pun parameter pencucian yang diisi operator dan belum selesai.
 ```json
 {
   "status": true,
-  "message": "Pencucian dibatalkan & stok dikembalikan ke semula.",
-  "data": {
-    "id": 12,
-    "code": "WSH-012",
-    "stage_status": "batal",
-    "washing": {
-      "status": "batal",
-      "started_by": "Operator A",
-      "started_at": "2026-07-05T02:10:00.000000Z",
-      "completed_by": null,
-      "completed_at": null,
-      "canceled_by": "Operator B",
-      "canceled_at": "2026-07-05T03:00:00.000000Z"
-    }
-  }
+  "message": "Pencucian dibatalkan, stok dikembalikan & record dihapus.",
+  "data": null
 }
 ```
 
