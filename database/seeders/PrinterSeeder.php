@@ -7,7 +7,20 @@ use Illuminate\Database\Seeder;
 
 /**
  * Master printer default: Epson TM-T82X (struk / ESC/POS) via share Windows
- * bernama "care-pulse". Idempotent — aman dijalankan berulang.
+ * bernama "care-pulse".
+ *
+ * Memakai updateOrCreate, bukan firstOrCreate: baris yang sudah terlanjur diubah
+ * lewat UI (mis. jadi connection_type=network + ip_address=localhost, yang tidak
+ * pernah bisa mencetak karena port 9100 milik printer jaringan, bukan Apache)
+ * ikut dikembalikan ke nilai benar tiap seeder dijalankan.
+ *
+ * device_path = tujuan WindowsPrintConnector di print server:
+ *   - "care-pulse"                         → share di komputer yang sama
+ *   - "smb://192.168.1.10/care-pulse"      → share di komputer lain (pakai IP/hostname)
+ *   - "smb://user:pass@192.168.1.10/care-pulse" → bila share butuh login
+ *   - "COM3" / "LPT1"                      → port lokal langsung
+ * Untuk printer yang benar-benar punya kartu jaringan sendiri, barulah pakai
+ * connection_type=network + ip_address=<IP printer> + port=9100.
  *
  * Jalankan: php artisan db:seed --class=PrinterSeeder
  */
@@ -15,13 +28,13 @@ class PrinterSeeder extends Seeder
 {
     public function run(): void
     {
-        Printer::firstOrCreate(
+        Printer::updateOrCreate(
             ['name' => 'Epson TM-T82X'],
             [
                 'document_type' => 'struk',
                 'printer_language' => 'escpos',
+                // TM-T82X tersambung USB, dicetak lewat share Windows — bukan network.
                 'connection_type' => 'usb',
-                // Nama share printer di Windows (dipakai print server ESC/POS).
                 'device_path' => 'care-pulse',
                 'ip_address' => null,
                 'port' => null,
