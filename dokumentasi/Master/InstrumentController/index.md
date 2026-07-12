@@ -18,9 +18,13 @@ Setiap item menyertakan `image` (path relatif, `null` bila belum ada) dan `image
 
 > Setiap item menyertakan `stocks_count` — jumlah unit fisik (stok) milik instrumen tersebut,
 > `available_stocks_count` — jumlah unit yang berstatus `tersedia`, dan
-> `available_sterile_count` — jumlah unit STERIL siap-order (ada di gudang steril,
-> `instrument_storages.status = tersimpan`, belum kedaluwarsa, **dan masih milik
+> `available_sterile_count` — jumlah unit STERIL siap-order SATUAN (ada di gudang steril,
+> `instrument_storages.status = tersimpan`, belum kedaluwarsa, **diproduksi & disimpan
+> sebagai satuan** — `instrument_storages.source = satuan`, **dan masih milik
 > produksi / belum dialokasikan ke order peminjaman** — order pemilik `room_id` null).
+> Unit yang diproduksi sebagai PAKET tidak dihitung di sini: bentuk barang ditentukan
+> saat produksi, sehingga hanya bisa dipinjam sebagai paket utuh (lihat
+> `available_sterile_sets` pada InstrumentCatalogController).
 > Begitu order menerima & mengalokasikan unit (FEFO), kepemilikan baris gudang pindah
 > ke order itu sehingga otomatis keluar dari hitungan ini. Order hanya boleh atas barang steril.
 

@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\InstrumentCatalog;
+use App\Models\InstrumentStock;
 use App\Models\InstrumentStorage;
 use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\PipelineEvent;
+use App\Models\ProductionItem;
 use App\Models\Sterilization;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -117,7 +119,7 @@ class StorageController extends Controller
                 }
 
                 // Perbarui tahap unit (→ disimpan di rak).
-                \App\Models\InstrumentStock::syncStages($orderStockIds);
+                InstrumentStock::syncStages($orderStockIds);
             });
 
             $order->load([
@@ -136,6 +138,11 @@ class StorageController extends Controller
      * Inventaris real-time gudang steril: unit yang sedang tersimpan + lokasi rak +
      * status kedaluwarsa (alert merah bila ≤ ambang hari atau sudah lewat).
      * ?days= ambang early-warning (default 7).
+     *
+     * Unit yang sudah keluar gudang (didistribusikan → `dipinjam`, atau sedang
+     * diproses ulang → `sterilisasi`) TIDAK ditampilkan meski baris gudangnya masih
+     * `tersimpan`: yang ditampilkan hanya unit yang fisiknya benar-benar ada di rak,
+     * yaitu yang kondisinya `tersedia`. Barisnya tetap ada di database (tidak dihapus).
      */
     public function inventory(Request $request): JsonResponse
     {
@@ -143,6 +150,10 @@ class StorageController extends Controller
 
         $rows = InstrumentStorage::with(['instrumentStock.instrument', 'order', 'sterilization'])
             ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->whereHas(
+                'instrumentStock',
+                fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
+            )
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('rack_code', 'like', "%{$s}%")
@@ -154,7 +165,11 @@ class StorageController extends Controller
             ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
             ->paginate(20);
 
-        $rows->getCollection()->transform(fn (InstrumentStorage $s) => $this->inventoryRow($s, $days));
+        $codes = $this->productionCodeMap(
+            $rows->getCollection()->pluck('instrument_stock_id')->map(fn ($id) => (int) $id)->all()
+        );
+
+        $rows->getCollection()->transform(fn (InstrumentStorage $s) => $this->inventoryRow($s, $days, $codes));
 
         return $this->success('Inventaris gudang steril berhasil diambil.', $rows);
     }
@@ -222,6 +237,24 @@ class StorageController extends Controller
             ->where('status', Sterilization::STATUS_SELESAI)
             ->whereNotNull('packaging_code')
             ->whereNull('order_id')
+            // Hanya batch yang MASIH punya unit menunggu ditaruh di rak. Unit yang sudah
+            // pernah dibuatkan baris gudang (walau kini `keluar` karena didistribusikan)
+            // atau yang fisiknya tidak lagi di CSSD (dipinjam / dikembalikan / re-proses)
+            // bukan urusan penyimpanan lagi — batchnya hilang dari daftar siap-simpan.
+            ->whereHas('items', function ($q) {
+                $q->where(fn ($w) => $w->whereNull('result')->orWhere('result', Sterilization::RESULT_BERHASIL))
+                    ->whereHas(
+                        'instrumentStock',
+                        fn ($s) => $s->where('status', InstrumentStock::STATUS_TERSEDIA)
+                    )
+                    ->whereNotExists(function ($sub) {
+                        $sub->selectRaw('1')
+                            ->from('instrument_storages')
+                            ->whereColumn('instrument_storages.instrument_stock_id', 'sterilization_items.instrument_stock_id')
+                            ->whereColumn('instrument_storages.sterilization_id', 'sterilization_items.sterilization_id')
+                            ->whereNull('instrument_storages.deleted_by');
+                    });
+            })
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
@@ -267,9 +300,9 @@ class StorageController extends Controller
             ->flatMap(fn ($p) => $p->washing?->production?->items ?? collect())
             ->keyBy('instrument_stock_id');
 
-        // Unit yang sudah tersimpan sebelumnya (hindari duplikat).
+        // Unit yang sudah pernah disimpan (hindari duplikat). Termasuk baris `keluar`:
+        // unit yang sudah didistribusikan tidak boleh dibuatkan baris gudang baru.
         $alreadyStored = InstrumentStorage::where('sterilization_id', $sterilization->id)
-            ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
             ->pluck('instrument_stock_id')->all();
 
         try {
@@ -303,7 +336,7 @@ class StorageController extends Controller
                 }
 
                 // Perbarui tahap unit (→ disimpan di rak).
-                \App\Models\InstrumentStock::syncStages($batchStockIds);
+                InstrumentStock::syncStages($batchStockIds);
             });
 
             return $this->success('Unit berhasil disimpan ke gudang steril.', $this->productionIncomingPayload($sterilization->refresh()));
@@ -339,8 +372,11 @@ class StorageController extends Controller
         $originByStock = ($production?->items ?? collect())
             ->keyBy('instrument_stock_id');
 
+        // Baris gudang unit batch ini, TERMASUK yang berstatus `keluar` (sudah diambil /
+        // didistribusikan). Unit yang pernah masuk gudang tidak boleh muncul lagi sebagai
+        // "siap simpan" — kalau hanya baris `tersimpan` yang dihitung, batch yang unitnya
+        // sudah dipinjam akan terlihat belum tersimpan dan kembali ke daftar.
         $stored = InstrumentStorage::where('sterilization_id', $batch->id)
-            ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
             ->get()
             ->keyBy('instrument_stock_id');
 
@@ -354,22 +390,22 @@ class StorageController extends Controller
         $unitRows = $batch->items
             ->filter(fn ($it) => $it->result !== Sterilization::RESULT_GAGAL)
             ->map(function ($it) use ($stored, $originByStock, $packageImages) {
-            $row = $stored->get($it->instrument_stock_id);
-            $origin = $originByStock->get($it->instrument_stock_id);
-            $stock = $it->instrumentStock;
+                $row = $stored->get($it->instrument_stock_id);
+                $origin = $originByStock->get($it->instrument_stock_id);
+                $stock = $it->instrumentStock;
 
-            return [
-                'id' => $it->instrument_stock_id,
-                'code' => $stock?->code,
-                'instrument' => $stock?->instrument?->name,
-                'image_url' => $stock?->instrument?->image_url,
-                'source' => $origin?->source ?? 'satuan',
-                'package_name' => $origin?->package_name,
-                'package_image' => $origin?->source === 'paket' ? ($packageImages[$origin->package_name] ?? null) : null,
-                'stored' => (bool) $row,
-                'rack_code' => $row?->rack_code,
-            ];
-        })->values();
+                return [
+                    'id' => $it->instrument_stock_id,
+                    'code' => $stock?->code,
+                    'instrument' => $stock?->instrument?->name,
+                    'image_url' => $stock?->instrument?->image_url,
+                    'source' => $origin?->source ?? 'satuan',
+                    'package_name' => $origin?->package_name,
+                    'package_image' => $origin?->source === 'paket' ? ($packageImages[$origin->package_name] ?? null) : null,
+                    'stored' => (bool) $row,
+                    'rack_code' => $row?->rack_code,
+                ];
+            })->values();
 
         return [
             'id' => $batch->id,                 // id sterilisasi (STR) → dipakai di store_url
@@ -388,8 +424,27 @@ class StorageController extends Controller
         ];
     }
 
+    /**
+     * Kode batch produksi (PRD-...) terakhir tiap unit — label pada bungkus sterilnya.
+     * Dipetakan sekali untuk seluruh baris agar tidak query per unit.
+     */
+    private function productionCodeMap(array $stockIds): array
+    {
+        if (empty($stockIds)) {
+            return [];
+        }
+
+        return ProductionItem::with('production')
+            ->whereIn('instrument_stock_id', $stockIds)
+            ->orderBy('id')
+            ->get()
+            // Urut id ASC → batch terbaru menimpa yang lama.
+            ->mapWithKeys(fn ($it) => [(int) $it->instrument_stock_id => $it->production?->code])
+            ->all();
+    }
+
     /** Satu baris inventaris + status kedaluwarsa. */
-    private function inventoryRow(InstrumentStorage $s, int $days): array
+    private function inventoryRow(InstrumentStorage $s, int $days, array $productionCodes = []): array
     {
         $daysToExpiry = null;
         $alert = false;
@@ -411,6 +466,8 @@ class StorageController extends Controller
             'expired' => $expired,
             'source' => $s->source ?? 'satuan',
             'package_name' => $s->package_name,
+            // Kode batch produksi asal unit (PRD-...) — tercetak di bungkus steril.
+            'production_code' => $productionCodes[(int) $s->instrument_stock_id] ?? null,
             'unit' => [
                 'id' => $s->instrument_stock_id,
                 'code' => $s->instrumentStock?->code,

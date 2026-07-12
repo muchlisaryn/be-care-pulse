@@ -58,8 +58,10 @@ class InstrumentController extends Controller
     }
 
     /**
-     * Jumlah unit STERIL siap-order per instrument_id: unit di gudang steril
-     * (instrument_storages.status = `tersimpan`) yang belum kedaluwarsa.
+     * Jumlah unit STERIL siap-order SATUAN per instrument_id: unit di gudang steril
+     * (instrument_storages.status = `tersimpan`) yang belum kedaluwarsa DAN diproduksi
+     * sebagai satuan (`source` = satuan). Unit yang diproduksi & disimpan sebagai PAKET
+     * hanya boleh dipinjam sebagai paket utuh — lihat InstrumentCatalogController.
      * Kolom di-kualifikasi + tanpa global scope agar JOIN tidak ambigu pada `deleted_by`.
      *
      * @param  \Illuminate\Support\Collection<int,int>  $instrumentIds
@@ -85,6 +87,8 @@ class InstrumentController extends Controller
             ->whereNull('order.room_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
+            // Unit yang disimpan sebagai bagian PAKET tidak dihitung sebagai stok satuan.
+            ->where('instrument_storages.source', 'satuan')
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
             ->selectRaw('instrument_stocks.instrument_id as instrument_id, count(*) as cnt')

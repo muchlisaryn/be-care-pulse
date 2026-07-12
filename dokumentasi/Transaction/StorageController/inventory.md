@@ -10,6 +10,12 @@ status kedaluwarsa. **Early-warning**: `alert = true` (merah) bila masa berlaku
 steril ≤ ambang hari atau sudah lewat. Diurutkan dari yang paling cepat
 kedaluwarsa.
 
+**Filter isi rak:** hanya baris gudang berstatus `tersimpan` yang unitnya masih
+berkondisi `tersedia`. Unit yang sudah keluar gudang (sudah didistribusikan →
+`dipinjam`, atau sedang diproses ulang → `sterilisasi`) tidak ikut ditampilkan
+meski baris gudangnya masih `tersimpan`. Baris tersebut tetap tersimpan di
+database — hanya disembunyikan dari daftar isi rak.
+
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|

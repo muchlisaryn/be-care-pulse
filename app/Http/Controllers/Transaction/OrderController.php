@@ -11,11 +11,14 @@ use App\Models\OrderEvent;
 use App\Models\OrderItem;
 use App\Models\OrderTransfer;
 use App\Models\OrderWashing;
+use App\Models\Production;
 use App\Models\ProductionItem;
+use App\Models\Room;
 use App\Models\Sterilization;
 use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
@@ -77,7 +80,7 @@ class OrderController extends Controller
         // Layanan ruangan menentukan wajib/tidaknya identitas pasien:
         // hanya RAWAT INAP yang mewajibkan No. RM & Nama Pasien; rawat jalan / IGD
         // boleh kosong.
-        $room = \App\Models\Room::find($request->input('room_id'));
+        $room = Room::find($request->input('room_id'));
         $patientRequired = $room && $room->layanan === 'rawat_inap';
 
         $validated = $request->validate([
@@ -979,6 +982,355 @@ class OrderController extends Controller
     }
 
     /**
+     * Pilihan barang yang bisa didistribusikan untuk sebuah order (dipakai modal
+     * "Distribusikan"). Satu entri per BARIS PERMINTAAN order, dipilih sesuai
+     * bentuknya:
+     * - `satuan` → petugas memilih unit satu per satu (opsi = unit steril di gudang).
+     * - `paket`  → petugas memilih PER PAKET utuh (opsi = satu set lengkap dari satu
+     *   batch produksi); memilih 1 opsi otomatis mengambil semua unit isi paket itu.
+     *
+     * Kandidat = unit yang sudah direservasi untuk order ini (alokasi FEFO saat order
+     * diterima) + unit steril milik produksi yang masih bebas. Urut FEFO.
+     */
+    public function distributionOptions(Order $order): JsonResponse
+    {
+        if ($order->status !== Order::STATUS_DIGUDANG) {
+            return $this->error('Order ini belum berada di gudang steril / tidak siap didistribusikan.', 422);
+        }
+
+        $order->loadMissing(['requestItems.instrument', 'requestItems.catalog.items.instrument']);
+
+        $reserved = $order->items()->where('is_returned', false)
+            ->pluck('instrument_stock_id')->map(fn ($id) => (int) $id)->unique()->all();
+
+        $lines = [];
+        $taken = [];   // stock yang sudah ditawarkan di baris sebelumnya (cegah dobel pilih)
+
+        foreach ($order->requestItems as $line) {
+            $lines[] = $line->type === 'paket'
+                ? $this->packageLineOptions($order, $line, $reserved, $taken)
+                : $this->unitLineOptions($order, $line, $reserved, $taken);
+        }
+
+        return $this->success('Pilihan unit distribusi berhasil diambil.', [
+            'order' => [
+                'id' => $order->id,
+                'code' => $order->code,
+                'code_transaction' => $order->code_transaction,
+                'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
+                'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
+            ],
+            'requirements' => $lines,
+        ]);
+    }
+
+    /**
+     * Baris permintaan SATUAN: petugas memilih unit satu per satu. Satu opsi = satu
+     * unit steril di gudang (ditandai kode produksinya).
+     */
+    private function unitLineOptions(Order $order, $line, array $reserved, array &$taken): array
+    {
+        $instrument = $line->instrument;
+        $needed = (int) $line->quantity;
+
+        $rows = $instrument
+            ? $this->distributionCandidates($order, [
+                'instrument_id' => $instrument->id,
+                'source' => 'satuan',
+                'package_name' => null,
+            ])->reject(fn ($r) => in_array((int) $r->stock_id, $taken, true))->values()
+            : collect();
+
+        $codes = $this->productionCodeMap($rows->pluck('stock_id')->all());
+
+        foreach ($rows as $r) {
+            $taken[] = (int) $r->stock_id;
+        }
+
+        $options = $rows->map(fn ($r) => [
+            // Nilai yang dikirim balik saat distribusi (satu opsi = satu unit).
+            'value' => 'u'.(int) $r->stock_id,
+            'production_code' => $codes[(int) $r->stock_id] ?? null,
+            'name' => $instrument?->name,
+            'stock_ids' => [(int) $r->stock_id],
+            'expiry_date' => $r->expiry_date,
+            'rack_code' => $r->rack_code,
+        ])->values();
+
+        return [
+            'key' => 'line-'.$line->id,
+            'kind' => 'satuan',
+            'name' => $instrument?->name,
+            'needed_qty' => $needed,
+            // Satuan dihitung per unit.
+            'unit_label' => 'unit',
+            'options' => $options,
+            'selected' => $this->preselect($options, $reserved, $needed),
+        ];
+    }
+
+    /**
+     * Baris permintaan PAKET: petugas memilih PER PAKET, bukan per instrumen. Satu opsi
+     * = satu set lengkap (isi katalog) yang berasal dari SATU batch produksi, sehingga
+     * paket yang dikeluarkan tidak tercampur antar batch. Satu batch yang memproduksi
+     * beberapa set dengan nama paket sama menghasilkan beberapa opsi (Set 1, Set 2, …).
+     */
+    private function packageLineOptions(Order $order, $line, array $reserved, array &$taken): array
+    {
+        $packageName = $line->package_name ?? $line->catalog?->name ?? 'Paket';
+        $needed = (int) $line->quantity;   // jumlah SET yang diminta
+
+        // Isi paket: instrumen apa saja & berapa unit per set.
+        $contents = collect($line->catalog?->items ?? [])
+            ->filter(fn ($ci) => $ci->instrument && $ci->quantity > 0)
+            ->values();
+
+        // Kandidat unit per instrumen isi paket, dikelompokkan per batch produksi.
+        $byCodeInstrument = [];   // [production_code][instrument_id] => stock_id[] (FEFO)
+        $rackByStock = [];        // lokasi rak tiap unit (untuk label opsi)
+        $expiryByStock = [];
+        foreach ($contents as $ci) {
+            $rows = $this->distributionCandidates($order, [
+                'instrument_id' => $ci->instrument->id,
+                'source' => 'paket',
+                'package_name' => $packageName,
+            ])->reject(fn ($r) => in_array((int) $r->stock_id, $taken, true))->values();
+
+            $codes = $this->productionCodeMap($rows->pluck('stock_id')->all());
+
+            foreach ($rows as $r) {
+                $stockId = (int) $r->stock_id;
+                $taken[] = $stockId;
+                $code = $codes[$stockId] ?? null;
+                if ($code === null) {
+                    // Tanpa kode produksi paket tak bisa dijamin satu batch — lewati.
+                    continue;
+                }
+                $rackByStock[$stockId] = $r->rack_code;
+                $expiryByStock[$stockId] = $r->expiry_date;
+                $byCodeInstrument[$code][$ci->instrument->id][] = $stockId;
+            }
+        }
+
+        // Rakit set utuh per batch: satu set = quantity unit untuk tiap instrumen isi paket.
+        $options = collect();
+        foreach ($byCodeInstrument as $code => $perInstrument) {
+            $sets = $contents
+                ->map(fn ($ci) => intdiv(count($perInstrument[$ci->instrument->id] ?? []), (int) $ci->quantity))
+                ->min() ?? 0;
+
+            for ($i = 0; $i < $sets; $i++) {
+                $stockIds = [];
+                foreach ($contents as $ci) {
+                    $take = (int) $ci->quantity;
+                    $stockIds = array_merge(
+                        $stockIds,
+                        array_slice($perInstrument[$ci->instrument->id], $i * $take, $take)
+                    );
+                }
+
+                // Rak & kedaluwarsa paket diwakili unit isinya (satu paket disimpan
+                // di satu rak; ambil rak pertama yang terisi, kedaluwarsa terdekat).
+                $racks = collect($stockIds)->map(fn ($id) => $rackByStock[$id] ?? null)->filter()->unique();
+                $expiry = collect($stockIds)->map(fn ($id) => $expiryByStock[$id] ?? null)->filter()->sort()->first();
+
+                $options->push([
+                    'value' => 'p'.$code.'#'.$i,
+                    'production_code' => $code,
+                    'name' => $packageName,
+                    'stock_ids' => $stockIds,
+                    // Set ke-berapa dari batch yang sama (batch bisa memproduksi >1 set).
+                    'set_index' => $sets > 1 ? $i + 1 : null,
+                    'expiry_date' => $expiry,
+                    'rack_code' => $racks->implode(', ') ?: null,
+                ]);
+            }
+        }
+
+        $options = $options->values();
+
+        return [
+            'key' => 'line-'.$line->id,
+            'kind' => 'paket',
+            'name' => $packageName,
+            'needed_qty' => $needed,
+            // Paket dihitung per set, bukan per unit.
+            'unit_label' => 'paket',
+            'options' => $options,
+            'selected' => $this->preselect($options, $reserved, $needed),
+        ];
+    }
+
+    /**
+     * Pilihan default modal: dahulukan opsi yang unitnya sudah direservasi untuk order
+     * ini (hasil alokasi FEFO saat order diterima), lalu lengkapi dengan opsi FEFO
+     * teratas sampai jumlah yang diminta terpenuhi.
+     */
+    private function preselect($options, array $reserved, int $needed): array
+    {
+        $picked = [];
+
+        foreach ($options as $opt) {
+            if (count($picked) >= $needed) {
+                break;
+            }
+            // Opsi dianggap "sudah dialokasikan" bila SELURUH unitnya direservasi order ini.
+            if (! empty(array_diff($opt['stock_ids'], $reserved))) {
+                continue;
+            }
+            $picked[] = $opt['value'];
+        }
+
+        foreach ($options as $opt) {
+            if (count($picked) >= $needed) {
+                break;
+            }
+            if (! in_array($opt['value'], $picked, true)) {
+                $picked[] = $opt['value'];
+            }
+        }
+
+        return $picked;
+    }
+
+    /**
+     * Kandidat unit steril di gudang untuk satu requirement order distribusi:
+     * baris gudang berstatus `tersimpan`, belum kedaluwarsa, bentuk simpannya cocok
+     * (satuan/paket bernama sama), dan pemiliknya order ini (sudah direservasi) atau
+     * masih pool produksi (belum dialokasikan ke order manapun). Urut FEFO.
+     */
+    private function distributionCandidates(Order $order, array $req)
+    {
+        $today = now()->toDateString();
+
+        return InstrumentStorage::withoutGlobalScopes()
+            ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
+            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
+            ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('instrument_stocks.deleted_by')
+            ->whereNull('order.deleted_by')
+            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
+                ->orWhereDate('instrument_storages.expiry_date', '>=', $today))
+            ->where(fn ($w) => $w->where('instrument_storages.order_id', $order->id)
+                ->orWhereNull('order.room_id'))
+            ->where('instrument_stocks.instrument_id', $req['instrument_id'])
+            ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
+            ->where('instrument_storages.source', $req['source'])
+            ->when(
+                $req['source'] === 'paket',
+                fn ($q) => $q->where('instrument_storages.package_name', $req['package_name'])
+            )
+            ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')
+            ->get([
+                'instrument_storages.id as storage_id',
+                'instrument_storages.expiry_date as expiry_date',
+                'instrument_storages.rack_code as rack_code',
+                'instrument_stocks.id as stock_id',
+                'instrument_stocks.code as unit_code',
+                'instrument_stocks.condition_id as condition_id',
+            ])
+            // Satu unit fisik bisa punya >1 baris gudang; ambil baris FEFO paling awal.
+            ->unique('stock_id')
+            ->values();
+    }
+
+    /** Kode batch produksi (PRD-...) terakhir tiap unit, dipakai sebagai label bungkus steril. */
+    private function productionCodeMap(array $stockIds): array
+    {
+        if (empty($stockIds)) {
+            return [];
+        }
+
+        return ProductionItem::with('production')
+            ->whereIn('instrument_stock_id', $stockIds)
+            ->orderBy('id')
+            ->get()
+            // Urut id ASC → batch terbaru menimpa yang lama.
+            ->mapWithKeys(fn ($it) => [(int) $it->instrument_stock_id => $it->production?->code])
+            ->all();
+    }
+
+    /**
+     * Terapkan pilihan unit petugas saat distribusi: unit terpilih direservasi ke
+     * order ini, unit yang tadinya dialokasikan (FEFO otomatis) tapi tidak jadi
+     * dipilih dikembalikan ke pool produksi, lalu baris order_item ditulis ulang
+     * agar cocok dengan yang benar-benar dikeluarkan dari gudang.
+     */
+    private function reallocateDistribution(Order $order, array $stockIds): void
+    {
+        $wanted = collect($stockIds)->map(fn ($id) => (int) $id)->unique();
+        $requirements = $this->buildRequirements($order);
+
+        $chosen = collect();  // baris kandidat terpilih (storage_id, stock_id, condition_id)
+        $taken = [];
+
+        foreach ($requirements as $req) {
+            $rows = $this->distributionCandidates($order, $req)
+                ->reject(fn ($r) => in_array((int) $r->stock_id, $taken, true))
+                ->values();
+
+            $pick = $rows->filter(fn ($r) => $wanted->contains((int) $r->stock_id))
+                ->map(fn ($r) => [
+                    'storage_id' => (int) $r->storage_id,
+                    'stock_id' => (int) $r->stock_id,
+                    'condition_id' => $r->condition_id,
+                    'source' => $req['source'],
+                    'package_name' => $req['package_name'],
+                ])
+                ->values();
+
+            if ($pick->count() !== (int) $req['needed_qty']) {
+                $bentuk = $req['source'] === 'paket'
+                    ? " (paket \"{$req['package_name']}\")"
+                    : ' (satuan)';
+                throw new \RuntimeException(
+                    "Pilihan unit \"{$req['instrument']['name']}\"{$bentuk} harus {$req['needed_qty']} unit, terpilih ".$pick->count().'.'
+                );
+            }
+
+            foreach ($rows as $r) {
+                $taken[] = (int) $r->stock_id;
+            }
+
+            $chosen = $chosen->concat($pick);
+        }
+
+        $unknown = $wanted->diff($chosen->pluck('stock_id'));
+        if ($unknown->isNotEmpty()) {
+            throw new \RuntimeException('Ada unit terpilih yang tidak tersedia lagi di gudang steril. Muat ulang daftar unit.');
+        }
+
+        $chosenStockIds = $chosen->pluck('stock_id')->all();
+        $actor = auth()->user()?->name;
+
+        // Lepas reservasi unit lama yang tidak jadi dipilih → kembali ke pool produksi.
+        InstrumentStorage::withoutGlobalScopes()
+            ->whereNull('deleted_by')
+            ->where('order_id', $order->id)
+            ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->whereNotIn('instrument_stock_id', $chosenStockIds)
+            ->update(['order_id' => null, 'updated_by' => $actor]);
+
+        // Reservasi unit terpilih ke order ini (agar distribute mengeluarkannya).
+        InstrumentStorage::withoutGlobalScopes()
+            ->whereIn('id', $chosen->pluck('storage_id')->all())
+            ->update(['order_id' => $order->id, 'updated_by' => $actor]);
+
+        // Tulis ulang unit order agar sama persis dengan pilihan petugas.
+        $order->items()->where('is_returned', false)->delete();
+        foreach ($chosen as $row) {
+            $order->items()->create([
+                'instrument_stock_id' => $row['stock_id'],
+                'source' => $row['source'],
+                'package_name' => $row['package_name'],
+                'condition_out_id' => $row['condition_id'],
+                'is_returned' => false,
+            ]);
+        }
+    }
+
+    /**
      * Terima order masuk & SIAPKAN DISTRIBUSI. Karena order hanya meminta barang
      * yang sudah steril, order tidak perlu lewat pipeline Cleaning→Sterilisasi lagi:
      * sistem mengalokasikan unit steril dari gudang secara FEFO (first-expired-first-out),
@@ -1008,6 +1360,9 @@ class OrderController extends Controller
                 foreach ($requirements as $req) {
                     // Kandidat unit steril (di gudang, belum kedaluwarsa, masih milik
                     // produksi) untuk instrumen ini, diurutkan FEFO (kedaluwarsa terdekat).
+                    // Bentuk simpan harus cocok: permintaan satuan hanya boleh mengambil
+                    // unit yang disimpan satuan, permintaan paket hanya dari unit yang
+                    // disimpan sebagai paket bernama sama (produksi menentukan bentuknya).
                     $rows = InstrumentStorage::withoutGlobalScopes()
                         ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
                         // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null).
@@ -1021,6 +1376,11 @@ class OrderController extends Controller
                         ->whereNull('order.room_id') // hanya stok produksi yang belum dialokasikan
                         ->where('instrument_stocks.instrument_id', $req['instrument_id'])
                         ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
+                        ->where('instrument_storages.source', $req['source'])
+                        ->when(
+                            $req['source'] === 'paket',
+                            fn ($q) => $q->where('instrument_storages.package_name', $req['package_name'])
+                        )
                         ->when($picked, fn ($q) => $q->whereNotIn('instrument_stocks.id', $picked))
                         ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')
                         ->get([
@@ -1037,8 +1397,11 @@ class OrderController extends Controller
                         ->values();
 
                     if ($rows->count() < $req['needed_qty']) {
+                        $bentuk = $req['source'] === 'paket'
+                            ? " (paket \"{$req['package_name']}\")"
+                            : ' (satuan)';
                         throw new \RuntimeException(
-                            "Stok steril \"{$req['instrument']['name']}\" tidak cukup: butuh {$req['needed_qty']}, tersedia ".$rows->count().'.'
+                            "Stok steril \"{$req['instrument']['name']}\"{$bentuk} tidak cukup: butuh {$req['needed_qty']}, tersedia ".$rows->count().'.'
                         );
                     }
 
@@ -1085,7 +1448,9 @@ class OrderController extends Controller
 
     /**
      * Distribusikan order steril ke unit pelayanan (Double Verification).
-     * Body: `recipient` (ruangan/petugas penerima hasil scan). No RM & Nama Pasien
+     * Body: `recipient` (ruangan/petugas penerima hasil scan) + `stock_ids` (opsional,
+     * unit yang dipilih petugas di modal — lihat `distributionOptions`; bila kosong,
+     * dipakai alokasi FEFO otomatis dari saat order diterima). No RM & Nama Pasien
      * tidak lagi diinput di sini — diisi saat pembuatan order (tautan RM pasien,
      * full traceability loop) dan dibawa apa adanya ke event distribusi.
      *
@@ -1101,17 +1466,25 @@ class OrderController extends Controller
         $validated = $request->validate([
             'recipient' => 'required|string|max:255',
             'note' => 'nullable|string',
+            'stock_ids' => 'nullable|array',
+            'stock_ids.*' => 'integer',
         ]);
 
-        $stockIds = $order->items()->where('is_returned', false)
-            ->pluck('instrument_stock_id')->unique()->values();
-
-        if ($stockIds->isEmpty()) {
-            return $this->error('Order ini tidak punya unit untuk didistribusikan.', 422);
-        }
-
         try {
-            DB::transaction(function () use ($validated, $order, $stockIds) {
+            DB::transaction(function () use ($validated, $order) {
+                // Petugas memilih sendiri stok yang dikeluarkan (kode produksi mana) →
+                // sesuaikan reservasi gudang & unit order sebelum dikeluarkan.
+                if (! empty($validated['stock_ids'])) {
+                    $this->reallocateDistribution($order, $validated['stock_ids']);
+                }
+
+                $stockIds = $order->items()->where('is_returned', false)
+                    ->pluck('instrument_stock_id')->unique()->values();
+
+                if ($stockIds->isEmpty()) {
+                    throw new \RuntimeException('Order ini tidak punya unit untuk didistribusikan.');
+                }
+
                 // Keluarkan unit dari gudang steril.
                 InstrumentStorage::where('order_id', $order->id)
                     ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
@@ -1145,6 +1518,9 @@ class OrderController extends Controller
             $order->load(self::DETAIL_RELATIONS);
 
             return $this->success('Alat steril berhasil didistribusikan.', $order);
+        } catch (\RuntimeException $e) {
+            // Pilihan unit tidak valid / stok berubah — validasi bisnis, bukan error server.
+            return $this->error($e->getMessage(), 422);
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
@@ -1307,9 +1683,12 @@ class OrderController extends Controller
 
     /**
      * Scan untuk tracking berbasis order. Menerima:
-     * - Kode order (ORD-NNN) → tampilkan order tersebut.
+     * - Kode order (ORD-NNN) / no. transaksi → tampilkan order tersebut.
      * - Kode unit alat (mis. KLL-002) → cari order TERAKHIR yang memuat unit itu.
-     * Dipakai halaman Scan & Tracking; QR unit yang sudah tercetak tetap bisa dipakai.
+     * - Kode batch PRODUKSI (PRD-yymmddNN) → label pada bungkus steril; cari order
+     *   TERAKHIR yang memuat unit dari batch produksi itu.
+     * Dipakai halaman Scan & Tracking + modal Pengembalian; QR unit yang sudah
+     * tercetak tetap bisa dipakai.
      */
     public function scan(Request $request): JsonResponse
     {
@@ -1340,13 +1719,56 @@ class OrderController extends Controller
             }
         }
 
+        // 3. Bukan order/unit → coba sebagai kode batch PRODUKSI (PRD-xxx). Label yang
+        // menempel pada bungkus steril memakai kode ini, jadi satu scan pada bungkus
+        // cukup untuk menemukan order terakhir yang memakai unit-unit batch tersebut.
         if (! $order) {
-            return $this->error("Order atau unit dengan kode \"{$code}\" tidak ditemukan.", 404);
+            $production = Production::where('code', $code)->first();
+            if ($production) {
+                $stockIds = ProductionItem::where('production_id', $production->id)
+                    ->pluck('instrument_stock_id');
+
+                $order = $stockIds->isEmpty()
+                    ? null
+                    : Order::whereHas('items', fn ($q) => $q->whereIn('instrument_stock_id', $stockIds))
+                        ->with(self::DETAIL_RELATIONS)
+                        ->latest()
+                        ->first();
+
+                if (! $order) {
+                    return $this->error("Batch produksi \"{$code}\" belum masuk order manapun.", 404);
+                }
+            }
+        }
+
+        if (! $order) {
+            return $this->error("Order, unit, atau batch produksi dengan kode \"{$code}\" tidak ditemukan.", 404);
         }
 
         $this->attachTimeline($order);
+        $this->attachProductionCodes($order);
 
         return $this->success('Detail order berhasil diambil.', $order);
+    }
+
+    /**
+     * Lampirkan kode batch produksi (PRD-...) ke tiap unit order. Kode ini yang tercetak
+     * pada bungkus steril, jadi petugas bisa mencocokkan barang fisik saat pengembalian.
+     */
+    private function attachProductionCodes(Order $order): void
+    {
+        $order->loadMissing('items');
+
+        $codes = $this->productionCodeMap(
+            $order->items->pluck('instrument_stock_id')->filter()->map(fn ($id) => (int) $id)->all()
+        );
+
+        $order->items->each(
+            fn (OrderItem $item) => $item->setAttribute(
+                'production_code',
+                $codes[(int) $item->instrument_stock_id] ?? null
+            )
+        );
     }
 
     /**
@@ -1413,10 +1835,10 @@ class OrderController extends Controller
      * Sterilisasi (batch terbaru tiap unit) → Simpan di Rak (instrument_storages).
      * Setiap tahap dibaca dari tabelnya langsung agar dijamin ter-record.
      *
-     * @param  \Illuminate\Support\Collection<int,int>  $stockIds
-     * @return \Illuminate\Support\Collection<int,array<string,mixed>>
+     * @param  Collection<int,int>  $stockIds
+     * @return Collection<int,array<string,mixed>>
      */
-    private function pipelineTimeline($stockIds): \Illuminate\Support\Collection
+    private function pipelineTimeline($stockIds): Collection
     {
         $stockIds = collect($stockIds)->filter()->unique()->values();
         if ($stockIds->isEmpty()) {
@@ -1535,6 +1957,7 @@ class OrderController extends Controller
             // Lampirkan timeline agar Riwayat Peminjaman tetap tampil setelah
             // pengembalian (termasuk pengembalian dicicil sebagian unit).
             $this->attachTimeline($order);
+            $this->attachProductionCodes($order);
 
             return $this->success('Peminjaman berhasil diperbarui.', $order);
         } catch (\Throwable $e) {

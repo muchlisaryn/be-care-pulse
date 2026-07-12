@@ -18,9 +18,12 @@
 > Setiap item menyertakan `items_count` (jumlah jenis instrumen dalam katalog),
 > `available_sets` — berapa set paket yang masih bisa dipenuhi dari stok `tersedia`
 > (= minimum dari `floor(stok_tersedia / qty_per_set)` atas seluruh isinya; `0` jika ada item yang habis),
-> dan `available_sterile_sets` — sama, tetapi dihitung dari stok STERIL (unit di gudang
-> steril `tersimpan` & belum kedaluwarsa). Dipakai halaman order karena order hanya
-> boleh atas barang yang sudah steril.
+> dan `available_sterile_sets` — sama, tetapi dihitung dari stok STERIL yang memang
+> **disimpan sebagai paket ini** (unit di gudang steril `tersimpan`, belum kedaluwarsa,
+> `instrument_storages.source = paket` **dan** `package_name` = nama katalog ini).
+> Unit satuan tidak bisa dipakai untuk memenuhi paket, karena bentuk barang (satuan /
+> paket) ditentukan saat produksi. Dipakai halaman order karena order hanya boleh atas
+> barang yang sudah steril.
 
 ### Response — Success (200)
 ```json

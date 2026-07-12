@@ -39,9 +39,11 @@ class InstrumentCatalogController extends Controller
             ->groupBy('instrument_id')
             ->pluck('cnt', 'instrument_id');
 
-        // Stok STERIL per instrumen: unit di gudang steril (status `tersimpan`) yang
-        // belum kedaluwarsa. Dasar untuk available_sterile_sets (order = barang steril).
-        $sterile = InstrumentStorage::withoutGlobalScopes()
+        // Stok STERIL per PAKET: unit di gudang steril (status `tersimpan`) yang belum
+        // kedaluwarsa DAN diproduksi sebagai paket (`source` = paket). Dikelompokkan per
+        // `package_name` — set hanya boleh dipenuhi dari unit yang memang disimpan sebagai
+        // paket tsb, bukan dari unit satuan (produksi menentukan bentuknya, bukan order).
+        $sterileRows = InstrumentStorage::withoutGlobalScopes()
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
             // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null) —
             // tetap ikut. Baris yang sudah direservasi order-ruangan (room_id terisi)
@@ -54,11 +56,17 @@ class InstrumentCatalogController extends Controller
             ->whereNull('order.room_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->where('instrument_storages.source', 'paket')
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
-            ->selectRaw('instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
-            ->groupBy('instrument_stocks.instrument_id')
-            ->pluck('cnt', 'instrument_id');
+            ->selectRaw('instrument_storages.package_name as package_name, instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
+            ->groupBy('instrument_storages.package_name', 'instrument_stocks.instrument_id')
+            ->get();
+
+        // cnt per instrument_id, di-key oleh nama paket.
+        $sterileByPackage = $sterileRows
+            ->groupBy('package_name')
+            ->map(fn ($rows) => $rows->pluck('cnt', 'instrument_id'));
 
         // Berapa set yang bisa dipenuhi: min( floor(stok / qty_per_set) ) atas isinya.
         $setsFrom = fn ($catalog, $counts) => $catalog->items->isEmpty()
@@ -69,9 +77,9 @@ class InstrumentCatalogController extends Controller
                 return $item->quantity > 0 ? intdiv($stock, $item->quantity) : 0;
             });
 
-        $data->getCollection()->transform(function ($catalog) use ($available, $sterile, $setsFrom) {
+        $data->getCollection()->transform(function ($catalog) use ($available, $sterileByPackage, $setsFrom) {
             $catalog->available_sets = $setsFrom($catalog, $available);
-            $catalog->available_sterile_sets = $setsFrom($catalog, $sterile);
+            $catalog->available_sterile_sets = $setsFrom($catalog, $sterileByPackage[$catalog->name] ?? collect());
             // Rincian item tidak perlu ikut di list (tersedia di endpoint show).
             $catalog->unsetRelation('items');
 

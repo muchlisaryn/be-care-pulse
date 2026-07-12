@@ -23,6 +23,12 @@ dan dibawa apa adanya ke event distribusi. Efek:
 |-----------|------|----------|------------|
 | recipient | string | Ya | Ruangan / petugas penerima (hasil scan — double verification) |
 | note | string | Tidak | Catatan |
+| stock_ids | array\<integer\> | Tidak | Unit (`instrument_stock_id`) yang dipilih petugas di modal Distribusikan — lihat [distributionOptions](distributionOptions.md). Bila dikosongkan, dipakai alokasi FEFO otomatis dari saat order diterima. |
+
+Bila `stock_ids` dikirim, jumlah unit terpilih **harus sama persis** dengan kebutuhan
+tiap baris permintaan (instrumen + bentuk simpan). Unit yang tadinya dialokasikan
+otomatis tapi tidak jadi dipilih dikembalikan ke pool stok produksi, unit terpilih
+direservasi ke order ini, lalu `order_item` ditulis ulang sesuai pilihan.
 
 ### Response — Success (200)
 ```json
@@ -43,4 +49,10 @@ dan dibawa apa adanya ke event distribusi. Efek:
 ### Error (422)
 ```json
 { "status": false, "message": "Order ini belum berada di gudang steril / tidak siap didistribusikan." }
+```
+```json
+{ "status": false, "message": "Pilihan unit \"Klem Lurus\" (satuan) harus 3 unit, terpilih 2." }
+```
+```json
+{ "status": false, "message": "Ada unit terpilih yang tidak tersedia lagi di gudang steril. Muat ulang daftar unit." }
 ```

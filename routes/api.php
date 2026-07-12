@@ -15,8 +15,8 @@ use App\Http\Controllers\Master\InstrumentController;
 use App\Http\Controllers\Master\InstrumentStockController;
 use App\Http\Controllers\Master\MenuController;
 use App\Http\Controllers\Master\PrinterController;
-use App\Http\Controllers\Master\RoomController;
 use App\Http\Controllers\Master\RackController;
+use App\Http\Controllers\Master\RoomController;
 use App\Http\Controllers\Master\TitleMenuController;
 use App\Http\Controllers\Master\UserController;
 use App\Http\Controllers\Master\WasherMachineController;
@@ -28,8 +28,8 @@ use App\Http\Controllers\Transaction\OrderTransferController;
 use App\Http\Controllers\Transaction\PackagingController;
 use App\Http\Controllers\Transaction\ProductionController;
 use App\Http\Controllers\Transaction\ReportController;
-use App\Http\Controllers\Transaction\SterilizationPipelineController;
 use App\Http\Controllers\Transaction\SterilizationController;
+use App\Http\Controllers\Transaction\SterilizationPipelineController;
 use App\Http\Controllers\Transaction\StorageController;
 use Illuminate\Support\Facades\Route;
 
@@ -152,6 +152,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('orders/{order}/accept-distribution', [OrderController::class, 'acceptDistribution']);
         // Tahap 6 — Distribusi: order siap-distribusi (digudang) & distribusikan + RM pasien
         Route::get('orders/ready-to-distribute', [OrderController::class, 'readyToDistribute']);
+        // Kandidat unit steril per baris permintaan (untuk memilih stok/kode produksi)
+        Route::get('orders/{order}/distribution-options', [OrderController::class, 'distributionOptions']);
         Route::post('orders/{order}/distribute', [OrderController::class, 'distribute']);
         Route::apiResource('orders', OrderController::class);
 
