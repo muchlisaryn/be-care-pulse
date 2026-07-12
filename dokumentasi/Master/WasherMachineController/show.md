@@ -24,10 +24,8 @@ Detail satu mesin pencuci.
     "code": "WSH-001",
     "name": "Washer Disinfector 1",
     "location": "Ruang Dekontaminasi",
-    "min_temperature": "55.00",
-    "max_temperature": "93.00",
-    "min_duration_minutes": 10,
-    "max_duration_minutes": 30,
+    "temperature": "60.00",
+    "duration_minutes": 20,
     "status": "aktif",
     "note": null
   }

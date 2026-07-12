@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\WasherMachine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
 
 /**
  * Master mesin pencuci (washer disinfector) — tahap Cleaning & Disinfection.
@@ -99,13 +98,9 @@ class WasherMachineController extends Controller
         return $request->validate([
             'name' => 'required|string|max:255',
             'location' => 'nullable|string|max:255',
-            'min_temperature' => 'nullable|numeric',
-            // Batas atas hanya wajib >= batas bawah bila batas bawah memang diisi.
-            // Tanpa syarat ini, mengisi max saja (min kosong) memicu 422 karena
-            // `gte` membandingkan dengan nilai null.
-            'max_temperature' => ['nullable', 'numeric', Rule::when($request->filled('min_temperature'), 'gte:min_temperature')],
-            'min_duration_minutes' => 'nullable|integer|min:0',
-            'max_duration_minutes' => ['nullable', 'integer', 'min:0', Rule::when($request->filled('min_duration_minutes'), 'gte:min_duration_minutes')],
+            // Suhu & durasi standar mesin (batas minimum untuk deteksi kegagalan).
+            'temperature' => 'nullable|numeric',
+            'duration_minutes' => 'nullable|integer|min:0',
             // Batas steril: masa simpan steril (hari) untuk alat yang dicuci di mesin ini.
             'sterile_shelf_life_days' => 'nullable|integer|min:1',
             'status' => 'nullable|in:aktif,nonaktif',

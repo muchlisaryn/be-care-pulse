@@ -182,10 +182,8 @@ washer_machines {
     string code UK
     string name
     string location
-    decimal min_temperature
-    decimal max_temperature
-    int min_duration_minutes
-    int max_duration_minutes
+    decimal temperature "standar/minimum (°C)"
+    int duration_minutes "standar/minimum (menit)"
     string status "aktif|nonaktif"
     text note
 }

@@ -8,8 +8,8 @@ use Illuminate\Database\Eloquent\Model;
 
 /**
  * Master mesin pencuci (washer disinfector) — tahap Cleaning & Disinfection.
- * Kode auto WSH-NNN dipakai sebagai barcode yang dipindai petugas. Ambang
- * suhu & durasi dipakai untuk mendeteksi kegagalan parameter pencucian.
+ * Kode auto WSH-NNN dipakai sebagai barcode yang dipindai petugas. Suhu & durasi
+ * standar dipakai sebagai batas minimum untuk mendeteksi kegagalan pencucian.
  */
 class WasherMachine extends Model
 {
@@ -23,10 +23,8 @@ class WasherMachine extends Model
         'code',
         'name',
         'location',
-        'min_temperature',
-        'max_temperature',
-        'min_duration_minutes',
-        'max_duration_minutes',
+        'temperature',
+        'duration_minutes',
         'sterile_shelf_life_days',
         'status',
         'note',
@@ -35,10 +33,8 @@ class WasherMachine extends Model
     ];
 
     protected $casts = [
-        'min_temperature' => 'decimal:2',
-        'max_temperature' => 'decimal:2',
-        'min_duration_minutes' => 'integer',
-        'max_duration_minutes' => 'integer',
+        'temperature' => 'decimal:2',
+        'duration_minutes' => 'integer',
         'sterile_shelf_life_days' => 'integer',
     ];
 
@@ -57,7 +53,8 @@ class WasherMachine extends Model
     }
 
     /**
-     * Evaluasi parameter pencucian terhadap ambang mesin. Mengembalikan daftar
+     * Evaluasi parameter pencucian terhadap standar mesin (batas minimum).
+     * Hasil di bawah suhu/durasi standar ditandai gagal. Mengembalikan daftar
      * pesan kegagalan (kosong = lolos).
      *
      * @return list<string>
@@ -66,22 +63,12 @@ class WasherMachine extends Model
     {
         $alerts = [];
 
-        if ($temperature !== null) {
-            if ($this->min_temperature !== null && $temperature < (float) $this->min_temperature) {
-                $alerts[] = "Suhu {$temperature}°C di bawah minimum mesin ({$this->min_temperature}°C).";
-            }
-            if ($this->max_temperature !== null && $temperature > (float) $this->max_temperature) {
-                $alerts[] = "Suhu {$temperature}°C di atas maksimum mesin ({$this->max_temperature}°C).";
-            }
+        if ($temperature !== null && $this->temperature !== null && $temperature < (float) $this->temperature) {
+            $alerts[] = "Suhu {$temperature}°C di bawah standar mesin ({$this->temperature}°C).";
         }
 
-        if ($durationMinutes !== null) {
-            if ($this->min_duration_minutes !== null && $durationMinutes < $this->min_duration_minutes) {
-                $alerts[] = "Durasi {$durationMinutes} menit di bawah minimum mesin ({$this->min_duration_minutes} menit).";
-            }
-            if ($this->max_duration_minutes !== null && $durationMinutes > $this->max_duration_minutes) {
-                $alerts[] = "Durasi {$durationMinutes} menit di atas maksimum mesin ({$this->max_duration_minutes} menit).";
-            }
+        if ($durationMinutes !== null && $this->duration_minutes !== null && $durationMinutes < $this->duration_minutes) {
+            $alerts[] = "Durasi {$durationMinutes} menit di bawah standar mesin ({$this->duration_minutes} menit).";
         }
 
         return $alerts;

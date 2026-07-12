@@ -1382,6 +1382,23 @@ class OrderController extends Controller
             ->pluck('instrument_stock_id')->filter()->unique();
         $pipeline = $this->pipelineTimeline($stockIds);
 
+        // Waktu pengembalian (event "dikembalikan" terbaru). Bila unit disimpan ke
+        // gudang steril SETELAH dikembalikan (penataan rak menyusul), event "Di Gudang
+        // Steril" mengikuti waktu pengembalian — bukan waktu penataan rak yang bisa
+        // terjadi berjam-jam kemudian.
+        $returnedAt = $orderEvents
+            ->where('type', OrderEvent::TYPE_DIKEMBALIKAN)
+            ->pluck('created_at')->filter()->max();
+        if ($returnedAt) {
+            $pipeline = $pipeline->map(function ($e) use ($returnedAt) {
+                if ($e['type'] === 'disimpan' && $e['created_at'] && $e['created_at']->gt($returnedAt)) {
+                    $e['created_at'] = $returnedAt;
+                }
+
+                return $e;
+            });
+        }
+
         // Gabung & urut kronologis (produksi/steril/simpan terjadi sebelum dipinjam).
         $events = $orderEvents->concat($pipeline)
             ->sortBy(fn ($e) => optional($e['created_at'])->timestamp ?? 0)
