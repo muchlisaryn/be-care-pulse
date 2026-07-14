@@ -45,7 +45,7 @@ ditutup. Payload identik dengan field `label` pada respons `complete`.
       "expiry_date": "2026-07-09",
       "chemical_indicator": "CI-LOT-99",
       "items": [
-        { "instrument_name": "Gunting Epis", "unit_code": "GNE-001", "source": "paket", "package_name": "SET PARTUS" }
+        { "production_item_id": 1, "instrument_name": "Gunting Epis", "unit_code": "GNE-001", "source": "paket", "package_name": "SET PARTUS" }
       ]
     }
   }

@@ -1687,6 +1687,9 @@ class OrderController extends Controller
      * - Kode unit alat (mis. KLL-002) → cari order TERAKHIR yang memuat unit itu.
      * - Kode batch PRODUKSI (PRD-yymmddNN) → label pada bungkus steril; cari order
      *   TERAKHIR yang memuat unit dari batch produksi itu.
+     * - Kode produksi pada LABEL steril = kode batch + id production_item digabung
+     *   (mis. PRD260714031 = batch PRD26071403 + item 1) → cari order TERAKHIR yang
+     *   memuat unit label tersebut (untuk paket: seluruh unit paket yang sama).
      * Dipakai halaman Scan & Tracking + modal Pengembalian; QR unit yang sudah
      * tercetak tetap bisa dipakai.
      */
@@ -1697,6 +1700,11 @@ class OrderController extends Controller
         ]);
 
         $code = $validated['code'];
+
+        // Unit yang benar-benar diwakili kode yang dipindai (kode unit / label produksi).
+        // Dikirim balik agar UI bisa menyorot unit itu di modal — kosong bila yang
+        // dipindai kode order/transaksi (mewakili seluruh order).
+        $scannedStockIds = collect();
 
         // 1. Coba sebagai kode order (ORD-xxx) atau kode transaksi barcode (INV...).
         $order = Order::where('code', $code)
@@ -1716,6 +1724,8 @@ class OrderController extends Controller
                 if (! $order) {
                     return $this->error("Unit \"{$code}\" belum pernah masuk order manapun.", 404);
                 }
+
+                $scannedStockIds = collect([(int) $stock->id]);
             }
         }
 
@@ -1741,6 +1751,26 @@ class OrderController extends Controller
             }
         }
 
+        // 4. Bukan order/unit/batch → coba sebagai kode produksi pada LABEL steril:
+        // kode batch + id production_item digabung tanpa pemisah (PRD260714031).
+        if (! $order) {
+            $stockIds = $this->stockIdsFromProductionLabel($code);
+            if ($stockIds !== null) {
+                $order = $stockIds->isEmpty()
+                    ? null
+                    : Order::whereHas('items', fn ($q) => $q->whereIn('instrument_stock_id', $stockIds))
+                        ->with(self::DETAIL_RELATIONS)
+                        ->latest()
+                        ->first();
+
+                if (! $order) {
+                    return $this->error("Label produksi \"{$code}\" belum masuk order manapun.", 404);
+                }
+
+                $scannedStockIds = $stockIds;
+            }
+        }
+
         if (! $order) {
             return $this->error("Order, unit, atau batch produksi dengan kode \"{$code}\" tidak ditemukan.", 404);
         }
@@ -1748,7 +1778,57 @@ class OrderController extends Controller
         $this->attachTimeline($order);
         $this->attachProductionCodes($order);
 
+        // Unit yang disorot di UI: hanya yang benar-benar ada di order ini.
+        $order->setAttribute('scanned_stock_ids', $order->items
+            ->pluck('instrument_stock_id')
+            ->filter(fn ($id) => $scannedStockIds->contains((int) $id))
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+        );
+
         return $this->success('Detail order berhasil diambil.', $order);
+    }
+
+    /**
+     * Terjemahkan kode produksi hasil scan LABEL steril (kode batch + id
+     * production_item, mis. PRD260714031) menjadi unit-unit yang diwakili label itu.
+     * Label satuan mewakili satu unit; label paket mewakili seluruh unit paket yang
+     * sama dalam batch tersebut (id yang tercetak = item pertama paket itu).
+     *
+     * @return Collection<int,int>|null null bila kode bukan berbentuk label produksi
+     */
+    private function stockIdsFromProductionLabel(string $code): ?Collection
+    {
+        // Kode batch selalu berakhir angka, jadi titik potongnya tidak bisa ditebak
+        // dari bentuk string — cocokkan ke batch yang kodenya menjadi awalan kode ini.
+        $productions = Production::whereRaw('? LIKE CONCAT(code, ?)', [$code, '_%'])->get();
+
+        foreach ($productions as $production) {
+            $suffix = substr($code, strlen($production->code));
+            if ($suffix === '' || ! ctype_digit($suffix)) {
+                continue;
+            }
+
+            $item = ProductionItem::where('production_id', $production->id)
+                ->where('id', (int) $suffix)
+                ->first();
+            if (! $item) {
+                continue;
+            }
+
+            // Paket → satu label untuk seluruh unit paket tersebut.
+            $items = $item->source === 'paket' && $item->package_name
+                ? ProductionItem::where('production_id', $production->id)
+                    ->where('source', 'paket')
+                    ->where('package_name', $item->package_name)
+                    ->get()
+                : collect([$item]);
+
+            return $items->pluck('instrument_stock_id')->filter()->map(fn ($id) => (int) $id)->values();
+        }
+
+        return null;
     }
 
     /**

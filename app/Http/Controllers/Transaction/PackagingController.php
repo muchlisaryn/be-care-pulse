@@ -143,6 +143,7 @@ class PackagingController extends Controller
             'expiry_date' => $expiry,
             'chemical_indicator' => $packaging->chemical_indicator,
             'items' => $units->map(fn ($u) => [
+                'production_item_id' => $u->id, // disatukan dengan nomor batch → kode produksi label
                 'instrument_name' => $u->instrumentStock?->instrument?->name ?? 'Instrumen',
                 'unit_code' => $u->instrumentStock?->code,
                 'source' => $u->source,
