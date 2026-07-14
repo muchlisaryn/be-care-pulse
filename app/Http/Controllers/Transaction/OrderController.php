@@ -11,6 +11,7 @@ use App\Models\OrderEvent;
 use App\Models\OrderItem;
 use App\Models\OrderTransfer;
 use App\Models\OrderWashing;
+use App\Models\Packaging;
 use App\Models\Production;
 use App\Models\ProductionItem;
 use App\Models\Room;
@@ -159,8 +160,9 @@ class OrderController extends Controller
     public function show(Order $order): JsonResponse
     {
         $order->load(self::DETAIL_RELATIONS);
-        // Lampirkan Riwayat Peminjaman (timeline) untuk ditampilkan di detail order.
-        $this->attachTimeline($order);
+        // Detail Order Instrumen: timeline cukup siklus order (Dibuat → Diterima CSSD →
+        // Terdistribusi → Dikembalikan), tanpa pipeline produksi/cleaning/steril.
+        $this->attachTimeline($order, includePipeline: false);
 
         return $this->success('Detail peminjaman berhasil diambil.', $order);
     }
@@ -1856,7 +1858,7 @@ class OrderController extends Controller
      * dikembalikan) untuk semua order yang berbagi code_transaction (rantai handover).
      * Bila order belum punya code_transaction, ambil event order itu saja.
      */
-    private function attachTimeline(Order $order): void
+    private function attachTimeline(Order $order, bool $includePipeline = true): void
     {
         if ($order->code_transaction) {
             $orderIds = Order::where('code_transaction', $order->code_transaction)->pluck('id');
@@ -1875,30 +1877,38 @@ class OrderController extends Controller
                 'borrowed_by' => $e->borrowed_by,
                 'note' => $e->note,
                 'created_at' => $e->created_at,
+                'detail' => null,
             ]);
 
-        // Riwayat pipeline CSSD (Produksi → Cleaning → Sterilisasi → Simpan Rak)
-        // yang menghasilkan unit yang dipinjam — ditelusuri dari KODE PRODUKSI tiap
-        // unit, dibaca langsung dari tabel tiap tahap agar semuanya terekam.
-        $stockIds = OrderItem::whereIn('order_id', $orderIds)
-            ->pluck('instrument_stock_id')->filter()->unique();
-        $pipeline = $this->pipelineTimeline($stockIds);
-
-        // Waktu pengembalian (event "dikembalikan" terbaru). Bila unit disimpan ke
-        // gudang steril SETELAH dikembalikan (penataan rak menyusul), event "Di Gudang
-        // Steril" mengikuti waktu pengembalian — bukan waktu penataan rak yang bisa
-        // terjadi berjam-jam kemudian.
+        // Riwayat pipeline CSSD (Produksi → Cleaning → Sterilisasi → Simpan Rak) yang
+        // menghasilkan unit yang dipinjam. Hanya disertakan bila $includePipeline
+        // (mis. monitoring/scan). Di detail Order Instrumen timeline cukup siklus order
+        // (Dibuat → Diterima CSSD → Terdistribusi → Dikembalikan) → pipeline dilewati.
+        // Waktu pengembalian (event "dikembalikan" terbaru). Dipakai sebagai CUTOFF
+        // pipeline: batch yang selesai setelah ini adalah pemrosesan ulang unit (siklus
+        // baru), bukan bagian riwayat order ini → tidak diikutkan.
         $returnedAt = $orderEvents
             ->where('type', OrderEvent::TYPE_DIKEMBALIKAN)
             ->pluck('created_at')->filter()->max();
-        if ($returnedAt) {
-            $pipeline = $pipeline->map(function ($e) use ($returnedAt) {
-                if ($e['type'] === 'disimpan' && $e['created_at'] && $e['created_at']->gt($returnedAt)) {
-                    $e['created_at'] = $returnedAt;
-                }
 
-                return $e;
-            });
+        $pipeline = collect();
+        if ($includePipeline) {
+            $stockIds = OrderItem::whereIn('order_id', $orderIds)
+                ->pluck('instrument_stock_id')->filter()->unique();
+            $pipeline = $this->pipelineTimeline($stockIds, $returnedAt);
+
+            // Bila unit disimpan ke gudang steril SETELAH dikembalikan (penataan rak
+            // menyusul), event "Di Gudang Steril" mengikuti waktu pengembalian — bukan
+            // waktu penataan rak yang bisa terjadi berjam-jam kemudian.
+            if ($returnedAt) {
+                $pipeline = $pipeline->map(function ($e) use ($returnedAt) {
+                    if ($e['type'] === 'disimpan' && $e['created_at'] && $e['created_at']->gt($returnedAt)) {
+                        $e['created_at'] = $returnedAt;
+                    }
+
+                    return $e;
+                });
+            }
         }
 
         // Gabung & urut kronologis (produksi/steril/simpan terjadi sebelum dipinjam).
@@ -1918,7 +1928,7 @@ class OrderController extends Controller
      * @param  Collection<int,int>  $stockIds
      * @return Collection<int,array<string,mixed>>
      */
-    private function pipelineTimeline($stockIds): Collection
+    private function pipelineTimeline($stockIds, $before = null): Collection
     {
         $stockIds = collect($stockIds)->filter()->unique()->values();
         if ($stockIds->isEmpty()) {
@@ -1927,7 +1937,7 @@ class OrderController extends Controller
 
         $events = collect();
         $seq = 0;
-        $push = function (string $type, $at, ?string $actor, ?string $note) use (&$events, &$seq) {
+        $push = function (string $type, $at, ?string $actor, ?string $note, ?array $detail = null) use (&$events, &$seq) {
             $events->push([
                 // Id sintetis negatif → unik & tidak bentrok dengan id OrderEvent.
                 'id' => -(++$seq),
@@ -1937,12 +1947,17 @@ class OrderController extends Controller
                 'borrowed_by' => null,
                 'note' => $note,
                 'created_at' => $at,
+                // Rincian ringkas (nomor batch + waktu) untuk tombol "Detail" di timeline.
+                'detail' => $detail,
             ]);
         };
 
         // 1. Produksi — batch produksi TERBARU tiap unit (siklus aktif), dedup per batch.
         $prodItemIds = ProductionItem::selectRaw('MAX(id) as id')
             ->whereIn('instrument_stock_id', $stockIds)
+            // Cutoff: hanya batch yang selesai SEBELUM order dikembalikan → ambil batch
+            // siklus asli order ini, bukan pemrosesan ulang unit setelah pengembalian.
+            ->when($before, fn ($q) => $q->whereHas('production', fn ($p) => $p->where('completed_at', '<=', $before)))
             ->groupBy('instrument_stock_id')
             ->pluck('id');
         $productions = ProductionItem::with('production')
@@ -1951,7 +1966,12 @@ class OrderController extends Controller
             ->pluck('production')->filter()->unique('id');
 
         foreach ($productions as $p) {
-            $push('produksi', $p->completed_at ?? $p->created_at, $p->completed_by ?? $p->created_by, "Batch produksi {$p->code}");
+            $at = $p->completed_at ?? $p->created_at;
+            $push('produksi', $at, $p->completed_by ?? $p->created_by, "Batch produksi {$p->code}", [
+                'kind' => 'produksi',
+                'code' => $p->code,
+                'at' => $at,
+            ]);
         }
 
         // 2. Cleaning — tahap washing yang mengalir dari batch produksi (via production_code).
@@ -1962,12 +1982,32 @@ class OrderController extends Controller
                 OrderWashing::STATUS_GAGAL => 'gagal_cuci',
                 default => 'diproses',
             };
-            $push($type, $w->completed_at ?? $w->started_at ?? $w->created_at, $w->completed_by ?? $w->started_by, "Cleaning {$w->code}");
+            $at = $w->completed_at ?? $w->started_at ?? $w->created_at;
+            $push($type, $at, $w->completed_by ?? $w->started_by, "Cleaning {$w->code}", [
+                'kind' => 'cleaning',
+                'code' => $w->code,
+                'at' => $at,
+            ]);
+        }
+
+        // 2b. Packaging — tahap Inspection & Pengemasan (PKG), mengalir dari cleaning
+        // (via washing_code). Terjadi setelah cleaning & sebelum sterilisasi.
+        $packagings = Packaging::whereIn('washing_code', $washings->pluck('code'))->get();
+        foreach ($packagings as $pkg) {
+            $at = $pkg->completed_at ?? $pkg->packaged_at ?? $pkg->started_at ?? $pkg->created_at;
+            $push('packaging', $at, $pkg->completed_by ?? $pkg->operator ?? $pkg->started_by, "Packaging {$pkg->code}", [
+                'kind' => 'packaging',
+                'code' => $pkg->code,
+                'at' => $at,
+            ]);
         }
 
         // 3. Sterilisasi — batch steril TERBARU tiap unit, dedup per batch.
         $sterItemIds = SterilizationItem::selectRaw('MAX(id) as id')
             ->whereIn('instrument_stock_id', $stockIds)
+            // Cutoff sama seperti produksi: batch siklus asli order, bukan re-steril
+            // setelah pengembalian.
+            ->when($before, fn ($q) => $q->whereHas('sterilization', fn ($s) => $s->where('completed_at', '<=', $before)))
             ->groupBy('instrument_stock_id')
             ->pluck('id');
         $sters = SterilizationItem::with('sterilization')
@@ -1981,7 +2021,12 @@ class OrderController extends Controller
                 Sterilization::STATUS_GAGAL => 'gagal_steril',
                 default => 'disterilkan',
             };
-            $push($type, $s->completed_at ?? $s->sterilized_at ?? $s->created_at, $s->completed_by ?? $s->created_by, "Sterilisasi {$s->code}");
+            $at = $s->completed_at ?? $s->sterilized_at ?? $s->created_at;
+            $push($type, $at, $s->completed_by ?? $s->created_by, "Sterilisasi {$s->code}", [
+                'kind' => 'steril',
+                'code' => $s->code,
+                'at' => $at,
+            ]);
         }
 
         // 4. Simpan di Rak — penempatan TERBARU tiap unit di gudang steril (siklus
@@ -2039,8 +2084,9 @@ class OrderController extends Controller
 
             $order->load(self::DETAIL_RELATIONS);
             // Lampirkan timeline agar Riwayat Peminjaman tetap tampil setelah
-            // pengembalian (termasuk pengembalian dicicil sebagian unit).
-            $this->attachTimeline($order);
+            // pengembalian (termasuk pengembalian dicicil sebagian unit). Siklus order
+            // saja — pipeline CSSD hanya untuk monitoring/scan.
+            $this->attachTimeline($order, includePipeline: false);
             $this->attachProductionCodes($order);
 
             return $this->success('Peminjaman berhasil diperbarui.', $order);
