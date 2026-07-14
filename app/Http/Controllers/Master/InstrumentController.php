@@ -8,6 +8,7 @@ use App\Models\InstrumentStock;
 use App\Models\InstrumentStorage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\Rule;
 
 class InstrumentController extends Controller
@@ -25,8 +26,10 @@ class InstrumentController extends Controller
     {
         $data = Instrument::withCount([
             'stocks',
-            // Jumlah unit yang berstatus `tersedia` — dipakai untuk menyembunyikan
-            // instrumen yang stoknya habis dari pilihan order.
+            // Jumlah unit yang berstatus `tersedia` — harus PERSIS sama dgn jumlah unit
+            // ber-badge "Tersedia" pada detail stok. Berkurang otomatis saat unit dipinjam
+            // (status → dipinjam). Unit yang masih di gudang steril tetap `tersedia` (masih
+            // bisa dipinjam) sehingga tetap ikut terhitung — jangan dikecualikan.
             'stocks as available_stocks_count' => fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA),
         ])
             ->when(
@@ -64,8 +67,8 @@ class InstrumentController extends Controller
      * hanya boleh dipinjam sebagai paket utuh — lihat InstrumentCatalogController.
      * Kolom di-kualifikasi + tanpa global scope agar JOIN tidak ambigu pada `deleted_by`.
      *
-     * @param  \Illuminate\Support\Collection<int,int>  $instrumentIds
-     * @return \Illuminate\Support\Collection<int,int>  cnt di-key oleh instrument_id
+     * @param  Collection<int,int>  $instrumentIds
+     * @return Collection<int,int> cnt di-key oleh instrument_id
      */
     private function sterileCountsByInstrument($instrumentIds)
     {

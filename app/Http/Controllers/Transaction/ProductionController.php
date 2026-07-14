@@ -79,6 +79,11 @@ class ProductionController extends Controller
                     'note' => 'Stok dipotong untuk produksi CSSD',
                 ]);
 
+                // Unit yang ditarik dari gudang steril untuk diproduksi ulang: tutup
+                // baris gudangnya (tersimpan → keluar) supaya tidak dihitung dua kali
+                // sebagai stok steril & tidak menyisakan baris ganda saat disimpan lagi.
+                $this->closeStorageForReprocessed($pickedStockIds);
+
                 // Buka tahap Cleaning (WSH-NNN) — dirangkai ke produksi via production_code.
                 $washing = OrderWashing::create([
                     'production_code' => $production->code,
@@ -169,15 +174,38 @@ class ProductionController extends Controller
     {
         $instrumentIds = collect($requirements)->pluck('instrument_id')->unique()->values()->all();
 
+        // Ketersediaan produksi MENGIKUTI stok `tersedia` di Master (unit ber-badge
+        // "Tersedia"), termasuk unit yang masih tersimpan di gudang steril — bila unit
+        // gudang ikut dipilih, baris gudangnya ditutup saat batch dibuat (lihat
+        // closeStorageForReprocessed) agar tidak jadi stok steril ganda.
         return InstrumentStock::whereIn('instrument_id', $instrumentIds)
             ->where('status', InstrumentStock::STATUS_TERSEDIA)
-            // Kecualikan unit yang fisiknya masih di gudang steril (tersimpan).
-            ->whereNotIn('id', InstrumentStorage::query()
-                ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
-                ->select('instrument_stock_id'))
             ->orderBy('code')
             ->get()
             ->groupBy('instrument_id');
+    }
+
+    /**
+     * Tutup baris gudang steril (status `tersimpan` → `keluar`) untuk unit yang
+     * ditarik kembali ke produksi. Mencegah unit terhitung ganda sebagai stok steril
+     * dan mencegah baris gudang ganda saat unit disimpan lagi di akhir siklus baru.
+     * Bila unit itu bagian sebuah paket, paket tsb otomatis jadi tak lengkap
+     * (available_sterile_sets berkurang) — konsekuensi wajar menarik komponennya.
+     *
+     * @param  array<int,int>  $stockIds
+     */
+    private function closeStorageForReprocessed(array $stockIds): void
+    {
+        if (empty($stockIds)) {
+            return;
+        }
+
+        InstrumentStorage::where('status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->whereIn('instrument_stock_id', $stockIds)
+            ->update([
+                'status' => InstrumentStorage::STATUS_KELUAR,
+                'updated_by' => auth()->user()?->name,
+            ]);
     }
 
     /**
