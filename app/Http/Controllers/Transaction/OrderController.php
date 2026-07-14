@@ -1905,12 +1905,16 @@ class OrderController extends Controller
         }
 
         // 4. Simpan di Rak — penempatan TERBARU tiap unit di gudang steril (siklus
-        // aktif), dikelompokkan per rak.
+        // aktif), dikelompokkan per rak. Hanya tampilkan bila storage TERBARU unit
+        // masih berstatus `tersimpan`; bila `keluar` (unit sudah terdistribusi keluar
+        // gudang) event "Di Gudang Steril" tidak ditampilkan.
         $storageIds = InstrumentStorage::selectRaw('MAX(id) as id')
             ->whereIn('instrument_stock_id', $stockIds)
             ->groupBy('instrument_stock_id')
             ->pluck('id');
-        $storages = InstrumentStorage::whereIn('id', $storageIds)->get();
+        $storages = InstrumentStorage::whereIn('id', $storageIds)
+            ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->get();
         foreach ($storages->groupBy('rack_code') as $rack => $rows) {
             $first = $rows->sortBy('stored_at')->first();
             $push('disimpan', $first->stored_at ?? $first->created_at, $first->created_by, "Disimpan di rak {$rack} ({$rows->count()} unit)");
