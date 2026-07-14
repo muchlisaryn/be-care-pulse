@@ -382,6 +382,7 @@ class CleaningController extends Controller
                 default => 'proses',
             },
             'borrowed_by' => $production?->displayName(),
+            'note' => $production?->note, // Catatan (opsional) yang diisi saat Mulai Produksi.
             'room' => null,
             'order_date' => $production?->created_at?->toDateString(),
             'processed_at' => $production?->completed_at ?? $washing->started_at,

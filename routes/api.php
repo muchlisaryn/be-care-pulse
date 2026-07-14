@@ -17,6 +17,7 @@ use App\Http\Controllers\Master\MenuController;
 use App\Http\Controllers\Master\PrinterController;
 use App\Http\Controllers\Master\RackController;
 use App\Http\Controllers\Master\RoomController;
+use App\Http\Controllers\Master\SterilizerMachineController;
 use App\Http\Controllers\Master\TitleMenuController;
 use App\Http\Controllers\Master\UserController;
 use App\Http\Controllers\Master\WasherMachineController;
@@ -91,6 +92,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('washer-machines/scan', [WasherMachineController::class, 'scan']);
         Route::apiResource('washer-machines', WasherMachineController::class)
             ->parameters(['washer-machines' => 'washer_machine']);
+
+        // Master mesin sterilisator (autoclave) — tahap Sterilization
+        Route::apiResource('sterilizer-machines', SterilizerMachineController::class)
+            ->parameters(['sterilizer-machines' => 'sterilizer_machine']);
 
         // Master rak gudang steril — pilihan lokasi rak saat "Simpan ke Gudang"
         Route::get('racks/options', [RackController::class, 'options']);
