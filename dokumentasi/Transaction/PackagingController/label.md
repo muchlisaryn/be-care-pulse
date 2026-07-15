@@ -41,8 +41,9 @@ ditutup. Payload identik dengan field `label` pada respons `complete`.
       "packaging_code": "PKG-001",
       "set_name": "SET PARTUS",
       "packer": "Admin",
+      "packaging_type": "Pouch Plastik",
       "packaged_at": "2026-07-02T08:00:00+00:00",
-      "expiry_date": "2026-07-09",
+      "expiry_date": "2026-08-01",
       "chemical_indicator": "CI-LOT-99",
       "items": [
         { "instrument_name": "Gunting Epis", "unit_code": "GNE-001", "source": "paket", "package_name": "SET PARTUS" }

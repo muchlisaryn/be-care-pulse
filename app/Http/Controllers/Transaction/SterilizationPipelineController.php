@@ -11,6 +11,7 @@ use App\Models\Sterilization;
 use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
@@ -27,7 +28,6 @@ class SterilizationPipelineController extends Controller
     /** Relasi rantai untuk memuat unit fisik sebuah packaging (→ washing → produksi). */
     private const CHAIN = [
         'washing.production.items.instrumentStock.instrument',
-        'washing.washerMachine',
     ];
 
     /**
@@ -143,10 +143,14 @@ class SterilizationPipelineController extends Controller
             return $this->error('Tidak ada unit siap-steril yang valid dipilih.', 422);
         }
 
-        // Tgl kedaluwarsa steril: pakai input operator bila diisi; bila kosong,
-        // pakai default = tgl sterilisasi + masa simpan steril default.
+        // Tgl kedaluwarsa steril diwarisi dari tray packaging (ditetapkan operator
+        // saat pengemasan) agar tanggal di label sama dengan yang dipakai gudang.
+        // Bila batch menggabungkan beberapa PKG dengan tanggal berbeda, ambil yang
+        // PALING AWAL — batch hanya seaman tray yang paling cepat kedaluwarsa.
+        // Terakhir pakai default = tgl sterilisasi + masa simpan steril default.
         $expiryDate = $validated['expiry_date']
-            ?? \Illuminate\Support\Carbon::parse($validated['sterilized_at'])
+            ?? $packagings->pluck('expiry_date')->filter()->min()?->toDateString()
+            ?? Carbon::parse($validated['sterilized_at'])
                 ->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)
                 ->toDateString();
 
@@ -254,7 +258,6 @@ class SterilizationPipelineController extends Controller
                 $sterilization->completed_at = now();
 
                 if ($anyPassed && $sterilization->expiry_date === null) {
-                    // Batas steril mengikuti mesin washer (master), fallback default.
                     $sterilization->expiry_date = $sterilization->computeExpiryDate();
                 }
                 $sterilization->save();

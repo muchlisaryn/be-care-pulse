@@ -19,7 +19,7 @@ Detail satu mesin sterilisator.
 {
   "status": true,
   "message": "Detail mesin sterilisator berhasil diambil.",
-  "data": { "id": 1, "code": "STL-001", "name": "Autoclave 1", "location": "Ruang Sterilisasi", "temperature": "134.00", "duration_minutes": 30, "sterile_shelf_life_days": 30, "status": "aktif", "note": null }
+  "data": { "id": 1, "code": "STL-001", "name": "Autoclave 1", "location": "Ruang Sterilisasi", "temperature": "134.00", "duration_minutes": 30, "status": "aktif", "note": null }
 }
 ```
 

@@ -19,7 +19,6 @@ Perbarui data mesin sterilisator. `code` tidak berubah.
 | location | string | Tidak | Lokasi penempatan |
 | temperature | numeric | Tidak | Suhu standar mesin (°C) |
 | duration_minutes | integer | Tidak | Durasi standar mesin (menit) |
-| sterile_shelf_life_days | integer | Tidak | Masa simpan steril (hari, min 1) |
 | status | string | Tidak | `aktif` / `nonaktif` |
 | note | string | Tidak | Catatan |
 

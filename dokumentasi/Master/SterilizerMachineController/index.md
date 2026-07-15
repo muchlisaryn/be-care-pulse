@@ -29,7 +29,7 @@ Daftar master mesin sterilisator (autoclave), dipaginasi 20/halaman.
   "data": {
     "current_page": 1,
     "data": [
-      { "id": 1, "code": "STL-001", "name": "Autoclave 1", "location": "Ruang Sterilisasi", "temperature": "134.00", "duration_minutes": 30, "sterile_shelf_life_days": 30, "status": "aktif", "note": null }
+      { "id": 1, "code": "STL-001", "name": "Autoclave 1", "location": "Ruang Sterilisasi", "temperature": "134.00", "duration_minutes": 30, "status": "aktif", "note": null }
     ],
     "last_page": 1,
     "per_page": 20,

@@ -19,7 +19,6 @@ Tambah master mesin sterilisator. `code` (STL-NNN) di-generate otomatis.
 | location | string | Tidak | Lokasi penempatan |
 | temperature | numeric | Tidak | Suhu standar mesin (°C) |
 | duration_minutes | integer | Tidak | Durasi standar mesin (menit) |
-| sterile_shelf_life_days | integer | Tidak | Masa simpan steril (hari, min 1) untuk alat yang disterilkan di mesin ini |
 | status | string | Tidak | `aktif` (default) / `nonaktif` |
 | note | string | Tidak | Catatan |
 
