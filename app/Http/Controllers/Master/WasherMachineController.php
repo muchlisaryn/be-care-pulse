@@ -101,8 +101,6 @@ class WasherMachineController extends Controller
             // Suhu & durasi standar mesin (batas minimum untuk deteksi kegagalan).
             'temperature' => 'nullable|numeric',
             'duration_minutes' => 'nullable|integer|min:0',
-            // Batas steril: masa simpan steril (hari) untuk alat yang dicuci di mesin ini.
-            'sterile_shelf_life_days' => 'nullable|integer|min:1',
             'status' => 'nullable|in:aktif,nonaktif',
             'note' => 'nullable|string',
         ]);

@@ -19,7 +19,6 @@ Perbarui data mesin pencuci. Body sama dengan store.
 | location | string | Tidak | Lokasi penempatan |
 | temperature | numeric | Tidak | Suhu standar mesin (°C); dipakai sebagai batas minimum deteksi kegagalan |
 | duration_minutes | integer | Tidak | Durasi standar mesin (menit); dipakai sebagai batas minimum deteksi kegagalan |
-| sterile_shelf_life_days | integer | Tidak | Batas steril: masa simpan steril (hari, min 1) untuk alat yang dicuci di mesin ini; menentukan tanggal kedaluwarsa |
 | status | string | Tidak | `aktif` / `nonaktif` |
 | note | string | Tidak | Catatan |
 

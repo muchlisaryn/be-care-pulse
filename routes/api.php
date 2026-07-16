@@ -14,6 +14,7 @@ use App\Http\Controllers\Master\InstrumentCatalogController;
 use App\Http\Controllers\Master\InstrumentController;
 use App\Http\Controllers\Master\InstrumentStockController;
 use App\Http\Controllers\Master\MenuController;
+use App\Http\Controllers\Master\PackagingTypeController;
 use App\Http\Controllers\Master\PrinterController;
 use App\Http\Controllers\Master\RackController;
 use App\Http\Controllers\Master\RoomController;
@@ -96,6 +97,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // Master mesin sterilisator (autoclave) — tahap Sterilization
         Route::apiResource('sterilizer-machines', SterilizerMachineController::class)
             ->parameters(['sterilizer-machines' => 'sterilizer_machine']);
+
+        // Master jenis kemasan — tahap Packaging; masa simpannya menentukan tgl kedaluwarsa steril
+        Route::get('packaging-types/options', [PackagingTypeController::class, 'options']);
+        Route::apiResource('packaging-types', PackagingTypeController::class)
+            ->parameters(['packaging-types' => 'packaging_type']);
 
         // Master rak gudang steril — pilihan lokasi rak saat "Simpan ke Gudang"
         Route::get('racks/options', [RackController::class, 'options']);

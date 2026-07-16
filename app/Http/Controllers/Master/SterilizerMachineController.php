@@ -78,8 +78,6 @@ class SterilizerMachineController extends Controller
             // Suhu & durasi standar mesin.
             'temperature' => 'nullable|numeric',
             'duration_minutes' => 'nullable|integer|min:0',
-            // Masa simpan steril (hari) untuk alat yang disterilkan di mesin ini.
-            'sterile_shelf_life_days' => 'nullable|integer|min:1',
             'status' => 'nullable|in:aktif,nonaktif',
             'note' => 'nullable|string',
         ]);

@@ -8,8 +8,9 @@ use Illuminate\Database\Eloquent\Model;
 
 /**
  * Master mesin sterilisator (autoclave) — tahap Sterilization. Kode auto STL-NNN.
- * Suhu, durasi, dan masa simpan steril standar dipakai sebagai acuan operator saat
- * menjalankan & memvalidasi batch sterilisasi.
+ * Suhu & durasi standar dipakai sebagai acuan operator saat menjalankan &
+ * memvalidasi batch sterilisasi. Masa simpan steril BUKAN urusan mesin: tgl
+ * kedaluwarsa ditentukan jenis kemasan (lihat master PackagingType).
  */
 class SterilizerMachine extends Model
 {
@@ -25,7 +26,6 @@ class SterilizerMachine extends Model
         'location',
         'temperature',
         'duration_minutes',
-        'sterile_shelf_life_days',
         'status',
         'note',
         'created_by',
@@ -35,7 +35,6 @@ class SterilizerMachine extends Model
     protected $casts = [
         'temperature' => 'decimal:2',
         'duration_minutes' => 'integer',
-        'sterile_shelf_life_days' => 'integer',
     ];
 
     protected static function generateUniqueCode($model): string

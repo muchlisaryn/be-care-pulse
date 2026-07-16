@@ -3,12 +3,15 @@
 namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
+use App\Models\InstrumentStock;
 use App\Models\Packaging;
+use App\Models\PackagingType;
 use App\Models\PipelineEvent;
 use App\Models\Sterilization;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 /**
  * Tahap Inspection & Packaging pada pipeline pemrosesan CSSD (record PKG-NNN).
@@ -24,7 +27,7 @@ class PackagingController extends Controller
     private const CHAIN = [
         'washing.production.items.instrumentStock.instrument',
         'washing.production.items.conditionOut',
-        'washing.washerMachine',
+        'packagingType',
     ];
 
     /**
@@ -65,6 +68,12 @@ class PackagingController extends Controller
             'chemical_indicator' => 'required|string|max:255',
             'operator' => 'nullable|string|max:255',
             'packaged_at' => 'nullable|date',
+            // Jenis kemasan menentukan masa simpan steril → tgl kedaluwarsa batch.
+            // Hanya jenis yang belum dihapus yang boleh dipilih.
+            'packaging_type_id' => [
+                'required',
+                Rule::exists('packaging_types', 'id')->whereNull('deleted_by'),
+            ],
             'note' => 'nullable|string',
         ]);
 
@@ -76,6 +85,14 @@ class PackagingController extends Controller
                 $packaging->chemical_indicator = $validated['chemical_indicator'];
                 $packaging->operator = $validated['operator'] ?? $packaging->operator ?? $actor;
                 $packaging->packaged_at = $validated['packaged_at'] ?? now();
+                $packaging->packaging_type_id = $validated['packaging_type_id'];
+                // Snapshot tanggal: dihitung sekali di sini agar tidak ikut bergeser
+                // bila masa simpan jenis kemasan diubah admin di kemudian hari.
+                $shelfLife = PackagingType::findOrFail($validated['packaging_type_id'])->shelf_life_days;
+                $packaging->expiry_date = $packaging->packaged_at
+                    ->copy()
+                    ->addDays($shelfLife)
+                    ->toDateString();
                 $packaging->note = $validated['note'] ?? $packaging->note;
                 $packaging->started_by ??= $actor;
                 $packaging->started_at ??= now();
@@ -89,7 +106,7 @@ class PackagingController extends Controller
 
                 // Perbarui tahap unit (keluar dari pengemasan → siap sterilisasi).
                 $stockIds = $packaging->washing?->production?->items()->pluck('instrument_stock_id')->all() ?? [];
-                \App\Models\InstrumentStock::syncStages($stockIds);
+                InstrumentStock::syncStages($stockIds);
             });
 
             $packaging->refresh();
@@ -118,8 +135,9 @@ class PackagingController extends Controller
 
     /**
      * Data Label Barcode Sterilisasi untuk dicetak saat packaging selesai:
-     * nama set, nomor batch, petugas pengemas, tgl kemas, tgl kedaluwarsa (auto =
-     * tgl kemas + masa simpan default), indikator kimia, + satu label per unit.
+     * nama set, nomor batch, petugas pengemas, tgl kemas, jenis kemasan, tgl
+     * kedaluwarsa (dari masa simpan jenis kemasan), indikator kimia, + satu
+     * label per unit.
      */
     private function labelPayload(Packaging $packaging): array
     {
@@ -129,16 +147,16 @@ class PackagingController extends Controller
         $units = $production ? $production->items : collect();
 
         $packagedAt = $packaging->packaged_at ?? now();
-        // Batas steril ikut mesin washer yang dipakai saat cleaning; fallback default.
-        $shelfLifeDays = $packaging->washing?->washerMachine?->sterile_shelf_life_days
-            ?? Sterilization::STERILE_SHELF_LIFE_DAYS;
-        $expiry = $packagedAt->copy()->addDays($shelfLifeDays)->toDateString();
+        // Batch lama (dikemas sebelum kolom expiry_date ada) tetap pakai aturan default.
+        $expiry = $packaging->expiry_date?->toDateString()
+            ?? $packagedAt->copy()->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
 
         return [
             'batch' => $production?->code ?? $packaging->code, // Nomor Batch (PRD / PKG)
             'packaging_code' => $packaging->code,
             'set_name' => $production?->displayName() ?? 'Produksi CSSD',
             'packer' => $packaging->operator,
+            'packaging_type' => $packaging->packagingType?->name,
             'packaged_at' => $packagedAt->toIso8601String(),
             'expiry_date' => $expiry,
             'chemical_indicator' => $packaging->chemical_indicator,
@@ -194,7 +212,10 @@ class PackagingController extends Controller
             'completed_at' => $packaging->completed_at,
             'operator' => $packaging->operator,
             'chemical_indicator' => $packaging->chemical_indicator, // = No. Lot indikator kimia
+            'packaging_type_id' => $packaging->packaging_type_id,
+            'packaging_type_label' => $packaging->packagingType?->name,
             'packaged_at' => $packaging->packaged_at,
+            'expiry_date' => $packaging->expiry_date?->toDateString(),
             'units_count' => $units->count(),
             'items' => $items,
             'units' => $units->map(fn ($u) => [

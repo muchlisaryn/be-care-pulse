@@ -25,7 +25,6 @@ class WasherMachine extends Model
         'location',
         'temperature',
         'duration_minutes',
-        'sterile_shelf_life_days',
         'status',
         'note',
         'created_by',
@@ -35,7 +34,6 @@ class WasherMachine extends Model
     protected $casts = [
         'temperature' => 'decimal:2',
         'duration_minutes' => 'integer',
-        'sterile_shelf_life_days' => 'integer',
     ];
 
     protected static function generateUniqueCode($model): string

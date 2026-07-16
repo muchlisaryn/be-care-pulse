@@ -79,6 +79,9 @@ class MenuSeeder extends Seeder
             ['name' => 'Mesin Sterilisator', 'url' => '/master/mesin-sterilisator', 'icon' => 'washing-machine', 'sort_order' => 6],
             // Master rak — pilihan lokasi rak saat menyimpan unit steril ke gudang.
             ['name' => 'Rak',           'url' => '/master/rak',               'icon' => 'archive',         'sort_order' => 7],
+            // Master jenis kemasan — pilihan pada tahap Packaging; masa simpannya
+            // menentukan tgl kedaluwarsa steril batch.
+            ['name' => 'Packaging',     'url' => '/master/jenis-kemasan',     'icon' => 'package',         'sort_order' => 8],
         ];
 
         foreach ($masterCssdChildren as $child) {

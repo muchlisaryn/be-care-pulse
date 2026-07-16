@@ -27,7 +27,9 @@ class Packaging extends Model
         'sterilization_id',
         'operator',
         'chemical_indicator',
+        'packaging_type_id',
         'packaged_at',
+        'expiry_date',
         'note',
         'status',
         'started_by',
@@ -40,6 +42,7 @@ class Packaging extends Model
 
     protected $casts = [
         'packaged_at' => 'datetime',
+        'expiry_date' => 'date',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
     ];
@@ -57,6 +60,16 @@ class Packaging extends Model
         }
 
         return 'PKG-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Jenis kemasan yang dipilih saat pengemasan — masa simpannya menentukan
+     * `expiry_date`. Sengaja mengabaikan global scope `active`: jenis kemasan yang
+     * sudah dihapus admin harus tetap terbaca di riwayat & label batch lama.
+     */
+    public function packagingType()
+    {
+        return $this->belongsTo(PackagingType::class)->withoutGlobalScope('active');
     }
 
     /** Tahap cleaning asal (via washing_code). */
