@@ -2053,9 +2053,17 @@ class OrderController extends Controller
     private function generateTransactionCode(): string
     {
         $prefix = 'INV'.now()->format('Ymd');
-        // Hitung order yang sudah punya kode transaksi pada hari yang sama
-        // (termasuk yang sudah soft-deleted) agar nomor urut tetap unik.
-        $seq = Order::withTrashed()->where('code_transaction', 'like', $prefix.'%')->count() + 1;
+
+        // Pakai nomor TERTINGGI hari itu + 1, bukan jumlah baris: beberapa order dalam
+        // satu rantai pinjam-alih sengaja berbagi code_transaction yang sama, jadi
+        // menghitung baris akan melompati nomor sekaligus bisa bentrok saat ada lubang.
+        // Order yang dihapus kode transaksinya sudah di-void (lihat Order::delete())
+        // sehingga tidak cocok lagi dengan `$prefix%` — nomornya kembali bebas.
+        $maxCode = Order::withTrashed()
+            ->where('code_transaction', 'like', $prefix.'%')
+            ->max('code_transaction');
+
+        $seq = $maxCode ? ((int) substr($maxCode, strlen($prefix))) + 1 : 1;
 
         return $prefix.str_pad((string) $seq, 3, '0', STR_PAD_LEFT);
     }
