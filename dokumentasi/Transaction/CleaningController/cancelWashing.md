@@ -21,9 +21,9 @@ belum ada satu pun parameter pencucian yang diisi operator dan belum selesai.
 
 **Ditolak (422) bila:**
 - Batch sudah **selesai** (`status = selesai`) atau sudah **dibatalkan** (`batal`).
-- Batch **sudah diproses** — salah satu parameter pencucian (`machine_no`,
-  `operator`, `temperature`, `washed_at`, `duration_minutes`, `detergent_type`,
-  `washer_machine_id`) sudah terisi. Gunakan **"Tandai Gagal"** bila perlu diulang.
+- Batch **sudah diproses** — salah satu parameter pencucian (`washer_machine_id`,
+  `operator`, `temperature`, `washed_at`, `duration_minutes`, `detergent_type`)
+  sudah terisi. Gunakan **"Tandai Gagal"** bila perlu diulang.
 
 ### Headers
 | Key | Value | Required |

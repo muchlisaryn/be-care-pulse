@@ -263,7 +263,6 @@ order_washing {
     bigint id PK
     bigint order_id FK "UK (1:1)"
     bigint washer_machine_id FK
-    string machine_no
     string operator
     string temperature
     timestamp washed_at

@@ -1877,7 +1877,7 @@ class OrderController extends Controller
             ->whereIn('instrument_stock_id', $stockIds)
             // Cutoff: hanya batch yang selesai SEBELUM order dikembalikan → ambil batch
             // siklus asli order ini, bukan pemrosesan ulang unit setelah pengembalian.
-            ->when($before, fn ($q) => $q->whereHas('production', fn ($p) => $p->where('completed_at', '<=', $before)))
+            ->when($before, fn ($q) => $q->whereHas('production', fn ($p) => $p->where('created_at', '<=', $before)))
             ->groupBy('instrument_stock_id')
             ->pluck('id');
         $productions = ProductionItem::with('production')
@@ -1886,8 +1886,8 @@ class OrderController extends Controller
             ->pluck('production')->filter()->unique('id');
 
         foreach ($productions as $p) {
-            $at = $p->completed_at ?? $p->created_at;
-            $push('produksi', $at, $p->completed_by ?? $p->created_by, "Batch produksi {$p->code}", [
+            $at = $p->created_at;
+            $push('produksi', $at, $p->created_by, "Batch produksi {$p->code}", [
                 'kind' => 'produksi',
                 'code' => $p->code,
                 'at' => $at,
@@ -1915,9 +1915,9 @@ class OrderController extends Controller
         $packagings = Packaging::whereIn('washing_code', $washings->pluck('code'))->get();
         foreach ($packagings as $pkg) {
             $at = $pkg->completed_at ?? $pkg->packaged_at ?? $pkg->started_at ?? $pkg->created_at;
-            $push('packaging', $at, $pkg->completed_by ?? $pkg->operator ?? $pkg->started_by, "Packaging {$pkg->code}", [
+            $push('packaging', $at, $pkg->completed_by ?? $pkg->operator ?? $pkg->started_by, "Packaging {$pkg->full_code}", [
                 'kind' => 'packaging',
-                'code' => $pkg->code,
+                'code' => $pkg->full_code,
                 'at' => $at,
             ]);
         }

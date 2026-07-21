@@ -62,7 +62,7 @@ cuci (riwayat/sudah lanjut ke packaging) — dibedakan lewat field `stage_status
             "condition_out": { "id": 1, "name": "Baik" }
           }
         ],
-        "washing": { "status": "dalam_proses", "machine_no": "M-01", "temperature": "60", "...": null }
+        "washing": { "status": "dalam_proses", "washer_machine_id": 1, "temperature": "60", "...": null }
       }
     ],
     "per_page": 20,

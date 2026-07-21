@@ -27,6 +27,9 @@ class DatabaseSeeder extends Seeder
             ConditionSeeder::class,
             InstrumentCatalogSeeder::class,
             InstrumentStockSeeder::class,
+            // Master mesin pipeline CSSD (cleaning & sterilisasi).
+            WasherMachineSeeder::class,
+            SterilizerMachineSeeder::class,
             CategoriClinicalPathwaySeeder::class,
         ]);
     }

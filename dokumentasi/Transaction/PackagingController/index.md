@@ -11,13 +11,29 @@
 **Endpoint:** /api/master/packaging
 **Auth:** Bearer Token (wajib)
 
-Daftar batch pada tahap **Inspection & Packaging** pipeline produksi: record
-`packaging` (PKG-NNN) berstatus `diproses` (belum ditandai selesai) **maupun**
-`selesai` (sudah dikemas — agar labelnya bisa dilihat/dicetak ulang lewat
-`GET /master/packaging/{packaging}/label`). Field `stage_status` (`diproses` |
-`selesai`) menandai kondisi tiap batch. Dirangkai ke tahap cleaning lewat
-`washing_code`, dan ke produksi lewat rantai `washing.production_code`. Unit
-fisik sudah dikunci sejak tahap Produksi.
+> **Format kode batch.** Identitas record `packaging` disimpan di dua kolom:
+> `prefix` (`PKG` = pengemasan normal, `RPK` = pengemasan ulang unit gagal steril)
+> dan `code` (**angka saja**: ymd + urutan harian, mis. `26050201`). Tiap prefix
+> punya deret nomor sendiri, dijaga index unik gabungan (`prefix`, `code`). Field
+> `code` pada response API sudah berisi **kode utuh** (`PKG26050201`), bukan
+> angkanya saja. Prefix ditetapkan sekali saat record dibuat dan tidak pernah
+> diubah — status void tetap dibaca dari kolom `disabled`.
+
+Daftar batch pada tahap **Inspection & Packaging** pipeline produksi, digabung
+dari **dua sumber**:
+
+1. record `packaging` berstatus `diproses` maupun
+   `selesai` (sudah dikemas — agar labelnya bisa dilihat/dicetak ulang lewat
+   `GET /master/packaging/{packaging}/label`) → `started: true`;
+2. batch cleaning berstatus `selesai` yang **belum punya record packaging**
+   (antrean menunggu inspeksi) → `started: false`, dengan `id` dan `code` masih
+   `null`. Recordnya baru dibuat saat "Selesai & Cetak Label" lewat `POST /master/packaging/complete`, jadi
+   frontend memakai `washing_code` sebagai identitas batch antrean.
+
+Batch yang record packagingnya di-void (`disabled`) tidak muncul lagi sebagai
+antrean. Field `stage_status` (`diproses` | `selesai`) menandai kondisi tiap
+batch. Dirangkai ke tahap cleaning lewat `washing_code`, dan ke produksi lewat
+rantai `washing.production_code`. Unit fisik sudah dikunci sejak tahap Produksi.
 
 ### Headers
 | Key | Value | Required |
@@ -27,7 +43,7 @@ fisik sudah dikunci sejak tahap Produksi.
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| search | string | Tidak | Cari pada `code` (PKG), `washing_code` (WSH), atau `operator` |
+| search | string | Tidak | Cari pada kode utuh (`prefix`+`code`, mis. `PKG26050201`), `washing_code` (WSH), `production_code` (PRD), atau `operator` |
 | page | integer | Tidak | Halaman pagination (default 1) |
 
 ### Response
@@ -42,9 +58,10 @@ fisik sudah dikunci sejak tahap Produksi.
     "data": [
       {
         "id": 3,
-        "code": "PKG-003",
+        "code": "PKG26071903",
         "code_transaction": "PRD20260702004",
-        "washing_code": "WSH-003",
+        "washing_code": "WSH26071903",
+        "started": true,
         "status": "pengemasan",
         "stage_status": "diproses",
         "borrowed_by": "SET PARTUS",

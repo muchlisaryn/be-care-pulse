@@ -34,7 +34,7 @@ washer). Dipakai untuk panel notifikasi Tahap 2.
         "code": "ORD-012",
         "status": "pencucian",
         "washing": {
-          "washer_machine": { "id": 1, "code": "WSH-001", "name": "Washer Disinfector 1" },
+          "washer_machine": { "id": 1, "name": "Washer Disinfector 1" },
           "temperature": "45",
           "duration_minutes": 8,
           "status": "dalam_proses",

@@ -54,10 +54,10 @@ return new class extends Migration
             $table->timestamps();
         });
 
-        // Tahap Packaging (PKG-NNN) — dirangkai ke cleaning lewat washing_code.
+        // Tahap Packaging (kode PKG+ymd+urutan harian) — dirangkai ke cleaning lewat washing_code.
         Schema::create('packaging', function (Blueprint $table) {
             $table->id();
-            $table->string('code')->unique();                       // PKG-NNN (auto)
+            $table->string('code')->unique();                       // PKG+ymd+urutan harian (auto)
             // Penghubung ke tahap cleaning sebelumnya (rantai antar-code).
             $table->string('washing_code')->nullable()->index();
             $table->string('operator')->nullable();
@@ -65,6 +65,10 @@ return new class extends Migration
             $table->text('note')->nullable();
             // diproses (default) | selesai
             $table->string('status')->default('diproses');
+            // Penanda PKG di-void (unitnya gagal steril & diproses ulang) — tetap
+            // tersimpan untuk pelacakan, tapi disembunyikan dari daftar & History.
+            $table->boolean('disabled')->default(false);
+            $table->timestamp('disabled_at')->nullable();
             // Jejak user per tahap: yang memulai & yang menyelesaikan.
             $table->string('started_by')->nullable();
             $table->timestamp('started_at')->nullable();

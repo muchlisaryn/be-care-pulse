@@ -8,8 +8,8 @@ return new class extends Migration
 {
     /**
      * Master mesin pencuci (washer disinfector) pada tahap Cleaning & Disinfection.
-     * Setiap mesin punya kode/barcode (auto WSH-NNN) yang dipindai petugas sebelum
-     * alat masuk mesin, serta ambang batas suhu & durasi yang dipakai sistem untuk
+     * Mesin dirujuk lewat id (kode/barcode WSH-NNN dihapus lewat migration terpisah),
+     * serta menyimpan ambang batas suhu & durasi yang dipakai sistem untuk
      * mendeteksi kegagalan parameter pencucian.
      */
     public function up(): void

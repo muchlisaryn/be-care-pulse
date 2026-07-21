@@ -5,10 +5,10 @@
 **Endpoint:** /api/master/washer-machines/scan
 **Auth:** Bearer Token (wajib)
 
-Scan barcode mesin washer: lookup mesin berdasarkan kode (WSH-NNN). Dipakai
-petugas sebelum memasukkan alat ke mesin pencuci (Tahap 2 — Cleaning &
-Disinfection). Hasil scan dipakai sebagai `washer_machine_id` saat menyimpan
-catatan pencucian.
+Lookup mesin washer berdasarkan id. Menggantikan scan barcode lama yang mencari
+lewat kode `WSH-NNN` — kolom kode sudah dihapus dari master. Dipakai sebelum
+memasukkan alat ke mesin pencuci (Tahap 2 — Cleaning & Disinfection); hasilnya
+dipakai sebagai `washer_machine_id` saat menyimpan catatan pencucian.
 
 ### Headers
 | Key | Value | Required |
@@ -18,7 +18,7 @@ catatan pencucian.
 ### Body Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| code | string | Ya | Kode/barcode mesin (mis. `WSH-001`) |
+| washer_machine_id | integer | Ya | Id mesin washer (mis. `1`) |
 
 ### Response
 
@@ -29,7 +29,6 @@ catatan pencucian.
   "message": "Mesin washer ditemukan.",
   "data": {
     "id": 1,
-    "code": "WSH-001",
     "name": "Washer Disinfector 1",
     "temperature": "60.00",
     "duration_minutes": 20,
@@ -40,7 +39,7 @@ catatan pencucian.
 
 #### Error (404)
 ```json
-{ "status": false, "message": "Mesin washer dengan kode tersebut tidak ditemukan." }
+{ "status": false, "message": "Mesin washer tidak ditemukan." }
 ```
 
 #### Error (422) — mesin nonaktif

@@ -18,10 +18,11 @@ return new class extends Migration
     {
         Schema::create('washing', function (Blueprint $table) {
             $table->id();
-            $table->string('code')->unique();                        // WSH-NNN (auto)
+            $table->string('code')->unique();                        // WSH+ymd+urutan harian (auto)
             // Penghubung ke tahap produksi sebelumnya (rantai antar-code).
             $table->string('production_code')->nullable()->index();
             // Nomor mesin pencuci & ID/nama operator (teks bebas, seperti borrowed_by).
+            // machine_no dihapus lewat migration terpisah (mesin dirujuk via washer_machine_id).
             $table->string('machine_no')->nullable();
             $table->string('operator')->nullable();
             // Suhu pencucian (°C) — disimpan sebagai teks agar fleksibel (mis. "60").

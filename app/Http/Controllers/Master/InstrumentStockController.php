@@ -3,14 +3,12 @@
 namespace App\Http\Controllers\Master;
 
 use App\Http\Controllers\Controller;
-use App\Models\InstrumentStorage;
 use App\Models\InstrumentStock;
+use App\Models\InstrumentStorage;
 use App\Models\OrderItem;
 use App\Models\OrderWashing;
 use App\Models\Packaging;
-use App\Models\Production;
 use App\Models\ProductionItem;
-use App\Models\Sterilization;
 use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -196,13 +194,14 @@ class InstrumentStockController extends Controller
         // Sterilisasi → Disimpan di Rak → Dipinjam. Tahap saat ini ditandai terpisah.
         $stages = [];
         if ($production) {
-            $stages[] = $this->stage('produksi', 'Produksi', $production->code, $production->status, $production->completed_at ?? $production->created_at);
+            // Produksi tak punya kolom status — begitu batch ada, tahapnya selesai.
+            $stages[] = $this->stage('produksi', 'Produksi', $production->code, 'selesai', $production->created_at);
         }
         if ($washing) {
             $stages[] = $this->stage('pencucian', 'Pencucian & Disinfeksi', $washing->code, $washing->status, $washing->completed_at ?? $washing->started_at ?? $washing->created_at);
         }
         if ($packaging) {
-            $stages[] = $this->stage('pengemasan', 'Pengemasan (Packing)', $packaging->code, $packaging->status, $packaging->packaged_at ?? $packaging->created_at);
+            $stages[] = $this->stage('pengemasan', 'Pengemasan (Packing)', $packaging->full_code, $packaging->status, $packaging->packaged_at ?? $packaging->created_at);
         }
         if ($sterilization) {
             $stages[] = $this->stage('sterilisasi', 'Sterilisasi', $sterilization->code, $sterilization->status, $sterilization->completed_at ?? $sterilization->sterilized_at ?? $sterilization->created_at);

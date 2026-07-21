@@ -224,18 +224,18 @@ class StorageController extends Controller
 
     /**
      * Batch steril PIPELINE PRODUKSI yang perlu disimpan: sterilisasi `selesai`
-     * yang berasal dari packaging (punya packaging_code) & tanpa order (order_id
-     * null). Bentuk respons sama dengan incoming order agar FE bisa memakai satu
-     * daftar & modal simpan yang sama (dibedakan lewat `source` / `store_url`).
+     * milik pipeline produksi (tanpa `order_id`) — dulu ditandai keberadaan
+     * `packaging_code` yang kini sudah dihapus dari header. Bentuk respons sama
+     * dengan incoming order agar FE bisa memakai satu daftar & modal simpan yang
+     * sama (dibedakan lewat `source` / `store_url`).
      */
     public function productionIncoming(Request $request): JsonResponse
     {
         $batches = Sterilization::with([
             'items.instrumentStock.instrument',
-            'packaging.washing.production.items.instrumentStock.instrument',
+            'packagings.washing.production.items.instrumentStock.instrument',
         ])
             ->where('status', Sterilization::STATUS_SELESAI)
-            ->whereNotNull('packaging_code')
             ->whereNull('order_id')
             // Hanya batch yang MASIH punya unit menunggu ditaruh di rak. Unit yang sudah
             // pernah dibuatkan baris gudang (walau kini `keluar` karena didistribusikan)
@@ -257,8 +257,7 @@ class StorageController extends Controller
             })
             ->when(
                 $request->search,
-                fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
-                    ->orWhere('packaging_code', 'like', "%{$s}%"))
+                fn ($q, $s) => $q->where('code', 'like', "%{$s}%")
             )
             ->orderByDesc('id')
             ->paginate(20);
@@ -363,10 +362,10 @@ class StorageController extends Controller
     {
         $batch->loadMissing([
             'items.instrumentStock.instrument',
-            'packaging.washing.production.items',
+            'packagings.washing.production.items',
         ]);
 
-        $production = $batch->packaging?->washing?->production;
+        $production = $batch->packagings->first()?->washing?->production;
 
         // Asal unit (satuan/paket) diambil dari production_item (via stock id).
         $originByStock = ($production?->items ?? collect())

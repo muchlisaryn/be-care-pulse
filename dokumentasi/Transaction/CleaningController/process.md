@@ -33,7 +33,7 @@ alokasi unit fisik.
     "status": "pencucian",
     "processed_at": "2026-06-25T08:00:00.000000Z",
     "processed_by": "Admin",
-    "washing": { "status": "dalam_proses", "machine_no": null, "...": null }
+    "washing": { "status": "dalam_proses", "washer_machine_id": null, "...": null }
   }
 }
 ```

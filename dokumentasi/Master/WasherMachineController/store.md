@@ -5,7 +5,7 @@
 **Endpoint:** /api/master/washer-machines
 **Auth:** Bearer Token (wajib)
 
-Tambah master mesin pencuci. `code` (barcode WSH-NNN) di-generate otomatis.
+Tambah master mesin pencuci. Mesin dirujuk lewat `id` — tidak ada kode/barcode.
 
 ### Headers
 | Key | Value | Required |
@@ -29,7 +29,7 @@ Tambah master mesin pencuci. `code` (barcode WSH-NNN) di-generate otomatis.
 {
   "status": true,
   "message": "Mesin washer berhasil ditambahkan.",
-  "data": { "id": 1, "code": "WSH-001", "name": "Washer Disinfector 1", "status": "aktif" }
+  "data": { "id": 1, "name": "Washer Disinfector 1", "status": "aktif" }
 }
 ```
 

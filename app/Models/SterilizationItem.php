@@ -12,9 +12,19 @@ class SterilizationItem extends Model
     protected $fillable = [
         'sterilization_id',
         'instrument_stock_id',
+        // Nomor label kemasan asal unit ini (packaging_item.barcode_no) — dipakai
+        // menelusuri label mana yang harus dikemas ulang saat unitnya gagal steril.
+        'packaging_barcode',
         'result',
+        'disabled',
+        'disabled_at',
         'created_by',
         'updated_by',
+    ];
+
+    protected $casts = [
+        'disabled' => 'boolean',
+        'disabled_at' => 'datetime',
     ];
 
     public function sterilization()

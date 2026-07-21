@@ -13,10 +13,17 @@ class Instrument extends Model
 
     protected $appends = ['image_url'];
 
-    /** URL publik gambar instrumen (null bila belum ada). */
+    /**
+     * Path publik gambar instrumen (null bila belum ada).
+     *
+     * Sengaja ROOT-RELATIF (`/uploads/...`), bukan URL absolut lewat url(): browser
+     * mengakses aplikasi lewat Next (port 3000) yang mem-proxy /uploads ke backend.
+     * URL absolut akan ikut APP_URL dan menunjuk host yang salah — juga rusak bila
+     * dibuka dari perangkat lain di LAN.
+     */
     public function getImageUrlAttribute(): ?string
     {
-        return $this->image ? url($this->image) : null;
+        return $this->image ? '/'.ltrim($this->image, '/') : null;
     }
 
     public function stocks()

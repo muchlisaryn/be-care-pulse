@@ -15,7 +15,7 @@ Daftar master mesin pencuci (washer disinfector) untuk tahap Cleaning & Disinfec
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| search | string | Tidak | Cari pada `name`, `code`, atau `location` |
+| search | string | Tidak | Cari pada `name` atau `location` |
 | status | string | Tidak | Filter `aktif` / `nonaktif` |
 
 ### Response
@@ -30,7 +30,6 @@ Daftar master mesin pencuci (washer disinfector) untuk tahap Cleaning & Disinfec
     "data": [
       {
         "id": 1,
-        "code": "WSH-001",
         "name": "Washer Disinfector 1",
         "location": "Ruang Dekontaminasi",
         "temperature": "60.00",

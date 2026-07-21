@@ -2,47 +2,54 @@
 
 namespace App\Models;
 
-use App\Traits\HasAuditColumns;
 use App\Traits\HasAutoCode;
 use Illuminate\Database\Eloquent\Model;
 
 /**
  * Tahap awal pipeline CSSD: Produksi (PRD-NNN). Titik masuk pemrosesan.
  * Tahap berikutnya dirangkai lewat code (washing.production_code = production.code).
+ *
+ * SENGAJA TANPA trait HasAuditColumns: tabel `production` tidak punya kolom soft
+ * delete. Batch hanya bisa dihapus lewat pembatalan di tahap cleaning, dan itu
+ * memang hard delete supaya slot nomor PRD-nya bisa dipakai ulang. Pengisian
+ * created_by/updated_by tetap otomatis lewat model event di bawah.
  */
 class Production extends Model
 {
-    use HasAuditColumns, HasAutoCode;
+    use HasAutoCode;
 
     protected $table = 'production';
 
-    // Asal batch produksi.
-    public const SOURCE_INTERNAL = 'internal';       // produksi stok CSSD sendiri
-    public const SOURCE_REPROCESSING = 'reprocessing'; // dari order peminjaman yang dikembalikan
-
-    // Status tahap produksi.
-    public const STATUS_DIPROSES = 'diproses';
-
-    public const STATUS_SELESAI = 'selesai';
+    // Tahap produksi tidak punya status maupun jejak mulai/selesai: batch dibuat &
+    // unit dikunci dalam satu aksi, jadi tidak ada keadaan antara yang perlu
+    // dicatat — `created_at`/`created_by` sudah mewakili waktu & pelakunya.
 
     protected $fillable = [
         'code',
-        'source',
-        'reference_code',
         'note',
-        'status',
-        'started_by',
-        'started_at',
-        'completed_by',
-        'completed_at',
         'created_by',
         'updated_by',
     ];
 
-    protected $casts = [
-        'started_at' => 'datetime',
-        'completed_at' => 'datetime',
-    ];
+    /**
+     * Isi created_by/updated_by dari user yang login — pengganti perilaku
+     * HasAuditColumns yang tidak dipakai model ini.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $model) {
+            if ($user = auth()->user()) {
+                $model->created_by ??= $user->name;
+                $model->updated_by ??= $user->name;
+            }
+        });
+
+        static::updating(function (self $model) {
+            if ($user = auth()->user()) {
+                $model->updated_by = $user->name;
+            }
+        });
+    }
 
     /**
      * Kode batch produksi berikutnya: PRD + tahun(2) + bulan(2) + tanggal(2) +

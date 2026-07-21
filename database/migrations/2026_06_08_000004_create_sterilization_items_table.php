@@ -13,6 +13,9 @@ return new class extends Migration
             $table->foreignId('sterilization_id')->constrained('sterilizations')->cascadeOnDelete();
             $table->foreignId('instrument_stock_id')->constrained('instrument_stocks')->restrictOnDelete();
             $table->string('result')->nullable(); // Hasil per unit: lulus/gagal (opsional, default ikut batch)
+            // Unit gagal yang di-void (dikembalikan ke packaging) — mudah dilacak per unit.
+            $table->boolean('disabled')->default(false);
+            $table->timestamp('disabled_at')->nullable();
             $table->string('created_by')->nullable();
             $table->string('updated_by')->nullable();
             $table->string('deleted_by')->nullable();
