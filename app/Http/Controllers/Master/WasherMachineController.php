@@ -9,7 +9,7 @@ use Illuminate\Http\Request;
 
 /**
  * Master mesin pencuci (washer disinfector) — tahap Cleaning & Disinfection.
- * Menyediakan CRUD + endpoint scan barcode (lookup mesin via kode).
+ * Menyediakan CRUD + endpoint lookup mesin via id (kode/barcode sudah dihapus).
  */
 class WasherMachineController extends Controller
 {
@@ -18,7 +18,6 @@ class WasherMachineController extends Controller
         $data = WasherMachine::when(
             $request->search,
             fn ($q, $s) => $q->where(fn ($w) => $w->where('name', 'like', "%{$s}%")
-                ->orWhere('code', 'like', "%{$s}%")
                 ->orWhere('location', 'like', "%{$s}%"))
         )
             ->when($request->status, fn ($q, $s) => $q->where('status', $s))
@@ -71,19 +70,19 @@ class WasherMachineController extends Controller
     }
 
     /**
-     * Scan barcode mesin washer: lookup mesin berdasarkan kode (WSH-NNN).
-     * Dipakai petugas sebelum memasukkan alat ke mesin pencuci.
+     * Lookup mesin washer berdasarkan id (`washer_machine_id`). Menggantikan scan
+     * barcode lama yang mencari lewat kode WSH-NNN — kolom kode sudah dihapus.
      */
     public function scan(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'code' => 'required|string',
+            'washer_machine_id' => 'required|integer',
         ]);
 
-        $machine = WasherMachine::where('code', $validated['code'])->first();
+        $machine = WasherMachine::find($validated['washer_machine_id']);
 
         if (! $machine) {
-            return $this->error('Mesin washer dengan kode tersebut tidak ditemukan.', 404);
+            return $this->error('Mesin washer tidak ditemukan.', 404);
         }
 
         if ($machine->status !== WasherMachine::STATUS_AKTIF) {

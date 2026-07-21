@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 
 /**
  * Catatan pencucian (Cleaning) — tahap mandiri pada pipeline CSSD (tabel: washing,
- * code WSH-NNN). Tidak menyimpan order_id; keterkaitan ke order hanya di tahap
+ * code WSH+ymd+urutan harian, mis. WSH26071901). Tidak menyimpan order_id; keterkaitan ke order hanya di tahap
  * sterilisasi. Dirangkai ke tahap produksi lewat production_code.
  */
 class OrderWashing extends Model
@@ -31,7 +31,6 @@ class OrderWashing extends Model
         'code',
         'production_code',
         'washer_machine_id',
-        'machine_no',
         'operator',
         'temperature',
         'washed_at',
@@ -60,25 +59,47 @@ class OrderWashing extends Model
         'alert' => 'boolean',
     ];
 
-    /** Kode batch cleaning berikutnya: WSH-NNN. */
+    /**
+     * Kode batch cleaning berikutnya: WSH + tahun(2) + bulan(2) + tanggal(2) +
+     * urutan HARIAN (2 digit, reset tiap hari), mis. WSH26071901 lalu WSH26071902,
+     * dan besok kembali ke WSH26072001. Bila melebihi 99 otomatis jadi 3+ digit.
+     * Formatnya sengaja dibuat sama dengan kode produksi (PRD).
+     *
+     * Nomor urut = angka terkecil yang BELUM dipakai pada tanggal hari ini, sehingga
+     * slot nomor yang kosong (record dihapus) dipakai ulang tanpa menabrak index
+     * unik `code`. Batch lama dengan format WSH-NNN tidak terpengaruh — prefixnya
+     * berbeda, jadi tidak ikut terhitung.
+     */
     protected static function generateUniqueCode($model): string
     {
-        $maxCode = static::withoutGlobalScopes()
-            ->where('code', 'like', 'WSH-%')
-            ->max('code');
+        $prefix = 'WSH'.now()->format('ymd');
+
+        // Nomor urut yang sedang terpakai hari ini (dibaca dari code, lintas scope
+        // agar mencakup record apa pun yang masih menempati index unik `code`).
+        $used = static::withoutGlobalScopes()
+            ->where('code', 'like', $prefix.'%')
+            ->pluck('code')
+            ->map(fn ($code) => (int) substr($code, strlen($prefix)))
+            ->flip();
 
         $sequence = 1;
-        if ($maxCode && preg_match('/-(\d+)$/', $maxCode, $matches)) {
-            $sequence = (int) $matches[1] + 1;
+        while ($used->has($sequence)) {
+            $sequence++;
         }
 
-        return 'WSH-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
+        return $prefix.str_pad($sequence, 2, '0', STR_PAD_LEFT);
     }
 
     /** Tahap produksi asal (via production_code). */
     public function production()
     {
         return $this->belongsTo(Production::class, 'production_code', 'code');
+    }
+
+    /** Detail per-unit tahap cleaning ini (washing_item). */
+    public function items()
+    {
+        return $this->hasMany(WashingItem::class, 'washing_id');
     }
 
     /** Mesin washer yang dipakai. */

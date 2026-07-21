@@ -19,8 +19,9 @@ use Illuminate\Support\Facades\DB;
  *
  * Sumber data kini tabel `washing` (dirangkai dari `production` lewat
  * production_code), bukan lagi order. Satu record washing = satu batch di tahap
- * cleaning. Saat "Selesai Cuci", dibuat record `packaging` (PKG) sebagai tahap
- * berikutnya. Respons dibentuk agar cocok dengan tipe CleaningOrder di frontend.
+ * cleaning. Saat "Selesai Cuci", washing ditandai `selesai` dan batch masuk
+ * antrean tahap Packaging — record `packaging` sendiri baru dibuat ketika petugas
+ * mulai inspeksi. Respons dibentuk agar cocok dengan tipe CleaningOrder di frontend.
  */
 class CleaningController extends Controller
 {
@@ -62,13 +63,21 @@ class CleaningController extends Controller
     {
         // includeAdvanced=true → sertakan juga washing yang sudah selesai (lanjut ke
         // packaging) sebagai riwayat cleaning; dibedakan lewat `stage_status`.
-        $washings = $this->cleaningQuery(true)
+        $query = $this->cleaningQuery(true)
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
                     ->orWhere('production_code', 'like', "%{$s}%")
                     ->orWhere('operator', 'like', "%{$s}%"))
-            )
+            );
+
+        // Tanggal acuan tahap Cleaning: waktu selesai cuci bila sudah selesai, kalau
+        // belum pakai waktu mulai cuci / mulai diproses, terakhir waktu record dibuat.
+        $washings = $this->applyDateRange(
+            $query,
+            $request,
+            'COALESCE(completed_at, washed_at, started_at, created_at)'
+        )
             ->orderByDesc('id')
             ->paginate(20);
 
@@ -117,8 +126,8 @@ class CleaningController extends Controller
         $req = $isSave ? 'required' : 'nullable';
 
         $validated = $request->validate([
-            'washer_machine_id' => 'nullable|exists:washer_machines,id',
-            'machine_no' => "$req|string|max:255",
+            // Mesin washer dirujuk lewat id — kolom kode/barcode WSH-NNN sudah dihapus.
+            'washer_machine_id' => "$req|exists:washer_machines,id",
             'operator' => 'nullable|string|max:255',
             'temperature' => "$req|string|max:50",
             'washed_at' => "$req|date",
@@ -151,20 +160,18 @@ class CleaningController extends Controller
 
                 $washing->fill(array_intersect_key(
                     $validated,
-                    array_flip(['washer_machine_id', 'machine_no', 'operator', 'temperature', 'washed_at', 'duration_minutes', 'detergent_type'])
+                    array_flip(['washer_machine_id', 'operator', 'temperature', 'washed_at', 'duration_minutes', 'detergent_type'])
                 ));
 
                 // Yang pertama kali mengisi = penanggung jawab mulai (bila belum ada).
                 $washing->started_by ??= $actor;
                 $washing->started_at ??= now();
 
-                // Evaluasi parameter terhadap ambang mesin washer yang dipindai.
+                // Evaluasi parameter terhadap ambang mesin washer yang dipilih.
                 $alerts = [];
                 if ($washing->washer_machine_id && ($machine = WasherMachine::find($washing->washer_machine_id))) {
                     $temp = is_numeric($washing->temperature) ? (float) $washing->temperature : null;
                     $alerts = $machine->evaluate($temp, $washing->duration_minutes);
-                    // Lengkapi nomor mesin dari master bila belum diisi manual.
-                    $washing->machine_no ??= $machine->code;
                 }
                 $washing->alert = ! empty($alerts);
                 $washing->alert_message = $alerts ? implode(' ', $alerts) : null;
@@ -187,19 +194,12 @@ class CleaningController extends Controller
                     $washing->failure_reason = null;
                     $washing->save();
 
-                    // Buka tahap Packaging (PKG) — dirangkai lewat washing_code.
-                    $packaging = Packaging::create([
-                        'washing_code' => $washing->code,
-                        'status' => Packaging::STATUS_DIPROSES,
-                        'started_by' => $actor,
-                        'started_at' => now(),
-                    ]);
-
+                    // Record `packaging` + `packaging_item` TIDAK dibuat di sini.
+                    // Batch masuk antrean tahap Packaging hanya lewat status washing
+                    // `selesai`; recordnya baru dibuat saat petugas mulai inspeksi
+                    // (PackagingController@start).
                     PipelineEvent::record(PipelineEvent::STAGE_WASHING, $washing->code, PipelineEvent::ACTION_SELESAI, [
-                        'note' => 'Pencucian selesai',
-                    ]);
-                    PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $packaging->code, PipelineEvent::ACTION_DIBUAT, [
-                        'note' => 'Masuk tahap Packaging (dari cleaning '.$washing->code.')',
+                        'note' => 'Pencucian selesai — menunggu inspeksi & pengemasan',
                     ]);
 
                     // Perbarui tahap unit (→ pengemasan).
@@ -280,8 +280,10 @@ class CleaningController extends Controller
                     ]);
 
                     // Hard delete batch produksi (item ikut terhapus via cascade DB)
-                    // agar slot nomor PRD-nya kosong kembali & dipakai ulang produksi berikutnya.
-                    $production->forceDelete();
+                    // agar slot nomor PRD-nya kosong kembali & dipakai ulang produksi
+                    // berikutnya. Production tidak memakai HasAuditColumns, jadi
+                    // delete() di sini sudah hard delete (bukan soft delete).
+                    $production->delete();
                 }
 
                 // Catat pembatalan di jejak pipeline (audit terpisah) sebelum record dihapus.
@@ -307,7 +309,6 @@ class CleaningController extends Controller
     private function isWashingProcessed(OrderWashing $washing): bool
     {
         return (bool) ($washing->washer_machine_id
-            || $washing->machine_no
             || $washing->operator
             || $washing->temperature
             || $washing->washed_at
@@ -316,9 +317,12 @@ class CleaningController extends Controller
     }
 
     /**
-     * Query dasar batch cleaning. Default: hanya washing yang BELUM lanjut ke
-     * packaging (proses). `$includeAdvanced=true` menyertakan juga yang sudah
-     * lanjut (riwayat cleaning).
+     * Query dasar batch cleaning. Default: hanya washing yang masih di tahap
+     * cleaning (belum selesai). `$includeAdvanced=true` menyertakan juga yang
+     * sudah selesai (riwayat cleaning).
+     *
+     * Dulu penanda "sudah lanjut" adalah keberadaan record packaging; sejak record
+     * packaging baru dibuat saat inspeksi dimulai, penandanya status washing.
      */
     private function cleaningQuery(bool $includeAdvanced = false)
     {
@@ -329,9 +333,7 @@ class CleaningController extends Controller
         ]);
 
         if (! $includeAdvanced) {
-            $query->whereNotIn('code', Packaging::query()
-                ->whereNotNull('washing_code')
-                ->select('washing_code'));
+            $query->where('status', '!=', OrderWashing::STATUS_SELESAI);
         }
 
         return $query;
@@ -351,10 +353,12 @@ class CleaningController extends Controller
 
         // Ringkasan untuk chip kartu: unit paket dikelompokkan PER PAKET (nama paket,
         // bukan dipecah per instrumen penyusunnya); unit satuan per nama instrumen.
+        // Nama instrumen dibaca dari snapshot production_item.name, BUKAN relasi ke
+        // master — riwayat batch harus tetap sama walau master berubah/dihapus.
         $items = $units
             ->groupBy(fn ($u) => $u->source === 'paket'
                 ? 'paket|'.($u->package_name ?? 'Paket')
-                : 'satuan|'.($u->instrumentStock?->instrument?->name ?? 'Instrumen'))
+                : 'satuan|'.($u->name ?? 'Instrumen'))
             ->map(function ($group) {
                 $first = $group->first();
                 $isPaket = $first->source === 'paket';
@@ -363,17 +367,23 @@ class CleaningController extends Controller
                     'type' => $isPaket ? 'paket' : 'satuan',
                     'name' => $isPaket
                         ? ($first->package_name ?? 'Paket')
-                        : ($first->instrumentStock?->instrument?->name ?? 'Instrumen'),
-                    'quantity' => $group->count(),
+                        : ($first->name ?? 'Instrumen'),
+                    // Paket dihitung per SET (package_no), bukan per instrumen di
+                    // dalamnya — 2 set partus berisi 6 instrumen = 2, bukan 12. Batch
+                    // lama tanpa package_no (null) melebur jadi satu set, sama seperti
+                    // pengelompokan daftar instrumen di frontend.
+                    'quantity' => $isPaket
+                        ? $group->pluck('package_no')->unique()->count()
+                        : $group->count(),
                 ];
             })
             ->values();
 
-        $jenis = $units->pluck('instrumentStock.instrument.id')->filter()->unique()->count();
+        $jenis = $units->pluck('name')->filter()->unique()->count();
 
         return [
             'id' => $washing->id,
-            'code' => $washing->code,                          // WSH-NNN (id record cleaning)
+            'code' => $washing->code,                          // WSH+ymd+urutan harian (id record cleaning)
             'code_transaction' => $production?->code ?? $washing->production_code, // PRD-NNN (fallback ke kode tersimpan bila batch batal sudah dihapus)
             'status' => 'pencucian',
             'stage_status' => match ($washing->status) { // proses | selesai | batal (riwayat)
@@ -385,8 +395,8 @@ class CleaningController extends Controller
             'note' => $production?->note, // Catatan (opsional) yang diisi saat Mulai Produksi.
             'room' => null,
             'order_date' => $production?->created_at?->toDateString(),
-            'processed_at' => $production?->completed_at ?? $washing->started_at,
-            'processed_by' => $production?->completed_by ?? $washing->started_by,
+            'processed_at' => $production?->created_at ?? $washing->started_at,
+            'processed_by' => $production?->created_by ?? $washing->started_by,
             'requested_qty' => $units->count(),
             'request_lines' => $jenis,
             'items' => $items,
@@ -395,15 +405,17 @@ class CleaningController extends Controller
                 'id' => $u->id,
                 'source' => $u->source,
                 'package_name' => $u->package_name,
+                // Set ke-berapa dalam batch — dua set bernama sama harus tampil
+                // sebagai dua kelompok terpisah, bukan melebur jadi satu.
+                'package_no' => $u->package_no,
                 'instrument_stock_id' => $u->instrument_stock_id,
-                'code' => $u->instrumentStock?->code,
-                'instrument' => $u->instrumentStock?->instrument
-                    ? [
-                        'id' => $u->instrumentStock->instrument->id,
-                        'name' => $u->instrumentStock->instrument->name,
-                        'image_url' => $u->instrumentStock->instrument->image_url,
-                    ]
-                    : null,
+                // Nama, kode & foto unit seluruhnya dari snapshot production_item
+                // (dibekukan saat batch dibuat). `image_url` = foto paket untuk baris
+                // paket, foto instrumen untuk baris satuan. Relasi ke master hanya
+                // jadi cadangan untuk batch lama yang dibuat sebelum kolom snapshot ada.
+                'name' => $u->name ?? $u->instrumentStock?->instrument?->name,
+                'code' => $u->kode_instrumen ?? $u->instrumentStock?->code,
+                'image_url' => $u->image_url ?? $u->instrumentStock?->instrument?->image_url,
                 'status' => $u->instrumentStock?->status,
                 'condition_out' => $u->conditionOut
                     ? ['id' => $u->conditionOut->id, 'name' => $u->conditionOut->name]
@@ -413,10 +425,8 @@ class CleaningController extends Controller
                 'washer_machine_id' => $washing->washer_machine_id,
                 'washer_machine' => $washing->washerMachine ? [
                     'id' => $washing->washerMachine->id,
-                    'code' => $washing->washerMachine->code,
                     'name' => $washing->washerMachine->name,
                 ] : null,
-                'machine_no' => $washing->machine_no,
                 'operator' => $washing->operator,
                 'temperature' => $washing->temperature,
                 'washed_at' => $washing->washed_at,

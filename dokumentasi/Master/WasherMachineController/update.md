@@ -29,6 +29,6 @@ Perbarui data mesin pencuci. Body sama dengan store.
 {
   "status": true,
   "message": "Mesin washer berhasil diperbarui.",
-  "data": { "id": 1, "code": "WSH-001", "name": "Washer Disinfector 1 (Revisi)" }
+  "data": { "id": 1, "name": "Washer Disinfector 1 (Revisi)" }
 }
 ```

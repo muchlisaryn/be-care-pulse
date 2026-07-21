@@ -21,7 +21,6 @@ Detail satu mesin pencuci.
   "message": "Detail mesin washer berhasil diambil.",
   "data": {
     "id": 1,
-    "code": "WSH-001",
     "name": "Washer Disinfector 1",
     "location": "Ruang Dekontaminasi",
     "temperature": "60.00",

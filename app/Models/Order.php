@@ -8,7 +8,11 @@ use Illuminate\Database\Eloquent\Model;
 
 class Order extends Model
 {
-    use HasAuditColumns, HasAutoCode;
+    use HasAuditColumns {
+        delete as protected auditDelete;
+        restore as protected auditRestore;
+    }
+    use HasAutoCode;
 
     // "order" adalah reserved keyword SQL — wajib di-set eksplisit.
     protected $table = 'order';
@@ -85,8 +89,13 @@ class Order extends Model
         'distributed_at' => 'datetime',
     ];
 
+    /** Awalan kode order yang sudah dihapus — sengaja tidak cocok dengan pola `ORD-%`. */
+    private const VOID_CODE_PREFIX = 'VOID-';
+
     protected static function generateUniqueCode($model): string
     {
+        // Order yang sudah dihapus kodenya sudah di-void (lihat delete()), jadi tidak
+        // ikut terhitung di sini — nomornya kembali bebas untuk order berikutnya.
         $maxCode = static::withoutGlobalScopes()
             ->where('code', 'like', 'ORD-%')
             ->max('code');
@@ -97,6 +106,72 @@ class Order extends Model
         }
 
         return 'ORD-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Soft delete + lepas nomor urut ORD dan INV-nya agar bisa dipakai ulang order
+     * berikutnya. Kode lama tetap disimpan (dengan awalan VOID-) sebagai jejak, bukan
+     * dikosongkan, karena kolom `code` unique dan riwayat (order_event /
+     * instrument_stock_log) menyimpan kode ini sebagai teks.
+     *
+     * Catatan pinjam-alih: beberapa order bisa berbagi `code_transaction` yang sama.
+     * Melepas milik order ini tidak membebaskan nomor INV selama order lain dalam
+     * rantai yang sama masih memakainya (lihat OrderController::generateTransactionCode).
+     */
+    public function delete(): ?bool
+    {
+        $this->code = $this->voidCode($this->code);
+        $this->code_transaction = $this->voidCode($this->code_transaction);
+
+        return $this->auditDelete();
+    }
+
+    /** Beri awalan VOID- pada sebuah kode agar nomornya lepas. Aman dipanggil berulang. */
+    private function voidCode(?string $code): ?string
+    {
+        if (! $code || str_starts_with($code, self::VOID_CODE_PREFIX)) {
+            return $code;
+        }
+
+        return self::VOID_CODE_PREFIX.$code.'-'.$this->id;
+    }
+
+    /**
+     * Restore + pulihkan kode ORD dan INV aslinya. Bila nomor lamanya sudah dipakai
+     * order lain selama order ini terhapus, order ini dapat kode ORD baru dan kode INV
+     * dikosongkan — nomor batch akan dibangkitkan ulang saat order diproses lagi.
+     */
+    public function restore(): bool
+    {
+        if ($original = $this->unvoidCode($this->code)) {
+            $this->code = $this->codeIsTaken('code', $original)
+                ? static::generateUniqueCode($this)
+                : $original;
+        }
+
+        if ($original = $this->unvoidCode($this->code_transaction)) {
+            $this->code_transaction = $this->codeIsTaken('code_transaction', $original)
+                ? null
+                : $original;
+        }
+
+        return $this->auditRestore();
+    }
+
+    /** Kembalikan kode asli dari kode yang sudah di-void, atau null bila bukan kode void. */
+    private function unvoidCode(?string $code): ?string
+    {
+        $pattern = '/^'.preg_quote(self::VOID_CODE_PREFIX, '/').'(.+)-\d+$/';
+
+        return $code && preg_match($pattern, $code, $m) ? $m[1] : null;
+    }
+
+    private function codeIsTaken(string $column, string $code): bool
+    {
+        return static::withoutGlobalScopes()
+            ->where($column, $code)
+            ->whereKeyNot($this->getKey())
+            ->exists();
     }
 
     public function room()

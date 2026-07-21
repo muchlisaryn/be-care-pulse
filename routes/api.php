@@ -89,7 +89,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('rooms', RoomController::class);
 
         // Master mesin pencuci (washer disinfector) — tahap Cleaning
-        // Scan barcode mesin (WSH-NNN) sebelum alat masuk mesin pencuci
+        // Lookup mesin washer via id (washer_machine_id) — kode/barcode sudah dihapus
         Route::post('washer-machines/scan', [WasherMachineController::class, 'scan']);
         Route::apiResource('washer-machines', WasherMachineController::class)
             ->parameters(['washer-machines' => 'washer_machine']);
@@ -139,11 +139,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('cleaning/{washing}/cancel', [CleaningController::class, 'cancelWashing']);
         // Pipeline produksi — Tahap Inspection & Packaging (record PKG): list & selesai
         Route::get('packaging', [PackagingController::class, 'index']);
+        // "Selesai & Cetak Label" untuk batch antrean: record packaging +
+        // packaging_item baru dibuat di sini (bukan saat cleaning selesai).
+        Route::post('packaging/complete', [PackagingController::class, 'completeQueued']);
         Route::get('packaging/{packaging}/label', [PackagingController::class, 'label']);
         Route::post('packaging/{packaging}/complete', [PackagingController::class, 'complete']);
         // Pipeline produksi — Tahap Sterilisasi (berbasis PKG): list siap-steril + batch, buat batch gabungan, validasi
         Route::get('sterilization-pipeline', [SterilizationPipelineController::class, 'index']);
         Route::post('sterilization-pipeline/batch', [SterilizationPipelineController::class, 'batch']);
+        // Validasi hasil scan barcode label kemasan (dikenal / layak dibatch?).
+        Route::post('sterilization-pipeline/scan', [SterilizationPipelineController::class, 'scan']);
         Route::post('sterilization-pipeline/{sterilization}/validate', [SterilizationPipelineController::class, 'validateResult']);
         // Tahap Packaging (order peminjaman): data kebutuhan unit, generate unit dari stok, lalu lanjut (selesai/siap steril)
         Route::get('orders/{order}/packaging', [OrderController::class, 'packaging']);

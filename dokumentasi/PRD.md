@@ -81,7 +81,7 @@ Struktur `dokumentasi/` mengikuti struktur `app/Http/Controllers/`, dibuat & dip
 | **InstrumentCatalog / Item** | katalog Set/paket CSSD (definisi tray beserta komponennya) + gambar. |
 | **Bmhp** | Bahan Medis Habis Pakai (consumables). |
 | **Icd10** | master diagnosa ICD-10 + **impor massal Excel** (skip duplikat `code`+`version`). |
-| **WasherMachine** | mesin pencuci/disinfector; `code` `WSH-NNN`; **scan barcode** sebelum cuci. |
+| **WasherMachine** | mesin pencuci/disinfector; dirujuk lewat `id` (kode/barcode sudah dihapus). |
 
 ### 3.3 Transaksi CSSD — Pipeline (`Transaction/`)
 

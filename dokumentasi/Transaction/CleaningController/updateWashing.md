@@ -8,12 +8,14 @@
 Menyimpan / memperbarui catatan pencucian (Tahap 2 — Cleaning & Disinfection).
 
 **Perilaku:**
-- `washer_machine_id` mencatat mesin washer yang dipindai (lihat `washer-machines/scan`).
+- `washer_machine_id` mencatat mesin washer yang dipilih (lihat `washer-machines/scan`, kini lookup via id).
   Suhu & durasi yang diinput dievaluasi terhadap ambang mesin → bila di luar
   rentang, sistem menandai `alert = true` dan mengisi `alert_message`
   (notifikasi kegagalan suhu/waktu).
-- `complete = true` menandai **"Selesai Cuci"** → order lanjut ke status
-  `pengemasan` (mencatat event `selesai_cuci`). **Ditolak (422)** selama masih
+- `complete = true` menandai **"Selesai Cuci"** → washing berstatus `selesai` dan
+  batch masuk **antrean** tahap Packaging. Record `packaging` + `packaging_item`
+  **tidak** dibuat di sini; keduanya baru ditulis saat petugas menekan "Selesai &
+  Cetak Label" (`POST /master/packaging/complete`). **Ditolak (422)** selama masih
   ada `alert` parameter.
 - `fail = true` menandai pencucian **"Gagal"** (wajib diulang); status washing
   menjadi `gagal`, order tetap di tahap `pencucian` (mencatat event `gagal`).
@@ -34,8 +36,7 @@ Menyimpan / memperbarui catatan pencucian (Tahap 2 — Cleaning & Disinfection).
 ### Body Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| washer_machine_id | integer | Tidak | ID mesin washer yang dipindai (FK `washer_machines`) |
-| machine_no | string | Ya¹ | Nomor mesin (teks bebas; terisi otomatis dari kode mesin bila kosong) |
+| washer_machine_id | integer | Ya¹ | ID mesin washer (FK `washer_machines`) — pengganti kode/barcode yang sudah dihapus |
 | operator | string | Tidak | ID / nama operator |
 | temperature | string | Ya¹ | Suhu pencucian (°C) |
 | washed_at | date | Ya¹ | Waktu mulai pencucian |
@@ -59,8 +60,7 @@ Menyimpan / memperbarui catatan pencucian (Tahap 2 — Cleaning & Disinfection).
     "id": 12,
     "status": "pengemasan",
     "washing": {
-      "washer_machine": { "id": 1, "code": "WSH-001", "name": "Washer Disinfector 1" },
-      "machine_no": "WSH-001",
+      "washer_machine": { "id": 1, "name": "Washer Disinfector 1" },
       "operator": "OP-7",
       "temperature": "70",
       "duration_minutes": 20,

@@ -47,8 +47,8 @@ Rantai pipeline direkonstruksi dari `production_item` (titik masuk) lalu dirangk
     },
     "stages": [
       { "key": "produksi", "label": "Produksi", "code": "PRD26070508", "status": "selesai", "at": "..." },
-      { "key": "pencucian", "label": "Pencucian & Disinfeksi", "code": "WSH-009", "status": "selesai", "at": "..." },
-      { "key": "pengemasan", "label": "Inspeksi & Pengemasan", "code": "PKG-007", "status": "selesai", "at": "..." },
+      { "key": "pencucian", "label": "Pencucian & Disinfeksi", "code": "WSH26071909", "status": "selesai", "at": "..." },
+      { "key": "pengemasan", "label": "Inspeksi & Pengemasan", "code": "PKG26071907", "status": "selesai", "at": "..." },
       { "key": "sterilisasi", "label": "Sterilisasi", "code": "STR-005", "status": "selesai", "at": "..." }
     ],
     "order": null,

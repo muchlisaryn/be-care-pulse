@@ -55,7 +55,7 @@ Respons dibentuk seperti paginator satu halaman.
       {
         "id": 8,
         "kind": "ready",
-        "code": "PKG-008",
+        "code": "PKG26071908",
         "code_transaction": "PRD20260702009",
         "status": "selesai",
         "borrowed_by": "HECTING SET",

@@ -21,10 +21,10 @@ class InstrumentCatalog extends Model
 
     protected $appends = ['image_url'];
 
-    /** URL publik gambar set/paket (null bila belum ada). */
+    /** Path publik gambar set/paket, root-relatif — lihat Instrument::getImageUrlAttribute(). */
     public function getImageUrlAttribute(): ?string
     {
-        return $this->image ? url($this->image) : null;
+        return $this->image ? '/'.ltrim($this->image, '/') : null;
     }
 
     public function items()

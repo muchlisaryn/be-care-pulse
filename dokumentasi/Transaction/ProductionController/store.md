@@ -52,21 +52,36 @@ dibatalkan (rollback) dan mengembalikan **422** — tidak ada batch yang dibuat.
   "message": "Batch produksi berhasil dibuat & masuk tahap Cleaning.",
   "data": {
     "id": 12,
-    "code": "ORD-012",
-    "room_id": null,
-    "borrowed_by": "Produksi CSSD",
-    "status": "pencucian",
-    "processed_at": "2026-06-30T08:00:00.000000Z",
-    "request_items": [
-      { "id": 30, "type": "satuan", "instrument_id": 7, "quantity": 2 }
-    ],
+    "code": "PRD26070801",
+    "note": null,
+    "created_by": "Admin",
+    "created_at": "2026-07-08T08:00:00.000000Z",
     "items": [
-      { "id": 51, "instrument_stock_id": 18, "source": "satuan", "package_name": null, "is_returned": false }
+      {
+        "id": 51,
+        "instrument_stock_id": 18,
+        "kode_instrumen": "KMK-001",
+        "name": "Kom Kecil",
+        "source": "satuan",
+        "package_name": null,
+        "condition_out_id": 1
+      }
     ],
-    "washing": { "id": 9, "status": "dalam_proses" }
+    "washings": [
+      { "id": 9, "code": "WSH26071909", "production_code": "PRD26070801", "status": "dalam_proses" }
+    ]
   }
 }
 ```
+
+> **Tanpa `status`, `started_*`, maupun `completed_*`.** Batch dibuat dan unit
+> dikunci dalam satu aksi, jadi tidak ada keadaan antara yang perlu dicatat —
+> `created_at`/`created_by` sudah mewakili waktu batch dibuat berikut pelakunya.
+>
+> **`items[].kode_instrumen` & `items[].name` adalah snapshot**, disalin dari
+> `instrument_stocks.code` dan `instruments.name` saat unit dikunci — bukan dibaca
+> lewat relasi. Perubahan data master setelahnya (rename instrumen, kode unit
+> diubah, unit dihapus) tidak mengubah riwayat batch lama.
 
 #### Error (422) — validasi input
 ```json

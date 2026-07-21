@@ -3,24 +3,22 @@
 namespace App\Models;
 
 use App\Traits\HasAuditColumns;
-use App\Traits\HasAutoCode;
 use Illuminate\Database\Eloquent\Model;
 
 /**
  * Master mesin pencuci (washer disinfector) — tahap Cleaning & Disinfection.
- * Kode auto WSH-NNN dipakai sebagai barcode yang dipindai petugas. Suhu & durasi
- * standar dipakai sebagai batas minimum untuk mendeteksi kegagalan pencucian.
+ * Mesin dirujuk lewat id (tidak ada kode/barcode). Suhu & durasi standar dipakai
+ * sebagai batas minimum untuk mendeteksi kegagalan pencucian.
  */
 class WasherMachine extends Model
 {
-    use HasAuditColumns, HasAutoCode;
+    use HasAuditColumns;
 
     public const STATUS_AKTIF = 'aktif';
 
     public const STATUS_NONAKTIF = 'nonaktif';
 
     protected $fillable = [
-        'code',
         'name',
         'location',
         'temperature',
@@ -35,20 +33,6 @@ class WasherMachine extends Model
         'temperature' => 'decimal:2',
         'duration_minutes' => 'integer',
     ];
-
-    protected static function generateUniqueCode($model): string
-    {
-        $maxCode = static::withoutGlobalScopes()
-            ->where('code', 'like', 'WSH-%')
-            ->max('code');
-
-        $sequence = 1;
-        if ($maxCode && preg_match('/-(\d+)$/', $maxCode, $matches)) {
-            $sequence = (int) $matches[1] + 1;
-        }
-
-        return 'WSH-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
-    }
 
     /**
      * Evaluasi parameter pencucian terhadap standar mesin (batas minimum).

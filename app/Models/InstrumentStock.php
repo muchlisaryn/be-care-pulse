@@ -101,7 +101,7 @@ class InstrumentStock extends Model
      * order) sebagai sumber kebenaran.
      *
      * @param  iterable<int>  $ids
-     * @return array<int,array{stage:?string,label:?string}>  di-key oleh instrument_stock_id
+     * @return array<int,array{stage:?string,label:?string}> di-key oleh instrument_stock_id
      */
     public static function computeStages(iterable $ids): array
     {
@@ -159,8 +159,15 @@ class InstrumentStock extends Model
         $washProdByCode = $washings->mapWithKeys(fn ($w) => [$w->code => $w->production_code]);
         $packActiveProd = Packaging::whereIn('washing_code', $washings->pluck('code'))
             ->where('status', Packaging::STATUS_DIPROSES)
+            ->where('disabled', false)
             ->pluck('washing_code')->unique()
             ->map(fn ($wc) => $washProdByCode[$wc] ?? null)->filter()->unique()->flip();
+
+        // Cleaning selesai tapi record packaging belum dibuat (antrean menunggu
+        // inspeksi) — unitnya tetap terhitung ada di tahap pengemasan.
+        $packPendingProd = $washings->where('status', OrderWashing::STATUS_SELESAI)
+            ->whereNotIn('code', Packaging::whereIn('washing_code', $washings->pluck('code'))->pluck('washing_code'))
+            ->pluck('production_code')->unique()->flip();
 
         foreach ($active as $s) {
             $sid = $s->id;
@@ -170,7 +177,7 @@ class InstrumentStock extends Model
                 $s->status === self::STATUS_DIPINJAM || $borrowed->has($sid) => 'dipinjam',
                 $stored->has($sid) => 'disimpan',
                 $sterActive->has($sid) => 'sterilisasi',
-                $prodCode && $packActiveProd->has($prodCode) => 'pengemasan',
+                $prodCode && ($packActiveProd->has($prodCode) || $packPendingProd->has($prodCode)) => 'pengemasan',
                 $prodCode && $washActiveProd->has($prodCode) => 'pencucian',
                 $s->status === self::STATUS_DIKEMBALIKAN => 'dikembalikan',
                 default => 'proses',

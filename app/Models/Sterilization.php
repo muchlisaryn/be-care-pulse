@@ -50,7 +50,6 @@ class Sterilization extends Model
 
     protected $fillable = [
         'order_id',
-        'packaging_code',
         'machine',
         'method',
         'cycle_number',
@@ -104,12 +103,6 @@ class Sterilization extends Model
     public function order()
     {
         return $this->belongsTo(Order::class);
-    }
-
-    /** Tahap packaging asal (via packaging_code). */
-    public function packaging()
-    {
-        return $this->belongsTo(Packaging::class, 'packaging_code', 'code');
     }
 
     /** Packaging (PKG) yang tergabung dalam batch ini — banyak PKG → satu STR. */

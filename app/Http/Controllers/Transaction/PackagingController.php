@@ -4,17 +4,19 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\InstrumentStock;
+use App\Models\OrderWashing;
 use App\Models\Packaging;
 use App\Models\PackagingType;
 use App\Models\PipelineEvent;
 use App\Models\Sterilization;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
- * Tahap Inspection & Packaging pada pipeline pemrosesan CSSD (record PKG-NNN).
+ * Tahap Inspection & Packaging pada pipeline pemrosesan CSSD (record PKG+ymd+urutan harian).
  *
  * Dirangkai ke tahap cleaning lewat washing_code, dan ke produksi lewat rantai
  * washing.production_code. Unit fisik sudah dikunci sejak tahap Produksi, jadi
@@ -31,25 +33,156 @@ class PackagingController extends Controller
     ];
 
     /**
-     * Daftar batch pada tahap Packaging: record `packaging` yang masih diproses
-     * (belum ditandai selesai / belum lanjut ke sterilisasi).
+     * Daftar batch pada tahap Packaging — dua sumber digabung:
+     *  1. record `packaging` yang sudah dibuat (sedang diinspeksi / sudah dikemas);
+     *  2. batch cleaning yang berstatus `selesai` tapi BELUM punya record packaging
+     *     (antrean menunggu inspeksi) — recordnya baru dibuat lewat `start()`.
+     *
+     * Batch yang PKG-nya di-void (disabled) sengaja tidak dimunculkan lagi sebagai
+     * antrean: `washing_code`-nya tetap terhitung sudah punya packaging.
      */
     public function index(Request $request): JsonResponse
     {
+        $search = $request->search;
+
         $packagings = Packaging::with(self::CHAIN)
             ->whereIn('status', [Packaging::STATUS_DIPROSES, Packaging::STATUS_SELESAI])
+            // PKG yang di-void (unitnya gagal steril & diproses ulang) tidak ditampilkan.
+            ->where('disabled', false)
             ->when(
-                $request->search,
-                fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
+                $search,
+                // `code` hanya berisi angka, jadi pencarian dicocokkan ke kode utuh
+                // (prefix + angka) supaya "PKG2605" tetap ketemu.
+                fn ($q, $s) => $q->where(fn ($w) => $w->whereRaw('CONCAT(prefix, code) LIKE ?', ["%{$s}%"])
                     ->orWhere('washing_code', 'like', "%{$s}%")
                     ->orWhere('operator', 'like', "%{$s}%"))
-            )
-            ->orderByDesc('id')
-            ->paginate(20);
+            );
 
-        $packagings->getCollection()->transform(fn (Packaging $p) => $this->transform($p));
+        // Tanggal acuan tahap Packaging: waktu dikemas, kalau belum pakai waktu
+        // record mulai diproses / dibuat.
+        $packagings = $this->applyDateRange(
+            $packagings,
+            $request,
+            'COALESCE(packaged_at, started_at, created_at)'
+        )->get();
 
-        return $this->success('Data tahap packaging berhasil diambil.', $packagings);
+        $pending = OrderWashing::with([
+            'production.items.instrumentStock.instrument',
+            'production.items.conditionOut',
+        ])
+            ->where('status', OrderWashing::STATUS_SELESAI)
+            ->whereNotIn('code', Packaging::query()->whereNotNull('washing_code')->select('washing_code'))
+            ->when(
+                $search,
+                fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")
+                    ->orWhere('production_code', 'like', "%{$s}%")
+                    ->orWhere('operator', 'like', "%{$s}%"))
+            );
+
+        // Batch antrean belum punya tanggal pengemasan — acuannya waktu cleaning
+        // selesai, yaitu saat batch masuk antrean tahap ini.
+        $pending = $this->applyDateRange(
+            $pending,
+            $request,
+            'COALESCE(completed_at, created_at)'
+        )->get();
+
+        $rows = $packagings->map(fn (Packaging $p) => $this->transform($p))
+            ->concat($pending->map(fn (OrderWashing $w) => $this->transformPending($w)))
+            ->sortByDesc(fn (array $row) => $this->sortKey($row))
+            ->values();
+
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = 20;
+
+        $paginator = new LengthAwarePaginator(
+            $rows->forPage($page, $perPage)->values(),
+            $rows->count(),
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        return $this->success('Data tahap packaging berhasil diambil.', $paginator);
+    }
+
+    /**
+     * "Selesai & Cetak Label" untuk batch ANTREAN (belum punya record packaging):
+     * record `packaging` + `packaging_item` dibuat di sini, langsung berstatus
+     * selesai. Sebelum ini batch hanya ada sebagai washing berstatus `selesai`,
+     * jadi tidak ada baris packaging yang menumpuk bila petugas batal mengemas.
+     */
+    public function completeQueued(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'washing_code' => 'required|string',
+            ...$this->completionRules(),
+        ]);
+
+        $washing = OrderWashing::where('code', $validated['washing_code'])->first();
+
+        if (! $washing) {
+            return $this->error('Batch cleaning tidak ditemukan.', 404);
+        }
+
+        if ($washing->status !== OrderWashing::STATUS_SELESAI) {
+            return $this->error('Batch cleaning ini belum selesai dicuci.', 422);
+        }
+
+        if (Packaging::where('washing_code', $washing->code)->where('disabled', false)->exists()) {
+            return $this->error('Batch ini sudah punya data pengemasan. Muat ulang daftarnya.', 422);
+        }
+
+        try {
+            $packaging = DB::transaction(function () use ($validated, $washing) {
+                $packaging = Packaging::create([
+                    'prefix' => Packaging::PREFIX_NORMAL,
+                    'washing_code' => $washing->code,
+                    'round' => Packaging::nextRound($washing->code),
+                    'status' => Packaging::STATUS_DIPROSES,
+                ]);
+
+                // Isi ronde ini = seluruh unit produksi (cermin production_item).
+                foreach (($washing->production?->items()->get() ?? collect()) as $pi) {
+                    $packaging->items()->create([
+                        'instrument_stock_id' => $pi->instrument_stock_id,
+                        'source' => $pi->source,
+                        'package_name' => $pi->package_name,
+                        // Nomor yang tercetak di label (tanpa spasi).
+                        'barcode_no' => $packaging->barcodeNoFor($pi->package_no),
+                    ]);
+                }
+
+                PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $packaging->full_code, PipelineEvent::ACTION_DIBUAT, [
+                    'note' => 'Inspeksi & pengemasan (dari cleaning '.$washing->code.')',
+                ]);
+
+                $this->applyCompletion($packaging, $validated);
+
+                return $packaging;
+            });
+
+            $packaging->refresh();
+
+            return $this->success('Packaging selesai — batch siap masuk tahap sterilisasi.', [
+                ...$this->transform($packaging),
+                'label' => $this->labelPayload($packaging),
+            ], 201);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /** Kunci pengurutan daftar batch (terbaru dulu), lintas dua sumber data. */
+    private function sortKey(array $row): int
+    {
+        $at = $row['processed_at'] ?? null;
+
+        return match (true) {
+            $at instanceof \DateTimeInterface => $at->getTimestamp(),
+            is_string($at) => (int) strtotime($at),
+            default => 0,
+        };
     }
 
     /**
@@ -64,50 +197,10 @@ class PackagingController extends Controller
             return $this->error('Batch packaging ini sudah diselesaikan.', 422);
         }
 
-        $validated = $request->validate([
-            'chemical_indicator' => 'required|string|max:255',
-            'operator' => 'nullable|string|max:255',
-            'packaged_at' => 'nullable|date',
-            // Jenis kemasan menentukan masa simpan steril → tgl kedaluwarsa batch.
-            // Hanya jenis yang belum dihapus yang boleh dipilih.
-            'packaging_type_id' => [
-                'required',
-                Rule::exists('packaging_types', 'id')->whereNull('deleted_by'),
-            ],
-            'note' => 'nullable|string',
-        ]);
+        $validated = $request->validate($this->completionRules());
 
         try {
-            DB::transaction(function () use ($validated, $packaging) {
-                $actor = auth()->user()?->name;
-
-                $packaging->status = Packaging::STATUS_SELESAI;
-                $packaging->chemical_indicator = $validated['chemical_indicator'];
-                $packaging->operator = $validated['operator'] ?? $packaging->operator ?? $actor;
-                $packaging->packaged_at = $validated['packaged_at'] ?? now();
-                $packaging->packaging_type_id = $validated['packaging_type_id'];
-                // Snapshot tanggal: dihitung sekali di sini agar tidak ikut bergeser
-                // bila masa simpan jenis kemasan diubah admin di kemudian hari.
-                $shelfLife = PackagingType::findOrFail($validated['packaging_type_id'])->shelf_life_days;
-                $packaging->expiry_date = $packaging->packaged_at
-                    ->copy()
-                    ->addDays($shelfLife)
-                    ->toDateString();
-                $packaging->note = $validated['note'] ?? $packaging->note;
-                $packaging->started_by ??= $actor;
-                $packaging->started_at ??= now();
-                $packaging->completed_by = $actor;
-                $packaging->completed_at = now();
-                $packaging->save();
-
-                PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $packaging->code, PipelineEvent::ACTION_SELESAI, [
-                    'note' => 'Packaging selesai — indikator kimia '.$validated['chemical_indicator'].' — siap sterilisasi',
-                ]);
-
-                // Perbarui tahap unit (keluar dari pengemasan → siap sterilisasi).
-                $stockIds = $packaging->washing?->production?->items()->pluck('instrument_stock_id')->all() ?? [];
-                InstrumentStock::syncStages($stockIds);
-            });
+            DB::transaction(fn () => $this->applyCompletion($packaging, $validated));
 
             $packaging->refresh();
 
@@ -118,6 +211,60 @@ class PackagingController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
+    }
+
+    /** Aturan validasi data pengemasan (dipakai dua jalur penyelesaian). */
+    private function completionRules(): array
+    {
+        return [
+            'chemical_indicator' => 'required|string|max:255',
+            'operator' => 'nullable|string|max:255',
+            'packaged_at' => 'nullable|date',
+            // Jenis kemasan menentukan masa simpan steril → tgl kedaluwarsa batch.
+            // Hanya jenis yang belum dihapus yang boleh dipilih.
+            'packaging_type_id' => [
+                'required',
+                Rule::exists('packaging_types', 'id')->whereNull('deleted_by'),
+            ],
+            'note' => 'nullable|string',
+        ];
+    }
+
+    /**
+     * Tandai satu record packaging selesai + catat event & tahap unit. Dipanggil di
+     * dalam transaksi oleh `complete()` (record sudah ada) maupun `completeQueued()`
+     * (record baru saja dibuat).
+     */
+    private function applyCompletion(Packaging $packaging, array $validated): void
+    {
+        $actor = auth()->user()?->name;
+
+        $packaging->status = Packaging::STATUS_SELESAI;
+        $packaging->chemical_indicator = $validated['chemical_indicator'];
+        $packaging->operator = $validated['operator'] ?? $packaging->operator ?? $actor;
+        $packaging->packaged_at = $validated['packaged_at'] ?? now();
+        $packaging->packaging_type_id = $validated['packaging_type_id'];
+        // Snapshot tanggal: dihitung sekali di sini agar tidak ikut bergeser bila
+        // masa simpan jenis kemasan diubah admin di kemudian hari.
+        $shelfLife = PackagingType::findOrFail($validated['packaging_type_id'])->shelf_life_days;
+        $packaging->expiry_date = $packaging->packaged_at
+            ->copy()
+            ->addDays($shelfLife)
+            ->toDateString();
+        $packaging->note = $validated['note'] ?? $packaging->note;
+        $packaging->started_by ??= $actor;
+        $packaging->started_at ??= now();
+        $packaging->completed_by = $actor;
+        $packaging->completed_at = now();
+        $packaging->save();
+
+        PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $packaging->full_code, PipelineEvent::ACTION_SELESAI, [
+            'note' => 'Packaging selesai — indikator kimia '.$validated['chemical_indicator'].' — siap sterilisasi',
+        ]);
+
+        // Perbarui tahap unit (keluar dari pengemasan → siap sterilisasi).
+        $stockIds = $packaging->items()->pluck('instrument_stock_id')->all();
+        InstrumentStock::syncStages($stockIds);
     }
 
     /**
@@ -141,10 +288,25 @@ class PackagingController extends Controller
      */
     private function labelPayload(Packaging $packaging): array
     {
-        $packaging->loadMissing(self::CHAIN);
+        $packaging->loadMissing([...self::CHAIN, 'items.instrumentStock.instrument']);
 
         $production = $packaging->washing?->production;
-        $units = $production ? $production->items : collect();
+
+        // Sumber label = detail per-unit tahap packaging (packaging_item), supaya
+        // tiap label punya id sendiri (dipakai frontend: kode produksi + id item).
+        // Unit yang di-void di tahap ini tidak ikut dicetak. Batch lama yang dibuat
+        // sebelum packaging_item terisi jatuh balik ke unit produksi (id null).
+        $packagingItems = $packaging->items->where('disabled', false)->values();
+        $units = $packagingItems->isNotEmpty()
+            ? $packagingItems
+            : ($production ? $production->items : collect());
+
+        // Nomor set (package_no) hanya ada di production_item — packaging_item tidak
+        // menyimpannya. Dipetakan lewat instrument_stock_id agar label bisa memakai
+        // nomor set pada kodenya.
+        $packageNoByStock = ($production?->items ?? collect())
+            ->filter(fn ($pi) => $pi->instrument_stock_id !== null)
+            ->mapWithKeys(fn ($pi) => [$pi->instrument_stock_id => $pi->package_no]);
 
         $packagedAt = $packaging->packaged_at ?? now();
         // Batch lama (dikemas sebelum kolom expiry_date ada) tetap pakai aturan default.
@@ -152,8 +314,12 @@ class PackagingController extends Controller
             ?? $packagedAt->copy()->addDays(Sterilization::STERILE_SHELF_LIFE_DAYS)->toDateString();
 
         return [
-            'batch' => $production?->code ?? $packaging->code, // Nomor Batch (PRD / PKG)
-            'packaging_code' => $packaging->code,
+            'batch' => $production?->code ?? $packaging->full_code, // Nomor Batch (PRD / PKG)
+            'packaging_code' => $packaging->full_code,
+            // Prefix & angka dikirim TERPISAH — kode label disusun frontend sebagai
+            // tiga segmen: prefix, nomor packaging, nomor set.
+            'packaging_prefix' => $packaging->prefix,
+            'packaging_number' => $packaging->code,
             'set_name' => $production?->displayName() ?? 'Produksi CSSD',
             'packer' => $packaging->operator,
             'packaging_type' => $packaging->packagingType?->name,
@@ -161,11 +327,18 @@ class PackagingController extends Controller
             'expiry_date' => $expiry,
             'chemical_indicator' => $packaging->chemical_indicator,
             'items' => $units->map(fn ($u) => [
-                'production_item_id' => $u->id, // disatukan dengan nomor batch → kode produksi label
+                // id packaging_item — null bila fallback ke unit produksi.
+                'id' => $packagingItems->isNotEmpty() ? $u->id : null,
                 'instrument_name' => $u->instrumentStock?->instrument?->name ?? 'Instrumen',
                 'unit_code' => $u->instrumentStock?->code,
                 'source' => $u->source,
                 'package_name' => $u->package_name,
+                // Nomor set dalam batch produksi — dipakai frontend menyusun kode label.
+                'package_no' => $packageNoByStock[$u->instrument_stock_id] ?? null,
+                // Nomor barcode tersimpan (tanpa spasi) — untuk pencocokan hasil scan.
+                // Batch lama yang belum punya kolom ini dihitung ulang dari relasi.
+                'barcode_no' => $u->barcode_no
+                    ?? $packaging->barcodeNoFor($packageNoByStock[$u->instrument_stock_id] ?? null),
             ])->values(),
         ];
     }
@@ -175,8 +348,45 @@ class PackagingController extends Controller
     {
         $packaging->loadMissing(self::CHAIN);
 
-        $production = $packaging->washing?->production;
-        $units = $production ? $production->items : collect();
+        return $this->batchPayload($packaging->washing, $packaging);
+    }
+
+    /**
+     * Batch cleaning selesai yang BELUM punya record packaging — ditampilkan di tab
+     * Packaging sebagai antrean menunggu inspeksi. `id`/`code` masih null sampai
+     * `start()` dipanggil; frontend memakai `washing_code` sebagai identitasnya.
+     */
+    private function transformPending(OrderWashing $washing): array
+    {
+        return $this->batchPayload($washing, null);
+    }
+
+    /**
+     * Payload satu batch tahap Packaging. `$packaging` null = batch masih antrean
+     * (belum ada recordnya); field khusus packaging ikut null dan `started` false.
+     */
+    private function batchPayload(?OrderWashing $washing, ?Packaging $packaging): array
+    {
+        $production = $washing?->production;
+        $productionItems = $production ? $production->items : collect();
+
+        // Isi RONDE ini dibaca dari packaging_item — batch pengemasan ulang (RPK)
+        // hanya memuat unit yang gagal steril, jadi tidak boleh diturunkan dari
+        // seluruh unit produksi. Snapshot nama/kode/foto tetap diambil dari
+        // production_item lewat pencocokan instrument_stock_id.
+        // Batch antrean (belum ada record) otomatis memakai seluruh unit produksi.
+        $units = $productionItems;
+
+        if ($packaging) {
+            $roundStockIds = $packaging->items()
+                ->where('disabled', false)
+                ->pluck('instrument_stock_id')
+                ->filter();
+
+            if ($roundStockIds->isNotEmpty()) {
+                $units = $productionItems->whereIn('instrument_stock_id', $roundStockIds->all())->values();
+            }
+        }
 
         // Ringkasan chip kartu: unit paket dikelompokkan per paket; satuan per instrumen.
         $items = $units
@@ -192,38 +402,57 @@ class PackagingController extends Controller
                     'name' => $isPaket
                         ? ($first->package_name ?? 'Paket')
                         : ($first->instrumentStock?->instrument?->name ?? 'Instrumen'),
-                    'quantity' => $group->count(),
+                    // Paket dihitung per SET (package_no), bukan per instrumen di
+                    // dalamnya — 2 set partus berisi 6 instrumen = 2, bukan 12. Batch
+                    // lama tanpa package_no (null) melebur jadi satu set.
+                    'quantity' => $isPaket
+                        ? $group->pluck('package_no')->unique()->count()
+                        : $group->count(),
                 ];
             })
             ->values();
 
         return [
-            'id' => $packaging->id,
-            'code' => $packaging->code,                       // PKG-NNN
-            'code_transaction' => $production?->code,         // PRD-NNN (ditampilkan di kartu)
-            'washing_code' => $packaging->washing_code,       // WSH-NNN
+            'id' => $packaging?->id,
+            'code' => $packaging?->full_code,                 // prefix + angka, mis. PKG26050201
+            'code_transaction' => $production?->code,         // PRD+ymd+urutan harian (di kartu)
+            'washing_code' => $washing?->code,                // WSH+ymd+urutan harian
+            // Penanda record packaging sudah ada. false = masih antrean (record baru
+            // dibuat saat "Selesai & Cetak Label" lewat `completeQueued()`).
+            'started' => $packaging !== null,
+            // Ronde pengemasan untuk batch cleaning yang sama: 1 = pengemasan
+            // pertama, 2+ = pengemasan ulang (RPK) setelah gagal steril.
+            'round' => $packaging?->round ?? 1,
             'status' => 'pengemasan',
-            'stage_status' => $packaging->status,             // diproses | selesai (batch sudah dikemas)
+            'stage_status' => $packaging?->status ?? Packaging::STATUS_DIPROSES,
             'borrowed_by' => $production?->displayName(),
-            'processed_at' => $production?->completed_at ?? $packaging->started_at,
-            'processed_by' => $packaging->started_by,
+            'processed_at' => $production?->created_at ?? $packaging?->started_at ?? $washing?->completed_at,
+            'processed_by' => $packaging?->started_by ?? $washing?->completed_by,
             // Petugas yang menyelesaikan pengemasan + waktunya (untuk riwayat).
-            'completed_by' => $packaging->completed_by,
-            'completed_at' => $packaging->completed_at,
-            'operator' => $packaging->operator,
-            'chemical_indicator' => $packaging->chemical_indicator, // = No. Lot indikator kimia
-            'packaging_type_id' => $packaging->packaging_type_id,
-            'packaging_type_label' => $packaging->packagingType?->name,
-            'packaged_at' => $packaging->packaged_at,
-            'expiry_date' => $packaging->expiry_date?->toDateString(),
+            'completed_by' => $packaging?->completed_by,
+            'completed_at' => $packaging?->completed_at,
+            'operator' => $packaging?->operator,
+            'chemical_indicator' => $packaging?->chemical_indicator, // = No. Lot indikator kimia
+            'packaging_type_id' => $packaging?->packaging_type_id,
+            'packaging_type_label' => $packaging?->packagingType?->name,
+            'packaged_at' => $packaging?->packaged_at,
+            'expiry_date' => $packaging?->expiry_date?->toDateString(),
             'units_count' => $units->count(),
             'items' => $items,
             'units' => $units->map(fn ($u) => [
                 'id' => $u->id,
                 'source' => $u->source,
                 'package_name' => $u->package_name,
+                // Set ke-berapa dalam batch — dipakai menghitung jumlah set paket.
+                'package_no' => $u->package_no,
                 'instrument_stock_id' => $u->instrument_stock_id,
                 'code' => $u->instrumentStock?->code,
+                // Nama instrumen dari snapshot production_item — dipakai sebagai label
+                // checklist inspeksi; relasi ke master hanya cadangan batch lama.
+                'name' => $u->name ?? $u->instrumentStock?->instrument?->name,
+                // Foto paket (unit paket) / foto instrumen (unit satuan) dari snapshot
+                // production_item; relasi ke master hanya cadangan untuk batch lama.
+                'image_url' => $u->image_url ?? $u->instrumentStock?->instrument?->image_url,
                 'instrument' => $u->instrumentStock?->instrument
                     ? [
                         'id' => $u->instrumentStock->instrument->id,

@@ -38,7 +38,7 @@ ditutup. Payload identik dengan field `label` pada respons `complete`.
   "data": {
     "label": {
       "batch": "PRD20260702001",
-      "packaging_code": "PKG-001",
+      "packaging_code": "PKG26071901",
       "set_name": "SET PARTUS",
       "packer": "Admin",
       "packaging_type": "Pouch Plastik",
@@ -46,12 +46,17 @@ ditutup. Payload identik dengan field `label` pada respons `complete`.
       "expiry_date": "2026-08-01",
       "chemical_indicator": "CI-LOT-99",
       "items": [
-        { "production_item_id": 1, "instrument_name": "Gunting Epis", "unit_code": "GNE-001", "source": "paket", "package_name": "SET PARTUS" }
+        { "id": 27, "instrument_name": "Gunting Epis", "unit_code": "GNE-001", "source": "paket", "package_name": "SET PARTUS" }
       ]
     }
   }
 }
 ```
+
+> `items[].id` = id `packaging_item` unit tersebut. Frontend memakainya bersama `batch`
+> untuk kode pada label & barcode: `{batch} {id}` — dipisah spasi (mis. `PRD20260702001 27`).
+> Bernilai `null` pada batch lama yang belum punya baris `packaging_item` — label
+> memakai `batch` saja. Unit yang di-void (`disabled = true`) tidak ikut dikembalikan.
 
 #### Error (404) — batch tidak ditemukan
 ```json

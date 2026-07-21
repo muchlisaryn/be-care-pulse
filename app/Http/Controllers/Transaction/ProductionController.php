@@ -57,16 +57,12 @@ class ProductionController extends Controller
 
                 $actor = auth()->user()?->name;
 
-                // Tahap Produksi (PRD-NNN, code auto). Dianggap langsung selesai
-                // karena batch dibuat & unit dikunci dalam satu aksi.
+                // Tahap Produksi (PRD-NNN, code auto). Tanpa status & tanpa jejak
+                // mulai/selesai: batch dibuat & unit dikunci dalam satu aksi, jadi
+                // `created_at`/`created_by` (diisi trait audit) sudah mewakili
+                // waktu batch dibuat berikut pelakunya.
                 $production = Production::create([
-                    'source' => Production::SOURCE_INTERNAL,
                     'note' => $validated['note'] ?? null,
-                    'status' => Production::STATUS_SELESAI,
-                    'started_by' => $actor,
-                    'started_at' => now(),
-                    'completed_by' => $actor,
-                    'completed_at' => now(),
                 ]);
 
                 // Potong stok: kunci unit terpilih ke batch sebagai production_item,
@@ -84,13 +80,24 @@ class ProductionController extends Controller
                 // sebagai stok steril & tidak menyisakan baris ganda saat disimpan lagi.
                 $this->closeStorageForReprocessed($pickedStockIds);
 
-                // Buka tahap Cleaning (WSH-NNN) — dirangkai ke produksi via production_code.
+                // Buka tahap Cleaning (WSH+ymd+urutan harian) — dirangkai ke produksi via production_code.
                 $washing = OrderWashing::create([
                     'production_code' => $production->code,
                     'status' => OrderWashing::STATUS_DALAM_PROSES,
                     'started_by' => $actor,
                     'started_at' => now(),
                 ]);
+
+                // Detail per-unit tahap Cleaning (washing_item) — cermin production_item.
+                // Berada dalam transaksi yang sama: gagal simpan detail = seluruh batch
+                // produksi ikut rollback.
+                foreach ($production->items()->get() as $pi) {
+                    $washing->items()->create([
+                        'instrument_stock_id' => $pi->instrument_stock_id,
+                        'source' => $pi->source,
+                        'package_name' => $pi->package_name,
+                    ]);
+                }
 
                 // Jejak pipeline: produksi selesai + masuk tahap cleaning.
                 PipelineEvent::record(PipelineEvent::STAGE_PRODUCTION, $production->code, PipelineEvent::ACTION_SELESAI, [
@@ -122,7 +129,7 @@ class ProductionController extends Controller
      * (asal, nama paket, instrumen). Paket diuraikan ke isi katalog × jumlah set.
      *
      * @param  array<int,array<string,mixed>>  $items
-     * @return array<int,array{source:string,package_name:?string,instrument_id:int,qty:int}>
+     * @return array<int,array{source:string,package_name:?string,package_no:?int,package_image:?string,instrument_id:int,qty:int}>
      */
     private function buildRequirements(array $items): array
     {
@@ -136,29 +143,51 @@ class ProductionController extends Controller
         $catalogs = InstrumentCatalog::with('items')->whereIn('id', $catalogIds)->get()->keyBy('id');
 
         $reqs = [];
-        $add = function (string $source, ?string $packageName, ?int $instrumentId, int $qty) use (&$reqs) {
+        // `$packageNo` = set ke-berapa dalam batch (null utk satuan); ikut jadi bagian
+        // key agar dua set bernama sama TIDAK melebur jadi satu kebutuhan.
+        // `$packageImage` = path foto katalog paket, ikut di-snapshot ke production_item.
+        $add = function (string $source, ?string $packageName, ?int $packageNo, ?string $packageImage, ?int $instrumentId, int $qty) use (&$reqs) {
             if (! $instrumentId || $qty <= 0) {
                 return;
             }
-            $key = $source.'|'.$instrumentId.'|'.($packageName ?? '');
+            $key = $source.'|'.$instrumentId.'|'.($packageName ?? '').'|'.($packageNo ?? '');
             $reqs[$key] ??= [
                 'source' => $source,
                 'package_name' => $packageName,
+                'package_no' => $packageNo,
+                'package_image' => $packageImage,
                 'instrument_id' => $instrumentId,
                 'qty' => 0,
             ];
             $reqs[$key]['qty'] += $qty;
         };
 
+        // Nomor satuan pesanan, berurut per batch & lintas jenis baris: TIAP QTY dapat
+        // satu nomor. "gunting 3 + set partus 3" → nomor 1..6 (1-3 gunting satuan,
+        // 4-6 set partus). Unit dalam satu set berbagi satu nomor.
+        $packageNo = 0;
+
         foreach ($items as $item) {
+            $qty = (int) $item['quantity'];
+
             if ($item['type'] === 'paket') {
                 $catalog = $catalogs->get($item['instrument_catalog_id'] ?? null);
                 $packageName = $item['package_name'] ?? $catalog?->name ?? 'Paket';
-                foreach (($catalog?->items ?? []) as $ci) {
-                    $add('paket', $packageName, $ci->instrument_id, $item['quantity'] * $ci->quantity);
+
+                // Tiap set dijabarkan SENDIRI-SENDIRI (bukan qty × isi katalog) supaya
+                // set ke-1 dan ke-2 jadi kelompok terpisah dengan unit fisik berbeda.
+                for ($n = 0; $n < $qty; $n++) {
+                    $packageNo++;
+                    foreach (($catalog?->items ?? []) as $ci) {
+                        $add('paket', $packageName, $packageNo, $catalog?->image, $ci->instrument_id, $ci->quantity);
+                    }
                 }
             } else {
-                $add('satuan', null, $item['instrument_id'] ?? null, $item['quantity']);
+                // Satuan pun dipecah per unit agar tiap qty punya nomornya sendiri.
+                for ($n = 0; $n < $qty; $n++) {
+                    $packageNo++;
+                    $add('satuan', null, $packageNo, null, $item['instrument_id'] ?? null, 1);
+                }
             }
         }
 
@@ -178,7 +207,9 @@ class ProductionController extends Controller
         // "Tersedia"), termasuk unit yang masih tersimpan di gudang steril — bila unit
         // gudang ikut dipilih, baris gudangnya ditutup saat batch dibuat (lihat
         // closeStorageForReprocessed) agar tidak jadi stok steril ganda.
-        return InstrumentStock::whereIn('instrument_id', $instrumentIds)
+        // `instrument` ikut dimuat: namanya di-snapshot ke production_item.
+        return InstrumentStock::with('instrument')
+            ->whereIn('instrument_id', $instrumentIds)
             ->where('status', InstrumentStock::STATUS_TERSEDIA)
             ->orderBy('code')
             ->get()
@@ -254,8 +285,19 @@ class ProductionController extends Controller
                 }
                 $production->items()->create([
                     'instrument_stock_id' => $stock->id,
+                    // Snapshot: kode unit, nama & foto dibekukan di sini agar riwayat
+                    // batch tidak ikut berubah bila master diubah nanti. `image` =
+                    // path relatif (bukan URL) supaya tak basi bila host berubah, dan
+                    // diisi foto KATALOG untuk baris paket / foto INSTRUMEN untuk
+                    // baris satuan (paket tanpa foto katalog jatuh ke foto instrumen).
+                    'kode_instrumen' => $stock->code,
+                    'name' => $stock->instrument?->name,
+                    'image' => $req['source'] === 'paket'
+                        ? ($req['package_image'] ?? $stock->instrument?->image)
+                        : $stock->instrument?->image,
                     'source' => $req['source'],
                     'package_name' => $req['package_name'],
+                    'package_no' => $req['package_no'],
                     'condition_out_id' => $stock->condition_id,
                 ]);
                 $pickedStockIds[] = $stock->id;
