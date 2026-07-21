@@ -308,6 +308,12 @@ class PackagingController extends Controller
             ->filter(fn ($pi) => $pi->instrument_stock_id !== null)
             ->mapWithKeys(fn ($pi) => [$pi->instrument_stock_id => $pi->package_no]);
 
+        // Nama instrumen juga dari SNAPSHOT production_item — packaging_item tidak
+        // menyimpannya, jadi dipetakan lewat instrument_stock_id (relasi live cadangan).
+        $prodByStock = ($production?->items ?? collect())
+            ->filter(fn ($pi) => $pi->instrument_stock_id !== null)
+            ->keyBy('instrument_stock_id');
+
         $packagedAt = $packaging->packaged_at ?? now();
         // Batch lama (dikemas sebelum kolom expiry_date ada) tetap pakai aturan default.
         $expiry = $packaging->expiry_date?->toDateString()
@@ -329,7 +335,8 @@ class PackagingController extends Controller
             'items' => $units->map(fn ($u) => [
                 // id packaging_item — null bila fallback ke unit produksi.
                 'id' => $packagingItems->isNotEmpty() ? $u->id : null,
-                'instrument_name' => $u->instrumentStock?->instrument?->name ?? 'Instrumen',
+                'instrument_name' => $prodByStock->get($u->instrument_stock_id)?->name
+                    ?? $u->instrumentStock?->instrument?->name ?? 'Instrumen',
                 'unit_code' => $u->instrumentStock?->code,
                 'source' => $u->source,
                 'package_name' => $u->package_name,
@@ -392,7 +399,8 @@ class PackagingController extends Controller
         $items = $units
             ->groupBy(fn ($u) => $u->source === 'paket'
                 ? 'paket|'.($u->package_name ?? 'Paket')
-                : 'satuan|'.($u->instrumentStock?->instrument?->name ?? 'Instrumen'))
+                // Nama instrumen dari snapshot production_item.name (relasi live cadangan).
+                : 'satuan|'.($u->name ?? $u->instrumentStock?->instrument?->name ?? 'Instrumen'))
             ->map(function ($group) {
                 $first = $group->first();
                 $isPaket = $first->source === 'paket';
@@ -401,7 +409,7 @@ class PackagingController extends Controller
                     'type' => $isPaket ? 'paket' : 'satuan',
                     'name' => $isPaket
                         ? ($first->package_name ?? 'Paket')
-                        : ($first->instrumentStock?->instrument?->name ?? 'Instrumen'),
+                        : ($first->name ?? $first->instrumentStock?->instrument?->name ?? 'Instrumen'),
                     // Paket dihitung per SET (package_no), bukan per instrumen di
                     // dalamnya — 2 set partus berisi 6 instrumen = 2, bukan 12. Batch
                     // lama tanpa package_no (null) melebur jadi satu set.

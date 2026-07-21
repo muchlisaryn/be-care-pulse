@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
-use App\Models\InstrumentCatalog;
 use App\Models\InstrumentStock;
 use App\Models\Packaging;
 use App\Models\PackagingItem;
@@ -563,9 +562,11 @@ class SterilizationPipelineController extends Controller
                 return [
                     'id' => $item->id,
                     'instrument_stock_id' => $item->instrument_stock_id,
-                    'code' => $item->instrumentStock?->code,
-                    'instrument' => $item->instrumentStock?->instrument?->name,
-                    'image_url' => $item->instrumentStock?->instrument?->image_url,
+                    // Kode, nama & foto dari SNAPSHOT production_item ($prod) — bukan
+                    // relasi live — agar riwayat batch tetap sama walau master berubah.
+                    'code' => $prod?->kode_instrumen ?? $item->instrumentStock?->code,
+                    'instrument' => $prod?->name ?? $item->instrumentStock?->instrument?->name,
+                    'image_url' => $prod?->image_url ?? $item->instrumentStock?->instrument?->image_url,
                     'source' => $prod?->source ?? 'satuan',
                     'package_name' => $prod?->package_name,
                     'package_no' => $prod?->package_no,
@@ -574,10 +575,16 @@ class SterilizationPipelineController extends Controller
                 ];
             })->values();
 
-        // Nama gabungan (unik) dari tiap produksi anggota.
-        $names = $batch->packagings
-            ->map(fn (Packaging $p) => $p->washing?->production?->displayName())
-            ->filter()->unique()->implode(', ');
+        // Nama gabungan (unik) dari UNIT yang benar-benar ada di batch ini (paket →
+        // nama paket, satuan → nama instrumen). Sengaja TIDAK memakai displayName()
+        // produksi anggota: itu menampilkan seluruh isi produksi asal — termasuk unit
+        // yang tak ikut masuk batch ini — sehingga kartu jadi tak sinkron dengan
+        // daftar "Hasil per Unit" (yang bersumber dari $units di bawah).
+        $names = $units
+            ->map(fn ($u) => ($u['source'] ?? 'satuan') === 'paket'
+                ? ($u['package_name'] ?? 'Paket')
+                : ($u['instrument'] ?? 'Instrumen'))
+            ->filter()->unique()->values()->implode(', ');
 
         return [
             'id' => $batch->id,          // id STR → dipakai saat validasi
@@ -620,9 +627,11 @@ class SterilizationPipelineController extends Controller
         return [
             'id' => $u->id,
             'instrument_stock_id' => $u->instrument_stock_id, // dipakai untuk validasi hasil per-unit
-            'code' => $u->instrumentStock?->code,
-            'instrument' => $u->instrumentStock?->instrument?->name,
-            'image_url' => $u->instrumentStock?->instrument?->image_url,
+            // Kode, nama & foto dari snapshot production_item; relasi live hanya cadangan
+            // untuk batch lama yang dibuat sebelum kolom snapshot ada.
+            'code' => $u->kode_instrumen ?? $u->instrumentStock?->code,
+            'instrument' => $u->name ?? $u->instrumentStock?->instrument?->name,
+            'image_url' => $u->image_url ?? $u->instrumentStock?->instrument?->image_url,
             'source' => $u->source,
             'package_name' => $u->package_name,
             // Nomor set (production_item) — dipakai frontend menghitung jumlah SET
@@ -631,17 +640,14 @@ class SterilizationPipelineController extends Controller
         ];
     }
 
-    /** Gambar utama batch: gambar SET (katalog paket) atau instrumen pertama. */
+    /**
+     * Gambar utama batch: foto SET (baris paket) bila ada, jika tidak instrumen
+     * pertama — keduanya dari SNAPSHOT production_item.image_url (paket menyimpan
+     * foto katalog, satuan foto instrumen), bukan relasi/katalog live.
+     */
     private function batchImage($units): ?string
     {
-        $paket = $units->firstWhere('source', 'paket');
-        if ($paket && $paket->package_name) {
-            $catalog = InstrumentCatalog::where('name', $paket->package_name)->first();
-            if ($catalog?->image_url) {
-                return $catalog->image_url;
-            }
-        }
-
-        return $units->first()?->instrumentStock?->instrument?->image_url;
+        return $units->firstWhere('source', 'paket')?->image_url
+            ?? $units->first()?->image_url;
     }
 }
