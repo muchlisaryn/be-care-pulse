@@ -26,6 +26,9 @@ class DatabaseSeeder extends Seeder
             RoomSeeder::class,
             ConditionSeeder::class,
             InstrumentCatalogSeeder::class,
+            // Tautkan ulang gambar instrumen dari berkas yatim di public/uploads
+            // (referensi DB hilang tiap migrate:fresh, filenya tetap ada).
+            InstrumentImageSeeder::class,
             InstrumentStockSeeder::class,
             // Master mesin pipeline CSSD (cleaning & sterilisasi).
             WasherMachineSeeder::class,
