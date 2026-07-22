@@ -28,6 +28,45 @@ use Illuminate\Validation\Rule;
 class ProductionController extends Controller
 {
     /**
+     * Rincian instrumen beberapa batch produksi (lazy-load dari tombol Detail di
+     * timeline). Dikembalikan sebagai baris tabel: tanggal | nomor produksi | nama
+     * | jumlah. Nama & pengelompokan dari SNAPSHOT production_item.
+     */
+    public function detail(Request $request): JsonResponse
+    {
+        $codes = array_filter((array) $request->input('codes', []));
+        if (empty($codes)) {
+            return $this->success('Rincian produksi.', ['items' => []]);
+        }
+
+        $items = Production::with('items.instrumentStock.instrument')
+            ->whereIn('code', $codes)
+            ->get()
+            ->sortBy(fn ($p) => optional($p->created_at)->timestamp ?? 0)
+            ->flatMap(fn ($p) => $p->items
+                ->groupBy(fn ($pi) => $pi->source === 'paket'
+                    ? 'paket|'.($pi->package_name ?? 'Paket')
+                    : 'satuan|'.($pi->name ?? 'Instrumen'))
+                ->map(function ($g) use ($p) {
+                    $first = $g->first();
+                    $isPaket = $first->source === 'paket';
+
+                    return [
+                        'tanggal' => $p->created_at,
+                        'code' => $p->code,
+                        'name' => $isPaket ? ($first->package_name ?? 'Paket') : ($first->name ?? 'Instrumen'),
+                        'type' => $isPaket ? 'paket' : 'satuan',
+                        'qty' => $isPaket ? $g->pluck('package_no')->unique()->count() : $g->count(),
+                        // Petugas = yang membuat/mulai batch produksi.
+                        'petugas' => $p->created_by,
+                    ];
+                })->values())
+            ->values();
+
+        return $this->success('Rincian produksi.', ['items' => $items]);
+    }
+
+    /**
      * Mulai produksi: buat batch produksi berisi unit terpilih lalu langsung
      * buka tahap Cleaning (washing). Jejak tiap tahap dicatat di pipeline_events.
      */

@@ -358,10 +358,22 @@ class StorageController extends Controller
 
         try {
             DB::transaction(function () use ($validated, $sterilization, $batchStockIds, $alreadyStored, $expiry, $originByStock) {
+                // Hanya unit yang MASIH `tersedia` boleh masuk gudang. Unit yang sejak
+                // divalidasi sudah ditarik lagi ke produksi ulang (status `sterilisasi`)
+                // atau sudah dipinjam TIDAK disimpan — mencegah baris gudang "hantu"
+                // (tersimpan tapi status ≠ tersedia) yang tak bisa dialokasikan.
+                $tersediaStockIds = InstrumentStock::withoutGlobalScopes()
+                    ->whereIn('id', $batchStockIds)
+                    ->where('status', InstrumentStock::STATUS_TERSEDIA)
+                    ->pluck('id')
+                    ->all();
+
                 foreach ($validated['items'] as $item) {
                     $stockId = (int) $item['instrument_stock_id'];
 
-                    if (! in_array($stockId, $batchStockIds, true) || in_array($stockId, $alreadyStored, true)) {
+                    if (! in_array($stockId, $batchStockIds, true)
+                        || in_array($stockId, $alreadyStored, true)
+                        || ! in_array($stockId, $tersediaStockIds, true)) {
                         continue;
                     }
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\OrderItem;
+use App\Models\ProductionItem;
 use App\Models\Sterilization;
 use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
@@ -58,16 +59,25 @@ class ReportController extends Controller
             ->get(['order_id', 'instrument_stock_id', 'source', 'package_name'])
             ->keyBy(fn ($oi) => $oi->order_id.'-'.$oi->instrument_stock_id);
 
+        // Nama instrumen/paket dari SNAPSHOT production_item (bukan master). keyBy pada
+        // urutan id ASC → entri TERAKHIR (batch terbaru) menang per unit.
+        $prodByStock = ProductionItem::whereIn(
+            'instrument_stock_id',
+            $items->pluck('instrument_stock_id')->filter()->unique()
+        )->orderBy('id')->get()->keyBy('instrument_stock_id');
+
         $groups = [];
         foreach ($items as $item) {
             $batch = $item->sterilization;
             $stock = $item->instrumentStock;
             $oi = $orderItems->get($batch?->order_id.'-'.$item->instrument_stock_id);
+            $prod = $prodByStock->get($item->instrument_stock_id);
             $isPaket = ($oi?->source) === 'paket';
 
             $unit = [
                 'id' => $item->id,
-                'name' => $stock?->instrument?->name,
+                // Nama dari snapshot production_item; relasi master hanya cadangan.
+                'name' => $prod?->name ?? $stock?->instrument?->name,
                 'unit_code' => $stock?->code,
                 'condition' => $stock?->condition?->name,
                 'result' => $item->result,
@@ -85,7 +95,8 @@ class ReportController extends Controller
             ];
 
             if ($isPaket) {
-                $pkg = $oi->package_name ?? 'Paket';
+                // Nama paket dari snapshot production_item; order_item hanya cadangan.
+                $pkg = $prod?->package_name ?? $oi->package_name ?? 'Paket';
                 $key = 'pkg|'.$batch?->id.'|'.$pkg;
                 $groups[$key] ??= array_merge($base, [
                     'key' => $key,

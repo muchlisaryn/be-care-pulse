@@ -8,7 +8,7 @@
 Lookup untuk halaman Scan & Tracking. Pelacakan berbasis **order** — response berisi header
 order + seluruh unit di dalamnya beserta status masing-masing.
 
-`code` menerima empat bentuk (dicoba berurutan):
+`code` menerima lima bentuk (dicoba berurutan):
 - **Kode order** (`ORD-NNN`) → tampilkan order tersebut.
 - **Kode transaksi** (`INV...`, barcode order) → tampilkan order tersebut.
 - **Kode unit alat** (mis. `KLL-002`) → cari **order terakhir** yang memuat unit itu, lalu
@@ -16,8 +16,17 @@ order + seluruh unit di dalamnya beserta status masing-masing.
 - **Kode batch produksi** (`PRD-yymmddNN`, label pada bungkus steril) → cari **order terakhir**
   yang memuat unit dari batch produksi itu. Dipakai modal Pengembalian: cukup pindai barcode
   kode produksi pada bungkusnya.
+- **Kode produksi pada label steril** (`PRD-yymmddNN` + id `production_item` digabung tanpa
+  pemisah, mis. `PRD260714031` = batch `PRD26071403` + item `1`) → cari **order terakhir** yang
+  memuat unit label tersebut. Label paket mewakili seluruh unit paket yang sama dalam batch itu
+  (id yang tercetak = item pertama paket).
 
-Error 404 bila kode tidak cocok dengan salah satunya, atau bila unit/batch produksi yang
+Response menyertakan `scanned_stock_ids`: id unit yang **benar-benar diwakili kode yang dipindai**
+(kode unit → satu unit; label produksi → unit label itu / seluruh unit paketnya). Dipakai UI untuk
+menyorot unit tersebut di modal Pengembalian. Kosong bila yang dipindai kode order/transaksi,
+karena kodenya mewakili seluruh order.
+
+Error 404 bila kode tidak cocok dengan salah satunya, atau bila unit/batch produksi/label yang
 dipindai belum pernah masuk order manapun.
 
 ## Request
