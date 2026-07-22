@@ -12,6 +12,7 @@ use App\Models\OrderItem;
 use App\Models\OrderTransfer;
 use App\Models\OrderWashing;
 use App\Models\Packaging;
+use App\Models\PackagingItem;
 use App\Models\Production;
 use App\Models\ProductionItem;
 use App\Models\Room;
@@ -1254,6 +1255,23 @@ class OrderController extends Controller
     }
 
     /**
+     * Peta instrument_stock_id → NAMA instrumen dari SNAPSHOT production_item
+     * (production_item.name), bukan relasi master. Batch terbaru (id ASC) menimpa.
+     */
+    private function productionNameMap(array $stockIds): array
+    {
+        if (empty($stockIds)) {
+            return [];
+        }
+
+        return ProductionItem::whereIn('instrument_stock_id', $stockIds)
+            ->orderBy('id')
+            ->get()
+            ->mapWithKeys(fn ($it) => [(int) $it->instrument_stock_id => $it->name])
+            ->all();
+    }
+
+    /**
      * Terapkan pilihan unit petugas saat distribusi: unit terpilih direservasi ke
      * order ini, unit yang tadinya dialokasikan (FEFO otomatis) tapi tidak jadi
      * dipilih dikembalikan ke pool produksi, lalu baris order_item ditulis ulang
@@ -1695,6 +1713,21 @@ class OrderController extends Controller
      * Dipakai halaman Scan & Tracking + modal Pengembalian; QR unit yang sudah
      * tercetak tetap bisa dipakai.
      */
+    /**
+     * Tracking (timeline) satu order — di-LAZY-LOAD terpisah dari detailnya (mis.
+     * saat modal Pengembalian Instrumen dibuka), supaya payload scan/detail ringan
+     * dan riwayat pipeline (produksi → cleaning → packaging → steril) hanya dihitung
+     * ketika benar-benar ditampilkan.
+     */
+    public function timeline(Order $order): JsonResponse
+    {
+        $this->attachTimeline($order);
+
+        return $this->success('Tracking order berhasil diambil.', [
+            'timeline' => $order->getAttribute('timeline'),
+        ]);
+    }
+
     public function scan(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1777,8 +1810,11 @@ class OrderController extends Controller
             return $this->error("Order, unit, atau batch produksi dengan kode \"{$code}\" tidak ditemukan.", 404);
         }
 
-        $this->attachTimeline($order);
+        // Timeline TIDAK di-embed di sini — di-lazy-load lewat GET orders/{order}/timeline
+        // saat modal Pengembalian Instrumen menampilkan bagian Tracking.
         $this->attachProductionCodes($order);
+        $this->attachBarcodeNos($order);
+        $this->attachInstrumentNames($order);
 
         // Unit yang disorot di UI: hanya yang benar-benar ada di order ini.
         $order->setAttribute('scanned_stock_ids', $order->items
@@ -1854,6 +1890,55 @@ class OrderController extends Controller
     }
 
     /**
+     * Lampirkan `barcode_no` (label fisik packaging_item) ke tiap unit order — dipakai
+     * frontend untuk MENGELOMPOKKAN instrumen per label fisik saat pengembalian (bukan
+     * per kode produksi). Diambil packaging_item TERBARU (belum di-void) tiap unit.
+     */
+    private function attachBarcodeNos(Order $order): void
+    {
+        $order->loadMissing('items');
+
+        $map = PackagingItem::whereIn(
+            'instrument_stock_id',
+            $order->items->pluck('instrument_stock_id')->filter()->map(fn ($id) => (int) $id)->unique()
+        )
+            ->where('disabled', false)
+            ->whereNotNull('barcode_no')
+            ->orderByDesc('id')
+            ->get()
+            ->groupBy('instrument_stock_id')
+            ->map(fn ($g) => $g->first()->barcode_no); // orderByDesc → first = terbaru
+
+        $order->items->each(
+            fn (OrderItem $item) => $item->setAttribute(
+                'barcode_no',
+                $map[(int) $item->instrument_stock_id] ?? null
+            )
+        );
+    }
+
+    /**
+     * Lampirkan NAMA instrumen dari SNAPSHOT production_item ke tiap unit order —
+     * agar tampilan monitoring memakai nama saat unit diproduksi, bukan nama master
+     * yang bisa berubah. Relasi master hanya cadangan bila snapshot kosong (data lama).
+     */
+    private function attachInstrumentNames(Order $order): void
+    {
+        $order->loadMissing('items.instrumentStock.instrument');
+
+        $names = $this->productionNameMap(
+            $order->items->pluck('instrument_stock_id')->filter()->map(fn ($id) => (int) $id)->all()
+        );
+
+        $order->items->each(
+            fn (OrderItem $item) => $item->setAttribute(
+                'instrument_name',
+                $names[(int) $item->instrument_stock_id] ?? $item->instrumentStock?->instrument?->name
+            )
+        );
+    }
+
+    /**
      * Lampirkan timeline tracking ke order: seluruh event (dibuat/diterima/dipindah/
      * dikembalikan) untuk semua order yang berbagi code_transaction (rantai handover).
      * Bila order belum punya code_transaction, ambil event order itu saja.
@@ -1912,8 +1997,10 @@ class OrderController extends Controller
         }
 
         // Gabung & urut kronologis (produksi/steril/simpan terjadi sebelum dipinjam).
+        // Event pipeline membawa kunci `sort` (urutan tahap dikunci) — event lain
+        // memakai waktunya sendiri.
         $events = $orderEvents->concat($pipeline)
-            ->sortBy(fn ($e) => optional($e['created_at'])->timestamp ?? 0)
+            ->sortBy(fn ($e) => $e['sort'] ?? (optional($e['created_at'])->timestamp ?? 0))
             ->values();
 
         $order->setAttribute('timeline', $events);
@@ -1947,7 +2034,7 @@ class OrderController extends Controller
                 'borrowed_by' => null,
                 'note' => $note,
                 'created_at' => $at,
-                // Rincian ringkas (nomor batch + waktu) untuk tombol "Detail" di timeline.
+                // Rincian untuk tombol "Detail" (nomor batch + waktu; packaging + rincian barcode).
                 'detail' => $detail,
             ]);
         };
@@ -1960,17 +2047,19 @@ class OrderController extends Controller
             ->when($before, fn ($q) => $q->whereHas('production', fn ($p) => $p->where('created_at', '<=', $before)))
             ->groupBy('instrument_stock_id')
             ->pluck('id');
-        $productions = ProductionItem::with('production')
-            ->whereIn('id', $prodItemIds)
-            ->get()
-            ->pluck('production')->filter()->unique('id');
+        $productionIds = ProductionItem::whereIn('id', $prodItemIds)->pluck('production_id')->unique();
+        // Cukup id + kode untuk timeline — rincian tiap tahap di-lazy-load saat Detail
+        // diklik, jadi tak perlu memuat items/instrument di sini.
+        $productions = Production::whereIn('id', $productionIds)->get();
 
         foreach ($productions as $p) {
-            $at = $p->created_at;
-            $push('produksi', $at, $p->created_by, "Batch produksi {$p->code}", [
+            // Rincian tabel produksi di-LAZY-LOAD saat tombol Detail diklik (endpoint
+            // GET master/production/detail?codes[]=...). Timeline hanya membawa nomor
+            // batchnya, tanpa teks "Batch produksi …".
+            $push('produksi', $p->created_at, $p->created_by, null, [
                 'kind' => 'produksi',
                 'code' => $p->code,
-                'at' => $at,
+                'at' => $p->created_at,
             ]);
         }
 
@@ -1983,21 +2072,23 @@ class OrderController extends Controller
                 default => 'diproses',
             };
             $at = $w->completed_at ?? $w->started_at ?? $w->created_at;
-            $push($type, $at, $w->completed_by ?? $w->started_by, "Cleaning {$w->code}", [
+            // Tanpa teks "Cleaning …"; rincian tabel di-lazy-load saat Detail diklik.
+            $push($type, $at, $w->completed_by ?? $w->started_by, null, [
                 'kind' => 'cleaning',
                 'code' => $w->code,
                 'at' => $at,
             ]);
         }
 
-        // 2b. Packaging — tahap Inspection & Pengemasan (PKG), mengalir dari cleaning
-        // (via washing_code). Terjadi setelah cleaning & sebelum sterilisasi.
+        // 2b. Packaging — rincian per barcode_no di-LAZY-LOAD (endpoint by id packaging).
         $packagings = Packaging::whereIn('washing_code', $washings->pluck('code'))->get();
         foreach ($packagings as $pkg) {
             $at = $pkg->completed_at ?? $pkg->packaged_at ?? $pkg->started_at ?? $pkg->created_at;
-            $push('packaging', $at, $pkg->completed_by ?? $pkg->operator ?? $pkg->started_by, "Packaging {$pkg->full_code}", [
+            // Tanpa teks "Packaging …"; rincian barcode diambil saat Detail diklik.
+            $push('packaging', $at, $pkg->completed_by ?? $pkg->operator ?? $pkg->started_by, null, [
                 'kind' => 'packaging',
                 'code' => $pkg->full_code,
+                'id' => $pkg->id,
                 'at' => $at,
             ]);
         }
@@ -2014,7 +2105,6 @@ class OrderController extends Controller
             ->whereIn('id', $sterItemIds)
             ->get()
             ->pluck('sterilization')->filter()->unique('id');
-
         foreach ($sters as $s) {
             $type = match ($s->status) {
                 Sterilization::STATUS_SELESAI => 'steril',
@@ -2022,17 +2112,15 @@ class OrderController extends Controller
                 default => 'disterilkan',
             };
             $at = $s->completed_at ?? $s->sterilized_at ?? $s->created_at;
-            $push($type, $at, $s->completed_by ?? $s->created_by, "Sterilisasi {$s->code}", [
+            // Tanpa teks "Sterilisasi …"; rincian tabel di-lazy-load saat Detail diklik.
+            $push($type, $at, $s->completed_by ?? $s->created_by, null, [
                 'kind' => 'steril',
                 'code' => $s->code,
                 'at' => $at,
             ]);
         }
 
-        // 4. Simpan di Rak — penempatan TERBARU tiap unit di gudang steril (siklus
-        // aktif), dikelompokkan per rak. Hanya tampilkan bila storage TERBARU unit
-        // masih berstatus `tersimpan`; bila `keluar` (unit sudah terdistribusi keluar
-        // gudang) event "Di Gudang Steril" tidak ditampilkan.
+        // 4. Simpan di Rak — penempatan TERBARU tiap unit di gudang steril, per rak.
         $storageIds = InstrumentStorage::selectRaw('MAX(id) as id')
             ->whereIn('instrument_stock_id', $stockIds)
             ->groupBy('instrument_stock_id')
@@ -2045,7 +2133,49 @@ class OrderController extends Controller
             $push('disimpan', $first->stored_at ?? $first->created_at, $first->created_by, "Disimpan di rak {$rack} ({$rows->count()} unit)");
         }
 
-        return $events;
+        // Setiap PROSES tampil SATU saja: bila unit berasal dari lebih dari satu batch,
+        // ambil event TERBARU tiap tahap (Produksi/Cleaning/Packaging/Steril). Rincian
+        // barcode dari semua batch digabung ke event packaging yang dipertahankan.
+        // "Disimpan di rak" dibiarkan apa adanya (rak berbeda = lokasi, bukan proses ganda).
+        $stageKey = fn (string $type) => match ($type) {
+            'selesai_cuci', 'gagal_cuci', 'diproses' => 'cleaning',
+            'steril', 'gagal_steril', 'disterilkan' => 'steril',
+            default => $type,
+        };
+        $pipelineTypes = ['produksi', 'selesai_cuci', 'gagal_cuci', 'diproses', 'packaging', 'steril', 'gagal_steril', 'disterilkan'];
+        $others = $events->reject(fn ($e) => in_array($e['type'], $pipelineTypes, true));
+        $stageGroups = $events->filter(fn ($e) => in_array($e['type'], $pipelineTypes, true))
+            ->groupBy(fn ($e) => $stageKey($e['type']));
+
+        // Urutan tahap DIKUNCI: Produksi → Cleaning → Packaging → Steril, di-anchor ke
+        // waktu produksi — supaya tidak terbalik walau event terbaru tiap tahap berasal
+        // dari batch berbeda (mis. produksi batch-2 lebih baru dari cuci batch-1).
+        $rank = ['produksi' => 0, 'cleaning' => 1, 'packaging' => 2, 'steril' => 3];
+        $prodFirst = ($stageGroups['produksi'] ?? collect())->first();
+        $base = $prodFirst ? (optional($prodFirst['created_at'] ?? null)->timestamp ?? 0) : 0;
+
+        $deduped = collect();
+        foreach ($stageGroups as $key => $group) {
+            $keep = $group->sortBy(fn ($e) => optional($e['created_at'])->timestamp ?? 0)->values()->last();
+            if ($key === 'packaging') {
+                // Kumpulkan id semua packaging — dipakai frontend lazy-load rincian barcode.
+                $keep['detail']['ids'] = $group
+                    ->map(fn ($e) => $e['detail']['id'] ?? null)
+                    ->filter()->unique()->values()->all();
+            }
+            if (in_array($key, ['produksi', 'cleaning', 'steril'], true)) {
+                // Kumpulkan semua nomor batch tahap ini — dipakai frontend untuk
+                // lazy-load rincian tabelnya saat Detail diklik.
+                $keep['detail']['codes'] = $group
+                    ->map(fn ($e) => $e['detail']['code'] ?? null)
+                    ->filter()->unique()->values()->all();
+            }
+            // Kunci urut tahap — dipakai attachTimeline saat menggabung dgn event order.
+            $keep['sort'] = $base + (($rank[$key] ?? 9) * 0.001);
+            $deduped->push($keep);
+        }
+
+        return $deduped->concat($others)->values();
     }
 
     public function update(Request $request, Order $order): JsonResponse
@@ -2088,6 +2218,8 @@ class OrderController extends Controller
             // saja — pipeline CSSD hanya untuk monitoring/scan.
             $this->attachTimeline($order, includePipeline: false);
             $this->attachProductionCodes($order);
+            $this->attachBarcodeNos($order);
+            $this->attachInstrumentNames($order);
 
             return $this->success('Peminjaman berhasil diperbarui.', $order);
         } catch (\Throwable $e) {

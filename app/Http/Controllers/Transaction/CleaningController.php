@@ -9,6 +9,7 @@ use App\Models\OrderEvent;
 use App\Models\OrderWashing;
 use App\Models\Packaging;
 use App\Models\PipelineEvent;
+use App\Models\Production;
 use App\Models\WasherMachine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,6 +26,56 @@ use Illuminate\Support\Facades\DB;
  */
 class CleaningController extends Controller
 {
+    /**
+     * Rincian instrumen beberapa batch cleaning (lazy-load dari tombol Detail di
+     * timeline) — baris tabel: tanggal | nomor cleaning | nama | jumlah. Unit cleaning
+     * dibaca dari produksi asal (via production_code), pakai SNAPSHOT production_item.
+     */
+    public function detail(Request $request): JsonResponse
+    {
+        $codes = array_filter((array) $request->input('codes', []));
+        if (empty($codes)) {
+            return $this->success('Rincian cleaning.', ['items' => []]);
+        }
+
+        $washings = OrderWashing::whereIn('code', $codes)->get();
+        $productions = Production::with('items.instrumentStock.instrument')
+            ->whereIn('code', $washings->pluck('production_code')->filter()->unique())
+            ->get()->keyBy('code');
+
+        $items = $washings
+            ->sortBy(fn ($w) => optional($w->completed_at ?? $w->created_at)->timestamp ?? 0)
+            ->flatMap(function ($w) use ($productions) {
+                $p = $productions->get($w->production_code);
+                if (! $p) {
+                    return collect();
+                }
+                $at = $w->completed_at ?? $w->started_at ?? $w->created_at;
+                // Petugas cleaning: yang menyelesaikan, fallback ke yang memulai.
+                $petugas = $w->completed_by ?? $w->started_by;
+
+                return $p->items
+                    ->groupBy(fn ($pi) => $pi->source === 'paket'
+                        ? 'paket|'.($pi->package_name ?? 'Paket')
+                        : 'satuan|'.($pi->name ?? 'Instrumen'))
+                    ->map(function ($g) use ($w, $at, $petugas) {
+                        $first = $g->first();
+                        $isPaket = $first->source === 'paket';
+
+                        return [
+                            'tanggal' => $at,
+                            'code' => $w->code,
+                            'name' => $isPaket ? ($first->package_name ?? 'Paket') : ($first->name ?? 'Instrumen'),
+                            'type' => $isPaket ? 'paket' : 'satuan',
+                            'qty' => $isPaket ? $g->pluck('package_no')->unique()->count() : $g->count(),
+                            'petugas' => $petugas,
+                        ];
+                    })->values();
+            })->values();
+
+        return $this->success('Rincian cleaning.', ['items' => $items]);
+    }
+
     /**
      * [ALUR ORDER PINJAMAN — belum dimigrasi ke pipeline baru]
      * Proses order masuk: pindahkan dari "diajukan" ke tahap pencucian.

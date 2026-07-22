@@ -122,6 +122,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Peminjaman instrumen (F5 PRD): order header + item unit
         // Scan kode order (ORD-NNN) untuk tracking seluruh unit dalam satu order
         Route::post('orders/scan', [OrderController::class, 'scan']);
+        // Tracking order (lazy-load, dipanggil saat bagian Tracking ditampilkan).
+        Route::get('orders/{order}/timeline', [OrderController::class, 'timeline']);
         // Daftar order milik pihak lain yang sedang dipinjam (untuk Pinjam Instrumen)
         Route::get('orders/borrowable', [OrderController::class, 'borrowable']);
         // Terima order: data alokasi unit + proses penerimaan (alokasi + kurangi stok)
@@ -129,9 +131,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('orders/{order}/receive', [OrderController::class, 'receive']);
         // Produksi CSSD: mulai batch internal (stok milik CSSD) → langsung tahap Cleaning
         Route::post('production', [ProductionController::class, 'store']);
+        // Rincian batch produksi (lazy-load tombol Detail di timeline) — by nomor produksi.
+        Route::get('production/detail', [ProductionController::class, 'detail']);
         // Pipeline pemrosesan CSSD: Proses order masuk → tahap Cleaning & Pengemasan
         Route::post('orders/{order}/process', [CleaningController::class, 'process']);
         Route::get('cleaning', [CleaningController::class, 'index']);
+        // Rincian batch cleaning (lazy-load tombol Detail di timeline) — by nomor cleaning.
+        Route::get('cleaning/detail', [CleaningController::class, 'detail']);
         // Notifikasi kegagalan suhu/waktu pencucian (parameter di luar ambang mesin)
         Route::get('cleaning/alerts', [CleaningController::class, 'alerts']);
         Route::put('cleaning/{washing}/washing', [CleaningController::class, 'updateWashing']);
@@ -143,9 +149,13 @@ Route::middleware('auth:sanctum')->group(function () {
         // packaging_item baru dibuat di sini (bukan saat cleaning selesai).
         Route::post('packaging/complete', [PackagingController::class, 'completeQueued']);
         Route::get('packaging/{packaging}/label', [PackagingController::class, 'label']);
+        // Rincian barcode beberapa batch packaging (lazy-load tombol Detail di timeline).
+        Route::get('packaging/barcode-detail', [PackagingController::class, 'barcodeDetail']);
         Route::post('packaging/{packaging}/complete', [PackagingController::class, 'complete']);
         // Pipeline produksi — Tahap Sterilisasi (berbasis PKG): list siap-steril + batch, buat batch gabungan, validasi
         Route::get('sterilization-pipeline', [SterilizationPipelineController::class, 'index']);
+        // Rincian batch sterilisasi (lazy-load tombol Detail di timeline) — by nomor STR.
+        Route::get('sterilization-pipeline/detail', [SterilizationPipelineController::class, 'detail']);
         Route::post('sterilization-pipeline/batch', [SterilizationPipelineController::class, 'batch']);
         // Validasi hasil scan barcode label kemasan (dikenal / layak dibatch?).
         Route::post('sterilization-pipeline/scan', [SterilizationPipelineController::class, 'scan']);

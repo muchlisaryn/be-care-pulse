@@ -33,6 +33,54 @@ class PackagingController extends Controller
     ];
 
     /**
+     * Rincian unit per barcode_no beberapa batch packaging (lazy-load dari tombol
+     * Detail di timeline) — by id packaging. Nama instrumen dari SNAPSHOT
+     * production_item (via instrument_stock_id), relasi live hanya cadangan.
+     */
+    public function barcodeDetail(Request $request): JsonResponse
+    {
+        $ids = array_filter((array) $request->input('ids', []));
+        if (empty($ids)) {
+            return $this->success('Rincian packaging.', ['barcodes' => []]);
+        }
+
+        $packagings = Packaging::with(['items', 'washing.production.items.instrumentStock.instrument'])
+            ->whereIn('id', $ids)->get();
+
+        // Baris tabel Detail packaging: tanggal | code (barcode) | nama | nama petugas.
+        $rows = collect();
+        foreach ($packagings as $pkg) {
+            $prodByStock = ($pkg->washing?->production?->items ?? collect())
+                ->keyBy('instrument_stock_id');
+            $at = $pkg->completed_at ?? $pkg->packaged_at ?? $pkg->started_at ?? $pkg->created_at;
+            $petugas = $pkg->completed_by ?? $pkg->operator ?? $pkg->started_by;
+
+            // Kelompokkan unit packaging ini per barcode_no (label fisik).
+            $byBarcode = [];
+            foreach ($pkg->items->where('disabled', false) as $it) {
+                $bc = $it->barcode_no ?: '(tanpa barcode)';
+                $prod = $prodByStock->get($it->instrument_stock_id);
+                // Nama dari SNAPSHOT production_item (bukan master): paket → NAMA PAKET
+                // langsung, satuan → nama instrumen. Relasi live hanya cadangan.
+                $byBarcode[$bc][] = ($prod?->source === 'paket')
+                    ? ($prod->package_name ?? 'Paket')
+                    : ($prod?->name ?? $it->instrumentStock?->instrument?->name ?? 'Instrumen');
+            }
+
+            foreach ($byBarcode as $bc => $names) {
+                $rows->push([
+                    'tanggal' => $at,
+                    'code' => $bc,
+                    'name' => collect($names)->unique()->values()->implode(', '),
+                    'petugas' => $petugas,
+                ]);
+            }
+        }
+
+        return $this->success('Rincian packaging.', ['rows' => $rows->values()]);
+    }
+
+    /**
      * Daftar batch pada tahap Packaging — dua sumber digabung:
      *  1. record `packaging` yang sudah dibuat (sedang diinspeksi / sudah dikemas);
      *  2. batch cleaning yang berstatus `selesai` tapi BELUM punya record packaging

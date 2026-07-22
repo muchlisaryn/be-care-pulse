@@ -102,6 +102,65 @@ class SterilizationPipelineController extends Controller
     }
 
     /**
+     * Rincian instrumen beberapa batch sterilisasi (lazy-load dari tombol Detail di
+     * timeline) — baris tabel: tanggal | nomor STR | nama | jumlah. Nama dari SNAPSHOT
+     * production_item (via packaging → produksi), paket → nama paket, satuan → nama instrumen.
+     */
+    public function detail(Request $request): JsonResponse
+    {
+        $codes = array_filter((array) $request->input('codes', []));
+        if (empty($codes)) {
+            return $this->success('Rincian sterilisasi.', ['items' => []]);
+        }
+
+        $batches = Sterilization::with([
+            'items.instrumentStock.instrument',
+            'packagings.washing.production.items',
+        ])->whereIn('code', $codes)->get();
+
+        $items = $batches
+            ->sortBy(fn ($b) => optional($b->completed_at ?? $b->sterilized_at ?? $b->created_at)->timestamp ?? 0)
+            ->flatMap(function ($b) {
+                // Snapshot production_item unit batch ini (via packaging anggota → produksi).
+                $prodByStock = $b->packagings
+                    ->flatMap(fn ($p) => $p->washing?->production?->items ?? collect())
+                    ->keyBy('instrument_stock_id');
+                $at = $b->completed_at ?? $b->sterilized_at ?? $b->created_at;
+                // Petugas steril: yang memvalidasi hasil, jika belum → yang memproses.
+                $petugas = $b->completed_by ?? $b->created_by;
+
+                return $b->items->where('disabled', false)
+                    ->groupBy(function ($si) use ($prodByStock) {
+                        $prod = $prodByStock->get($si->instrument_stock_id);
+
+                        return ($prod?->source === 'paket')
+                            ? 'paket|'.($prod->package_name ?? 'Paket')
+                            : 'satuan|'.($prod?->name ?? $si->instrumentStock?->instrument?->name ?? 'Instrumen');
+                    })
+                    ->map(function ($g) use ($prodByStock, $b, $at, $petugas) {
+                        $prod = $prodByStock->get($g->first()->instrument_stock_id);
+                        $isPaket = $prod?->source === 'paket';
+
+                        return [
+                            'tanggal' => $at,
+                            'code' => $b->code,
+                            'name' => $isPaket
+                                ? ($prod->package_name ?? 'Paket')
+                                : ($prod?->name ?? $g->first()->instrumentStock?->instrument?->name ?? 'Instrumen'),
+                            'type' => $isPaket ? 'paket' : 'satuan',
+                            // Paket = jumlah SET (package_no unik); satuan = jumlah unit.
+                            'qty' => $isPaket
+                                ? $g->map(fn ($si) => $prodByStock->get($si->instrument_stock_id)?->package_no)->unique()->count()
+                                : $g->count(),
+                            'petugas' => $petugas,
+                        ];
+                    })->values();
+            })->values();
+
+        return $this->success('Rincian sterilisasi.', ['items' => $items]);
+    }
+
+    /**
      * Validasi hasil scan barcode label kemasan sebelum dicentang ke batch steril.
      * Dipisah dari daftar agar barcode yang TIDAK dikenal — atau dikenal tapi tidak
      * layak (sudah masuk batch, di-void, belum selesai dikemas) — bisa dijawab
