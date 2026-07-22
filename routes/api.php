@@ -189,6 +189,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Batch steril pipeline PRODUKSI yang siap disimpan (tanpa order)
         Route::get('storage/production-incoming', [StorageController::class, 'productionIncoming']);
         Route::get('storage/inventory', [StorageController::class, 'inventory']);
+        // Angka ringkasan gudang (total / mendekati kedaluwarsa / kedaluwarsa)
+        Route::get('storage/summary', [StorageController::class, 'summary']);
         Route::post('orders/{order}/store', [StorageController::class, 'store']);
         Route::post('sterilization/{sterilization}/store', [StorageController::class, 'storeProduction']);
 

@@ -17,6 +17,15 @@ Daftar batch steril **pipeline produksi** yang perlu disimpan ke gudang: record
 `storage/incoming` (order) agar FE bisa memakai daftar & modal simpan yang sama —
 dibedakan lewat `source` (`"produksi"`) dan `store_url`.
 
+**Nomor label kemasan:** `units[].barcode_no` = `sterilization_items.packaging_barcode`,
+yaitu nomor barcode yang tercetak di label bungkus sterilnya. Satu label mewakili
+satu bungkus, jadi seluruh unit dalam satu set berbagi nomor yang sama.
+
+**Sumber nama instrumen:** `units[].code`, `units[].instrument` &
+`units[].package_image` diambil dari tabel `production_item` (snapshot batch
+produksi), bukan dari master instrumen — master hanya jadi cadangan bila baris
+produksinya tidak ada.
+
 ### Headers
 | Key | Value | Required |
 |-----|-------|----------|
@@ -53,7 +62,8 @@ dibedakan lewat `source` (`"produksi"`) dan `store_url`.
         "stored_count": 0,
         "units": [
           {
-            "id": 86, "code": "GNE-001", "instrument": "Gunting Epis", "image_url": null,
+            "id": 86, "code": "GNE-001", "instrument": "Gunting Epis",
+            "barcode_no": "PKG260722012", "image_url": null,
             "source": "paket", "package_name": "SET PARTUS", "stored": false, "rack_code": null
           }
         ]

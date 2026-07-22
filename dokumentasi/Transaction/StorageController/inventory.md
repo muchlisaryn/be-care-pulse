@@ -16,10 +16,15 @@ berkondisi `tersedia`. Unit yang sudah keluar gudang (sudah didistribusikan →
 meski baris gudangnya masih `tersimpan`. Baris tersebut tetap tersimpan di
 database — hanya disembunyikan dari daftar isi rak.
 
+**Sumber nama instrumen:** `unit.code` & `unit.instrument` diambil dari tabel
+`production_item` (snapshot batch produksi unit tersebut). Bila unit belum pernah
+masuk batch produksi, nilainya jatuh ke `instrument_stocks.code` /
+`instruments.name`.
+
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
-| search | string | Tidak | Cari kode unit, instrumen, rak, atau order |
+| search | string | Tidak | Cari kode unit, nama instrumen (production_item), rak, atau order |
 | days | integer | Tidak | Ambang early-warning (default 7) |
 
 ### Response — Success (200)

@@ -34,7 +34,7 @@ kedaluwarsa (dari batch sterilisasi).
         "unit_count": 6,
         "stored_count": 0,
         "units": [
-          { "id": 87, "code": "GNE-002", "instrument": "Gunting Epis", "source": "paket", "package_name": "SET PARTUS", "stored": false, "rack_code": null }
+          { "id": 87, "code": "GNE-002", "instrument": "Gunting Epis", "barcode_no": "PKG260722012", "source": "paket", "package_name": "SET PARTUS", "stored": false, "rack_code": null }
         ]
       }
     ],

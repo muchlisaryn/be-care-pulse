@@ -36,6 +36,8 @@ class StorageController extends Controller
             'items.instrumentStock.instrument',
             'storages' => fn ($q) => $q->where('status', InstrumentStorage::STATUS_TERSIMPAN),
             'sterilizations' => fn ($q) => $q->where('status', 'selesai')->latest(),
+            // items → nomor label kemasan (packaging_barcode) tiap unit.
+            'sterilizations.items',
         ])
             ->where('status', Order::STATUS_STERIL)
             ->when(
@@ -126,6 +128,7 @@ class StorageController extends Controller
                 'items.instrumentStock.instrument',
                 'storages' => fn ($q) => $q->where('status', InstrumentStorage::STATUS_TERSIMPAN),
                 'sterilizations' => fn ($q) => $q->where('status', 'selesai')->latest(),
+                'sterilizations.items',
             ]);
 
             return $this->success('Unit berhasil disimpan ke gudang steril.', $this->incomingPayload($order));
@@ -159,19 +162,55 @@ class StorageController extends Controller
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('rack_code', 'like', "%{$s}%")
                     ->orWhereHas('instrumentStock', fn ($u) => $u->where('code', 'like', "%{$s}%"))
                     ->orWhereHas('instrumentStock.instrument', fn ($i) => $i->where('name', 'like', "%{$s}%"))
+                    // Nama yang TAMPIL berasal dari production_item, jadi ikut dicari.
+                    ->orWhereExists(fn ($sub) => $sub->selectRaw('1')
+                        ->from('production_item')
+                        ->whereColumn('production_item.instrument_stock_id', 'instrument_storages.instrument_stock_id')
+                        ->whereNull('production_item.deleted_by')
+                        ->where('production_item.name', 'like', "%{$s}%"))
                     ->orWhereHas('order', fn ($o) => $o->where('code', 'like', "%{$s}%")
                         ->orWhere('code_transaction', 'like', "%{$s}%")))
             )
             ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
             ->paginate(20);
 
-        $codes = $this->productionCodeMap(
+        $prodItems = $this->productionItemMap(
             $rows->getCollection()->pluck('instrument_stock_id')->map(fn ($id) => (int) $id)->all()
         );
 
-        $rows->getCollection()->transform(fn (InstrumentStorage $s) => $this->inventoryRow($s, $days, $codes));
+        $rows->getCollection()->transform(fn (InstrumentStorage $s) => $this->inventoryRow($s, $days, $prodItems));
 
         return $this->success('Inventaris gudang steril berhasil diambil.', $rows);
+    }
+
+    /**
+     * Ringkasan angka gudang steril: total unit tersimpan, mendekati kedaluwarsa
+     * (≤ ambang hari, belum lewat) & sudah kedaluwarsa. Dipakai kartu statistik FE
+     * agar tetap akurat walau daftar inventarisnya dimuat bertahap (lazy load).
+     * ?days= ambang early-warning (default 7).
+     */
+    public function summary(Request $request): JsonResponse
+    {
+        $days = max(0, (int) $request->input('days', self::EXPIRY_ALERT_DAYS));
+        $today = now()->startOfDay();
+
+        // Basis sama dengan inventory(): hanya unit yang fisiknya benar-benar di rak.
+        $base = fn () => InstrumentStorage::where('status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->whereHas(
+                'instrumentStock',
+                fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
+            );
+
+        return $this->success('Ringkasan gudang steril berhasil diambil.', [
+            'total' => $base()->count(),
+            'alert' => $base()->whereNotNull('expiry_date')
+                ->whereDate('expiry_date', '>=', $today)
+                ->whereDate('expiry_date', '<=', $today->copy()->addDays($days))
+                ->count(),
+            'expired' => $base()->whereNotNull('expiry_date')
+                ->whereDate('expiry_date', '<', $today)
+                ->count(),
+        ]);
     }
 
     /** Ringkasan order siap-simpan + unit & status penempatannya. */
@@ -189,13 +228,26 @@ class StorageController extends Controller
             $units->where('source', 'paket')->pluck('package_name')
         );
 
-        $unitRows = $units->map(function ($it) use ($storedByStock, $packageImages) {
+        // Nama instrumen diambil dari production_item (snapshot batch produksi);
+        // relasi instrumen hanya jadi cadangan bila unit belum pernah diproduksi.
+        $prodItems = $this->productionItemMap($units->pluck('instrument_stock_id')->all());
+
+        // Nomor label kemasan per unit — dibawa baris sterilisasi batch terakhir order ini.
+        $barcodeByStock = $order->relationLoaded('sterilizations')
+            ? optional($order->sterilizations->first())?->items->pluck('packaging_barcode', 'instrument_stock_id')
+                ?? collect()
+            : collect();
+
+        $unitRows = $units->map(function ($it) use ($storedByStock, $packageImages, $prodItems, $barcodeByStock) {
             $stored = $storedByStock->get($it->instrument_stock_id);
+            $prod = $prodItems[(int) $it->instrument_stock_id] ?? null;
 
             return [
                 'id' => $it->instrument_stock_id,
-                'code' => $it->instrumentStock?->code,
-                'instrument' => $it->instrumentStock?->instrument?->name,
+                'code' => $prod?->kode_instrumen ?? $it->instrumentStock?->code,
+                'instrument' => $prod?->name ?? $it->instrumentStock?->instrument?->name,
+                // Nomor label kemasan yang tercetak di bungkus sterilnya.
+                'barcode_no' => $barcodeByStock[$it->instrument_stock_id] ?? null,
                 'image_url' => $it->instrumentStock?->instrument?->image_url,
                 'source' => $it->source,
                 'package_name' => $it->package_name,
@@ -393,14 +445,25 @@ class StorageController extends Controller
                 $origin = $originByStock->get($it->instrument_stock_id);
                 $stock = $it->instrumentStock;
 
+                // Nama, kode & foto unit diambil dari production_item (snapshot batch);
+                // relasi instrumen hanya cadangan bila baris produksinya tak ada.
                 return [
                     'id' => $it->instrument_stock_id,
-                    'code' => $stock?->code,
-                    'instrument' => $stock?->instrument?->name,
-                    'image_url' => $stock?->instrument?->image_url,
+                    'code' => $origin?->kode_instrumen ?? $stock?->code,
+                    'instrument' => $origin?->name ?? $stock?->instrument?->name,
+                    // Nomor label kemasan yang tercetak di bungkus sterilnya — satu
+                    // label = satu bungkus, jadi seluruh unit satu set berbagi nomor.
+                    'barcode_no' => $it->packaging_barcode,
+                    // Baris `paket` menyimpan foto KATALOG di kolom image — untuk foto
+                    // instrumen per unit tetap pakai foto master.
+                    'image_url' => $origin?->source === 'paket'
+                        ? $stock?->instrument?->image_url
+                        : ($origin?->image_url ?? $stock?->instrument?->image_url),
                     'source' => $origin?->source ?? 'satuan',
                     'package_name' => $origin?->package_name,
-                    'package_image' => $origin?->source === 'paket' ? ($packageImages[$origin->package_name] ?? null) : null,
+                    'package_image' => $origin?->source === 'paket'
+                        ? ($origin->image_url ?? $packageImages[$origin->package_name] ?? null)
+                        : null,
                     'stored' => (bool) $row,
                     'rack_code' => $row?->rack_code,
                 ];
@@ -424,11 +487,16 @@ class StorageController extends Controller
     }
 
     /**
-     * Kode batch produksi (PRD-...) terakhir tiap unit — label pada bungkus sterilnya.
-     * Dipetakan sekali untuk seluruh baris agar tidak query per unit.
+     * `production_item` TERAKHIR tiap unit — sumber tunggal nama instrumen, kode
+     * unit & foto (snapshot batch produksi), plus kode batch produksi (PRD-...)
+     * yang tercetak di bungkus sterilnya. Dipetakan sekali untuk seluruh baris
+     * agar tidak query per unit.
+     *
+     * @return array<int,ProductionItem>
      */
-    private function productionCodeMap(array $stockIds): array
+    private function productionItemMap(array $stockIds): array
     {
+        $stockIds = array_values(array_unique(array_filter($stockIds)));
         if (empty($stockIds)) {
             return [];
         }
@@ -438,13 +506,18 @@ class StorageController extends Controller
             ->orderBy('id')
             ->get()
             // Urut id ASC → batch terbaru menimpa yang lama.
-            ->mapWithKeys(fn ($it) => [(int) $it->instrument_stock_id => $it->production?->code])
+            ->mapWithKeys(fn ($it) => [(int) $it->instrument_stock_id => $it])
             ->all();
     }
 
-    /** Satu baris inventaris + status kedaluwarsa. */
-    private function inventoryRow(InstrumentStorage $s, int $days, array $productionCodes = []): array
+    /**
+     * Satu baris inventaris + status kedaluwarsa. `$prodItems` = peta
+     * instrument_stock_id → production_item (sumber nama instrumen & kode batch).
+     */
+    private function inventoryRow(InstrumentStorage $s, int $days, array $prodItems = []): array
     {
+        $prod = $prodItems[(int) $s->instrument_stock_id] ?? null;
+
         $daysToExpiry = null;
         $alert = false;
         $expired = false;
@@ -466,11 +539,13 @@ class StorageController extends Controller
             'source' => $s->source ?? 'satuan',
             'package_name' => $s->package_name,
             // Kode batch produksi asal unit (PRD-...) — tercetak di bungkus steril.
-            'production_code' => $productionCodes[(int) $s->instrument_stock_id] ?? null,
+            'production_code' => $prod?->production?->code,
+            // Nama & kode unit bersumber dari production_item (snapshot batch produksi);
+            // relasi instrumen hanya cadangan bila unit belum pernah diproduksi.
             'unit' => [
                 'id' => $s->instrument_stock_id,
-                'code' => $s->instrumentStock?->code,
-                'instrument' => $s->instrumentStock?->instrument?->name,
+                'code' => $prod?->kode_instrumen ?? $s->instrumentStock?->code,
+                'instrument' => $prod?->name ?? $s->instrumentStock?->instrument?->name,
                 'image_url' => $s->instrumentStock?->instrument?->image_url,
             ],
             'order' => $s->order ? [
