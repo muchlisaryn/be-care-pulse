@@ -11,8 +11,10 @@ use App\Models\OrderEvent;
 use App\Models\PipelineEvent;
 use App\Models\ProductionItem;
 use App\Models\Sterilization;
+use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -168,6 +170,13 @@ class StorageController extends Controller
                         ->whereColumn('production_item.instrument_stock_id', 'instrument_storages.instrument_stock_id')
                         ->whereNull('production_item.deleted_by')
                         ->where('production_item.name', 'like', "%{$s}%"))
+                    // Nomor label kemasan yang tercetak di bungkus sterilnya.
+                    ->orWhereExists(fn ($sub) => $sub->selectRaw('1')
+                        ->from('sterilization_items')
+                        ->whereColumn('sterilization_items.instrument_stock_id', 'instrument_storages.instrument_stock_id')
+                        ->whereColumn('sterilization_items.sterilization_id', 'instrument_storages.sterilization_id')
+                        ->whereNull('sterilization_items.deleted_by')
+                        ->where('sterilization_items.packaging_barcode', 'like', "%{$s}%"))
                     ->orWhereHas('order', fn ($o) => $o->where('code', 'like', "%{$s}%")
                         ->orWhere('code_transaction', 'like', "%{$s}%")))
             )
@@ -177,8 +186,9 @@ class StorageController extends Controller
         $prodItems = $this->productionItemMap(
             $rows->getCollection()->pluck('instrument_stock_id')->map(fn ($id) => (int) $id)->all()
         );
+        $barcodes = $this->packagingBarcodeMap($rows->getCollection());
 
-        $rows->getCollection()->transform(fn (InstrumentStorage $s) => $this->inventoryRow($s, $days, $prodItems));
+        $rows->getCollection()->transform(fn (InstrumentStorage $s) => $this->inventoryRow($s, $days, $prodItems, $barcodes));
 
         return $this->success('Inventaris gudang steril berhasil diambil.', $rows);
     }
@@ -523,12 +533,51 @@ class StorageController extends Controller
     }
 
     /**
-     * Satu baris inventaris + status kedaluwarsa. `$prodItems` = peta
-     * instrument_stock_id → production_item (sumber nama instrumen & kode batch).
+     * Nomor label kemasan (barcode bungkus steril) tiap baris gudang. Labelnya
+     * dibawa `sterilization_items.packaging_barcode` — dipetakan sekali untuk
+     * seluruh halaman agar tidak query per baris.
+     *
+     * Kunci utama pasangan `sterilization_id|instrument_stock_id`; baris gudang
+     * lama yang tak punya sterilization_id memakai cadangan per instrument_stock_id
+     * (label batch steril TERAKHIR unit itu).
+     *
+     * @param  Collection<int,InstrumentStorage>  $rows
+     * @return array{pairs: array<string,string>, stocks: array<int,string>}
      */
-    private function inventoryRow(InstrumentStorage $s, int $days, array $prodItems = []): array
+    private function packagingBarcodeMap(Collection $rows): array
+    {
+        $stockIds = $rows->pluck('instrument_stock_id')->filter()->unique()->values()->all();
+        if (empty($stockIds)) {
+            return ['pairs' => [], 'stocks' => []];
+        }
+
+        $pairs = [];
+        $stocks = [];
+
+        SterilizationItem::whereIn('instrument_stock_id', $stockIds)
+            ->whereNotNull('packaging_barcode')
+            ->orderBy('id')
+            ->get(['sterilization_id', 'instrument_stock_id', 'packaging_barcode'])
+            // Urut id ASC → batch terbaru menimpa yang lama pada peta cadangan.
+            ->each(function ($it) use (&$pairs, &$stocks) {
+                $pairs[$it->sterilization_id.'|'.$it->instrument_stock_id] = $it->packaging_barcode;
+                $stocks[(int) $it->instrument_stock_id] = $it->packaging_barcode;
+            });
+
+        return ['pairs' => $pairs, 'stocks' => $stocks];
+    }
+
+    /**
+     * Satu baris inventaris + status kedaluwarsa. `$prodItems` = peta
+     * instrument_stock_id → production_item (sumber nama instrumen & kode batch),
+     * `$barcodes` = peta nomor label kemasan dari packagingBarcodeMap().
+     */
+    private function inventoryRow(InstrumentStorage $s, int $days, array $prodItems = [], array $barcodes = []): array
     {
         $prod = $prodItems[(int) $s->instrument_stock_id] ?? null;
+        $barcode = $barcodes['pairs'][$s->sterilization_id.'|'.$s->instrument_stock_id]
+            ?? $barcodes['stocks'][(int) $s->instrument_stock_id]
+            ?? null;
 
         $daysToExpiry = null;
         $alert = false;
@@ -549,8 +598,13 @@ class StorageController extends Controller
             'alert' => $alert,
             'expired' => $expired,
             'source' => $s->source ?? 'satuan',
-            'package_name' => $s->package_name,
-            // Kode batch produksi asal unit (PRD-...) — tercetak di bungkus steril.
+            // Nama paket ikut production_item (snapshot batch produksi); kolom pada
+            // baris gudang hanya cadangan bila unit belum pernah diproduksi.
+            'package_name' => $prod?->package_name ?? $s->package_name,
+            // Nomor label kemasan yang tercetak di bungkus sterilnya — satu label =
+            // satu bungkus, jadi seluruh unit satu set berbagi nomor yang sama.
+            'barcode_no' => $barcode,
+            // Kode batch produksi asal unit (PRD-...).
             'production_code' => $prod?->production?->code,
             // Nama & kode unit bersumber dari production_item (snapshot batch produksi);
             // relasi instrumen hanya cadangan bila unit belum pernah diproduksi.
