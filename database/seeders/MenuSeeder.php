@@ -173,7 +173,7 @@ class MenuSeeder extends Seeder
                     ['name' => 'Produksi CSSD',   'url' => '/cssd/produksi',        'icon' => 'factory',   'sort_order' => 1],
                     ['name' => 'Storage Steril',  'url' => '/cssd/storage-steril',  'icon' => 'warehouse', 'sort_order' => 2],
                     ['name' => 'Order Instrumen', 'url' => '/cssd/order/instrumen', 'sort_order' => 3],
-                    ['name' => 'Tracking Order',  'url' => '/cssd/monitoring',      'sort_order' => 4],
+                    ['name' => 'Tracking Order',  'url' => '/cssd/tracking-order',  'sort_order' => 4],
                     ['name' => 'Distribusi BMHP', 'url' => '/cssd/distribusi',      'sort_order' => 5],
                 ],
             ],
@@ -190,8 +190,9 @@ class MenuSeeder extends Seeder
             ],
         ];
 
-        // (Catatan) "Scan & Tracking" sudah dihapus; "Monitoring" /cssd/monitoring
-        // kini menjadi "Tracking Order" di dalam grup Transaksi.
+        // (Catatan) "Scan & Tracking" sudah dihapus; menu lama "Monitoring"
+        // (/cssd/monitoring) kini menjadi "Tracking Order" (/cssd/tracking-order)
+        // di dalam grup Transaksi.
 
         foreach ($cssdGroups as $group) {
             $parent = Menu::create([
