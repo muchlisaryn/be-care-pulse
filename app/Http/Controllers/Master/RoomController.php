@@ -11,10 +11,15 @@ class RoomController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        // Dipakai dua macam pemanggil: tabel master (paginasi normal) dan dropdown
+        // pilihan ruangan di halaman order/distribusi yang butuh daftar lengkap.
+        // Batas atas 500 supaya tetap aman kalau nilainya dikirim sembarangan.
+        $perPage = min((int) $request->input('per_page', 20) ?: 20, 500);
+
         $data = Room::when(
             $request->search,
             fn ($q, $s) => $q->where('name', 'like', "%{$s}%")->orWhere('code', 'like', "%{$s}%")
-        )->paginate(20);
+        )->paginate($perPage);
 
         return $this->success('Data ruangan berhasil diambil.', $data);
     }

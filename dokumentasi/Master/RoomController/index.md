@@ -11,6 +11,7 @@
 |-----------|------|----------|------------|
 | search | string | Tidak | Filter berdasarkan `name` atau `code` (like) |
 | page | integer | Tidak | Nomor halaman (default: 1) |
+| per_page | integer | Tidak | Jumlah data per halaman (default: 20, maksimum: 500). Dipakai dropdown pilihan ruangan yang butuh daftar lengkap |
 
 ## Response
 
