@@ -19,6 +19,19 @@ Setiap baris menyertakan `source` (`satuan`/`paket`) dan `package_name` (nama
 paket bila berasal dari paket, selain itu `null`) agar frontend bisa
 mengelompokkan tampilan **per paket**.
 
+Baris paket juga menyertakan `package_sets` — **jumlah SET** paket tersebut pada
+order, diambil dari `order_request_item.quantity` (bukan disimpulkan dari unit
+fisik). `qty` tetap jumlah unit fisik, jadi paket 2 set × 5 instrumen menghasilkan
+`package_sets: 2` dengan `qty` total 10. Untuk baris `satuan`, `package_sets`
+bernilai `null` dan jumlahnya dibaca dari `qty` (unit). Frontend memakai ini agar
+kartu order menampilkan paket dalam satuan **set** dan instrumen lepas dalam
+satuan **unit**.
+
+Tiap unit di array `units` menyertakan `barcode_no` — nomor label fisik bungkus
+steril terbaru dari `packaging_item` (label yang sudah di-void diabaikan; `null`
+bila unit belum pernah melewati tahap packaging). Dipakai frontend agar kolom
+pencarian bisa menemukan order dari hasil scan barcode bungkus.
+
 ## Request
 
 ### Headers
@@ -56,6 +69,7 @@ mengelompokkan tampilan **per paket**.
             "return_plan_date": "2026-06-12T00:00:00.000000Z",
             "source": "satuan",
             "package_name": null,
+            "package_sets": null,
             "instrument": { "id": 2, "code": "NRQU", "name": "tensi" },
             "qty": 2,
             "units": [
@@ -63,12 +77,14 @@ mengelompokkan tampilan **per paket**.
                 "instrument_stock_id": 9,
                 "code": "NRQU-001",
                 "status": "dipinjam",
+                "barcode_no": "PKG260727011",
                 "condition": { "id": 1, "name": "Baik" }
               },
               {
                 "instrument_stock_id": 10,
                 "code": "NRQU-002",
                 "status": "dipinjam",
+                "barcode_no": "PKG260727011",
                 "condition": { "id": 1, "name": "Baik" }
               }
             ]

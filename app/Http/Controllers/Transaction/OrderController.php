@@ -4,11 +4,14 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Events\OrderSubmitted;
 use App\Http\Controllers\Controller;
+use App\Models\Instrument;
+use App\Models\InstrumentCatalog;
 use App\Models\InstrumentStock;
 use App\Models\InstrumentStorage;
 use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\OrderItem;
+use App\Models\OrderRequestItem;
 use App\Models\OrderTransfer;
 use App\Models\OrderWashing;
 use App\Models\Packaging;
@@ -110,6 +113,12 @@ class OrderController extends Controller
 
         try {
             $order = DB::transaction(function () use ($validated) {
+                // Stok steril WAJIB dicek di server, bukan cuma di form. Pengecekan
+                // dilakukan di dalam transaksi + mengunci baris gudang, sehingga dua
+                // order yang dikirim bersamaan tidak bisa sama-sama lolos atas stok
+                // yang sama (race condition), termasuk bila halaman peminjam basi.
+                $this->assertSterileStockSufficient($validated['items']);
+
                 $order = Order::create([
                     'room_id' => $validated['room_id'],
                     // Penanggung jawab default = user yang login bila tidak dikirim eksplisit.
@@ -153,9 +162,223 @@ class OrderController extends Controller
             broadcast(new OrderSubmitted($order));
 
             return $this->success('Peminjaman berhasil dibuat.', $order, 201);
+        } catch (\RuntimeException $e) {
+            // Stok steril tidak cukup — validasi bisnis, bukan error server.
+            return $this->error($e->getMessage(), 422);
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Pastikan stok steril cukup untuk seluruh baris permintaan, SEBELUM order dibuat.
+     * Bila kurang → RuntimeException (ditangkap store() → 422) dan seluruh transaksi
+     * dibatalkan.
+     *
+     * Dua hal yang membuat pengecekan ini tahan race condition:
+     *
+     * 1. Baris gudang yang dihitung dikunci (`lockForUpdate`) di dalam transaksi
+     *    store(), jadi dua request bersamaan menghitung stok yang sama secara
+     *    berurutan, bukan paralel.
+     * 2. Order berstatus `diajukan` BELUM memotong stok apa pun (unit fisik baru
+     *    dialokasikan saat CSSD menerima order), sehingga stok yang sudah "dipesan"
+     *    order lain ikut dikurangkan. Tanpa ini, dua order berurutan tetap bisa
+     *    sama-sama lolos atas unit yang sama meski masing-masing sudah dikunci.
+     *
+     * @param  array<int,array<string,mixed>>  $items
+     *
+     * @throws \RuntimeException
+     */
+    private function assertSterileStockSufficient(array $items): void
+    {
+        // Kebutuhan per jenis: satuan dalam UNIT, paket dalam SET.
+        $needUnits = [];   // instrument_id => unit
+        $needSets = [];    // instrument_catalog_id => set
+        foreach ($items as $item) {
+            if (($item['type'] ?? null) === 'paket') {
+                $id = (int) ($item['instrument_catalog_id'] ?? 0);
+                $needSets[$id] = ($needSets[$id] ?? 0) + (int) $item['quantity'];
+            } else {
+                $id = (int) ($item['instrument_id'] ?? 0);
+                $needUnits[$id] = ($needUnits[$id] ?? 0) + (int) $item['quantity'];
+            }
+        }
+
+        $this->assertSatuanStock($needUnits);
+        $this->assertPaketStock($needSets);
+    }
+
+    /**
+     * Cek stok steril instrumen SATUAN. Sisa = unit steril siap-order dikurangi unit
+     * yang sudah dipesan order lain yang masih `diajukan`.
+     *
+     * @param  array<int,int>  $needUnits  instrument_id => unit dibutuhkan
+     *
+     * @throws \RuntimeException
+     */
+    private function assertSatuanStock(array $needUnits): void
+    {
+        if (empty($needUnits)) {
+            return;
+        }
+
+        $instrumentIds = array_keys($needUnits);
+        $available = $this->lockedSterileCounts($instrumentIds, 'satuan');
+        $pending = $this->pendingSatuanQty($instrumentIds);
+        $names = Instrument::whereIn('id', $instrumentIds)->pluck('name', 'id');
+
+        foreach ($needUnits as $instrumentId => $needed) {
+            $sisa = (int) ($available[$instrumentId]['__total'] ?? 0) - (int) ($pending[$instrumentId] ?? 0);
+            if ($needed > $sisa) {
+                $name = $names[$instrumentId] ?? "Instrumen #{$instrumentId}";
+                throw new \RuntimeException(
+                    "Stok steril \"{$name}\" tidak mencukupi: diminta {$needed} unit, tersisa {$sisa} unit."
+                    .' Stok mungkin baru saja diambil order lain — muat ulang halaman.'
+                );
+            }
+        }
+    }
+
+    /**
+     * Cek stok steril PAKET. Satu set hanya terpenuhi bila SELURUH isinya tersedia,
+     * jadi jumlah set = min(floor(stok_tiap_isi / jumlah_per_set)). Set yang sudah
+     * dipesan order lain yang masih `diajukan` ikut dikurangkan.
+     *
+     * @param  array<int,int>  $needSets  instrument_catalog_id => set dibutuhkan
+     *
+     * @throws \RuntimeException
+     */
+    private function assertPaketStock(array $needSets): void
+    {
+        if (empty($needSets)) {
+            return;
+        }
+
+        $catalogs = InstrumentCatalog::with('items')->whereIn('id', array_keys($needSets))->get()->keyBy('id');
+
+        // Kunci & hitung stok paket sekali untuk seluruh instrumen yang terlibat.
+        $instrumentIds = $catalogs->flatMap(fn ($c) => $c->items->pluck('instrument_id'))
+            ->filter()->unique()->values()->all();
+        $available = $this->lockedSterileCounts($instrumentIds, 'paket');
+        $pendingSets = $this->pendingPaketSets();
+
+        foreach ($needSets as $catalogId => $needed) {
+            $catalog = $catalogs->get($catalogId);
+            if (! $catalog || $catalog->items->isEmpty()) {
+                throw new \RuntimeException('Paket yang dipilih tidak punya rincian instrumen.');
+            }
+
+            // Stok paket dicocokkan lewat NAMA katalog — sama dengan kunci yang
+            // dipakai gudang (instrument_storages.package_name).
+            $byInstrument = $available[$catalog->name] ?? [];
+            $sets = $catalog->items->min(function ($item) use ($byInstrument) {
+                $stock = (int) ($byInstrument[$item->instrument_id] ?? 0);
+
+                return $item->quantity > 0 ? intdiv($stock, (int) $item->quantity) : 0;
+            });
+
+            $sisa = (int) $sets - (int) ($pendingSets[$catalog->name] ?? 0);
+            if ($needed > $sisa) {
+                throw new \RuntimeException(
+                    "Stok steril paket \"{$catalog->name}\" tidak mencukupi: diminta {$needed} set, tersisa {$sisa} set."
+                    .' Stok mungkin baru saja diambil order lain — muat ulang halaman.'
+                );
+            }
+        }
+    }
+
+    /**
+     * Hitung unit steril siap-order sambil MENGUNCI baris gudangnya. Kriteria sama
+     * persis dengan yang dipakai halaman master untuk menampilkan ketersediaan
+     * (InstrumentController & InstrumentCatalogController): berstatus `tersimpan`,
+     * belum kedaluwarsa, dan belum dialokasikan ke order ruangan manapun.
+     *
+     * @param  array<int,int>  $instrumentIds
+     * @param  string  $source  `satuan` / `paket`
+     * @return array<string|int,array<int|string,int>> untuk `satuan`: [instrument_id]['__total'];
+     *                                                 untuk `paket`: [package_name][instrument_id]
+     */
+    private function lockedSterileCounts(array $instrumentIds, string $source): array
+    {
+        if (empty($instrumentIds)) {
+            return [];
+        }
+
+        // Ambil baris (bukan agregat) supaya `lockForUpdate` benar-benar mengunci
+        // tiap baris gudang yang ikut dihitung, lalu dijumlahkan di PHP.
+        $rows = InstrumentStorage::withoutGlobalScopes()
+            ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
+            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
+            ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('instrument_stocks.deleted_by')
+            ->whereNull('order.deleted_by')
+            ->whereNull('order.room_id')
+            ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
+            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->where('instrument_storages.source', $source)
+            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
+                ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
+            ->lockForUpdate()
+            ->get([
+                'instrument_storages.id as storage_id',
+                'instrument_storages.package_name as package_name',
+                'instrument_stocks.instrument_id as instrument_id',
+            ]);
+
+        $counts = [];
+        foreach ($rows as $row) {
+            $instrumentId = (int) $row->instrument_id;
+            if ($source === 'paket') {
+                $key = $row->package_name ?? 'Paket';
+                $counts[$key][$instrumentId] = ($counts[$key][$instrumentId] ?? 0) + 1;
+            } else {
+                $counts[$instrumentId]['__total'] = ($counts[$instrumentId]['__total'] ?? 0) + 1;
+            }
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Unit satuan yang sudah dipesan order lain yang masih `diajukan` (stoknya belum
+     * dipotong karena unit fisik baru dialokasikan saat order diterima CSSD).
+     *
+     * @param  array<int,int>  $instrumentIds
+     * @return array<int,int> instrument_id => unit
+     */
+    private function pendingSatuanQty(array $instrumentIds): array
+    {
+        return OrderRequestItem::query()
+            ->where('order_request_item.type', 'satuan')
+            ->whereIn('order_request_item.instrument_id', $instrumentIds)
+            ->whereHas('order', fn ($q) => $q->where('status', Order::STATUS_DIAJUKAN))
+            ->selectRaw('order_request_item.instrument_id as instrument_id, sum(order_request_item.quantity) as qty')
+            ->groupBy('order_request_item.instrument_id')
+            ->pluck('qty', 'instrument_id')
+            ->map(fn ($q) => (int) $q)
+            ->all();
+    }
+
+    /**
+     * Set paket yang sudah dipesan order lain yang masih `diajukan`, di-key oleh nama
+     * katalog (kunci yang sama dengan stok gudang).
+     *
+     * @return array<string,int> nama paket => set
+     */
+    private function pendingPaketSets(): array
+    {
+        $sets = [];
+        $lines = OrderRequestItem::with('catalog')
+            ->where('type', 'paket')
+            ->whereHas('order', fn ($q) => $q->where('status', Order::STATUS_DIAJUKAN))
+            ->get();
+
+        foreach ($lines as $line) {
+            $name = $line->catalog?->name ?? $line->package_name ?? 'Paket';
+            $sets[$name] = ($sets[$name] ?? 0) + (int) $line->quantity;
+        }
+
+        return $sets;
     }
 
     public function show(Order $order): JsonResponse
@@ -288,7 +511,12 @@ class OrderController extends Controller
 
         foreach ($order->requestItems as $line) {
             if ($line->type === 'paket') {
-                $packageName = $line->package_name ?? $line->catalog?->name ?? 'Paket';
+                // Nama katalog (hidup) menang atas snapshot `package_name` di baris
+                // permintaan. Ketersediaan yang ditampilkan saat order dihitung dari
+                // nama katalog juga (InstrumentCatalogController@index), jadi keduanya
+                // harus memakai kunci yang sama — kalau tidak, yang dijanjikan form
+                // order bisa berbeda dari yang dicari saat distribusi.
+                $packageName = $line->catalog?->name ?? $line->package_name ?? 'Paket';
                 foreach (($line->catalog?->items ?? []) as $ci) {
                     $add('paket', $packageName, $ci->instrument, $line->quantity * $ci->quantity);
                 }
@@ -1080,7 +1308,8 @@ class OrderController extends Controller
      */
     private function packageLineOptions(Order $order, $line, array $reserved, array &$taken): array
     {
-        $packageName = $line->package_name ?? $line->catalog?->name ?? 'Paket';
+        // Kunci pencocokan stok = nama katalog (hidup), sejalan dgn buildRequirements().
+        $packageName = $line->catalog?->name ?? $line->package_name ?? 'Paket';
         $needed = (int) $line->quantity;   // jumlah SET yang diminta
 
         // Isi paket: instrumen apa saja & berapa unit per set.

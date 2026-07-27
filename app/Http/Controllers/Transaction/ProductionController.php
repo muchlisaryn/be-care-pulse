@@ -211,7 +211,13 @@ class ProductionController extends Controller
 
             if ($item['type'] === 'paket') {
                 $catalog = $catalogs->get($item['instrument_catalog_id'] ?? null);
-                $packageName = $item['package_name'] ?? $catalog?->name ?? 'Paket';
+                // Nama katalog SELALU menang atas `package_name` kiriman klien: nama
+                // inilah yang jadi kunci pencocokan stok steril paket di gudang
+                // (instrument_storages.package_name, dicocokkan persis). Teks bebas dari
+                // klien hanya dipakai bila katalognya tidak ketemu — kalau tidak, satu
+                // typo saja sudah cukup membuat stok masuk ember yang tak dikenali
+                // katalog manapun sehingga paketnya tak pernah bisa didistribusikan.
+                $packageName = $catalog?->name ?? $item['package_name'] ?? 'Paket';
 
                 // Tiap set dijabarkan SENDIRI-SENDIRI (bukan qty × isi katalog) supaya
                 // set ke-1 dan ke-2 jadi kelompok terpisah dengan unit fisik berbeda.

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Models\PackagingItem;
 use App\Models\Room;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -29,14 +30,33 @@ class MonitoringController extends Controller
                     ->with(['items' => function ($q) {
                         $q->where('is_returned', false)
                             ->with(['instrumentStock.instrument', 'instrumentStock.condition']);
-                    }]);
+                    }])
+                    // Baris permintaan asli — sumber JUMLAH SET yang dipinjam. `items`
+                    // hanya berisi unit fisik, jadi paket 2 set × 5 instrumen tampak
+                    // sebagai 10 dan jumlah setnya tidak bisa disimpulkan dari sana.
+                    ->with(['requestItems.catalog']);
             }])
             ->orderBy('name')
             ->paginate(20);
 
+        // Nomor label fisik tiap unit — supaya kolom pencarian halaman monitoring
+        // bisa menemukan order dari hasil scan barcode bungkus. Dikumpulkan sekali
+        // untuk seluruh halaman (bukan per ruangan) agar tidak N+1.
+        $barcodeByStock = $this->barcodeNoByStock(
+            collect($rooms->items())
+                ->flatMap(fn (Room $room) => $room->orders->flatMap(
+                    fn (Order $order) => $order->items->pluck('instrument_stock_id')
+                ))
+                ->filter()
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all()
+        );
+
         // Kelompokkan unit yang dipinjam per (order, katalog instrumen).
         // Order 5 unit katalog yang sama -> 1 baris qty 5; single item -> qty 1.
-        $rooms->getCollection()->transform(function (Room $room) {
+        $rooms->getCollection()->transform(function (Room $room) use ($barcodeByStock) {
             $groups = [];
             $unitCount = 0;
             $readyCount = 0; // unit pada order "digudang" (siap diantar, belum di ruangan)
@@ -49,6 +69,18 @@ class MonitoringController extends Controller
                     $readyCount += $order->items->count();
 
                     continue;
+                }
+
+                // Jumlah SET per nama paket pada order ini, diambil dari baris
+                // permintaan (quantity = jumlah set yang dipinjam). Nama katalog
+                // dipakai sebagai kunci — sama dengan kunci pencocokan stok paket.
+                $setsByPackage = [];
+                foreach ($order->requestItems as $line) {
+                    if ($line->type !== 'paket') {
+                        continue;
+                    }
+                    $name = $line->catalog?->name ?? $line->package_name ?? 'Paket';
+                    $setsByPackage[$name] = ($setsByPackage[$name] ?? 0) + (int) $line->quantity;
                 }
 
                 foreach ($order->items as $item) {
@@ -74,6 +106,11 @@ class MonitoringController extends Controller
                         'return_plan_date' => $order->return_plan_date,
                         'source' => $item->source,
                         'package_name' => $item->package_name,
+                        // Jumlah SET paket ini pada order (null utk baris satuan).
+                        // `qty` di bawah tetap jumlah unit fisik.
+                        'package_sets' => $item->source === 'paket'
+                            ? ($setsByPackage[$item->package_name ?? 'Paket'] ?? null)
+                            : null,
                         'instrument' => [
                             'id' => $instrument->id,
                             'code' => $instrument->code,
@@ -88,6 +125,9 @@ class MonitoringController extends Controller
                         'instrument_stock_id' => $stock->id,
                         'code' => $stock->code,
                         'status' => $stock->status,
+                        // Nomor label fisik bungkus steril unit ini (bisa null bila
+                        // unit belum pernah melewati tahap packaging).
+                        'barcode_no' => $barcodeByStock[(int) $stock->id] ?? null,
                         'condition' => $stock->condition
                             ? ['id' => $stock->condition->id, 'name' => $stock->condition->name]
                             : null,
@@ -112,6 +152,30 @@ class MonitoringController extends Controller
         });
 
         return $this->success('Data monitoring ruangan berhasil diambil.', $rooms);
+    }
+
+    /**
+     * Nomor label fisik (`packaging_item.barcode_no`) TERBARU tiap unit, di-key oleh
+     * instrument_stock_id. Label yang sudah di-void (`disabled`) diabaikan. Satu unit
+     * bisa punya beberapa label lintas siklus, jadi diambil yang paling akhir.
+     *
+     * @param  array<int,int>  $stockIds
+     * @return array<int,string>
+     */
+    private function barcodeNoByStock(array $stockIds): array
+    {
+        if (empty($stockIds)) {
+            return [];
+        }
+
+        return PackagingItem::whereIn('instrument_stock_id', $stockIds)
+            ->where('disabled', false)
+            ->whereNotNull('barcode_no')
+            ->orderByDesc('id')
+            ->get(['instrument_stock_id', 'barcode_no'])
+            ->groupBy('instrument_stock_id')
+            ->map(fn ($g) => $g->first()->barcode_no) // orderByDesc → first = terbaru
+            ->all();
     }
 
     /**
@@ -249,6 +313,18 @@ class MonitoringController extends Controller
         $rows = $orders->map(function (Order $order) use ($packedStatuses) {
             $lines = [];
 
+            // QTY papan monitor: PAKET dihitung per SET, SATUAN per unit fisik.
+            // Jumlah set tidak bisa disimpulkan dari unit fisik (1 set berisi 10
+            // instrumen tetap 1 set), jadi selalu dibaca dari baris permintaan.
+            $setsByPackage = [];
+            foreach ($order->requestItems as $line) {
+                if ($line->type !== 'paket') {
+                    continue;
+                }
+                $name = $line->catalog?->name ?? $line->package_name ?? 'Paket';
+                $setsByPackage[$name] = ($setsByPackage[$name] ?? 0) + (int) $line->quantity;
+            }
+
             if (in_array($order->status, $packedStatuses, true) && $order->items->isNotEmpty()) {
                 $paket = [];
                 $satuan = [];
@@ -264,8 +340,11 @@ class MonitoringController extends Controller
                         $satuan[$name] = ($satuan[$name] ?? 0) + 1;
                     }
                 }
-                foreach ($paket as $name => $qty) {
-                    $lines[] = ['jenis' => 'Paket', 'name' => $name, 'qty' => $qty];
+                // Unit fisik paket hanya dipakai untuk tahu paket mana yang masih
+                // aktif; angka yang dipajang tetap jumlah set. Bila baris permintaan
+                // tak ketemu (data lama), jatuh ke jumlah unit agar tidak tampil 0.
+                foreach ($paket as $name => $unitQty) {
+                    $lines[] = ['jenis' => 'Paket', 'name' => $name, 'qty' => $setsByPackage[$name] ?? $unitQty];
                 }
                 foreach ($satuan as $name => $qty) {
                     $lines[] = ['jenis' => 'Satuan', 'name' => $name, 'qty' => $qty];
@@ -273,7 +352,7 @@ class MonitoringController extends Controller
             } else {
                 foreach ($order->requestItems as $line) {
                     if ($line->type === 'paket') {
-                        $name = $line->package_name ?? $line->catalog?->name ?? 'Paket';
+                        $name = $line->catalog?->name ?? $line->package_name ?? 'Paket';
                         $lines[] = ['jenis' => 'Paket', 'name' => $name, 'qty' => (int) $line->quantity];
                     } else {
                         $lines[] = ['jenis' => 'Satuan', 'name' => $line->instrument?->name ?? '—', 'qty' => (int) $line->quantity];

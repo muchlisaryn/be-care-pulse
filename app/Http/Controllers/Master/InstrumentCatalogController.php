@@ -218,17 +218,26 @@ class InstrumentCatalogController extends Controller
     /**
      * Validasi payload katalog + rincian.
      * single → tepat 1 rincian, paket → minimal 1 rincian.
+     *
+     * `code` DAN `name` sama-sama wajib unik di antara katalog yang masih AKTIF
+     * (deleted_by IS NULL). Nama wajib unik karena stok steril paket di gudang
+     * dicocokkan lewat `instrument_storages.package_name` — pencocokan nama
+     * PERSIS, bukan id. Dua katalog aktif bernama sama akan membaca ember stok
+     * yang sama sehingga satu unit fisik terhitung dua kali dan paket yang
+     * barangnya tidak ada tetap bisa di-order.
      */
     private function validatePayload(Request $request, ?int $ignoreId = null): array
     {
         $codeUnique = Rule::unique('instrument_catalogs', 'code')->whereNull('deleted_by');
+        $nameUnique = Rule::unique('instrument_catalogs', 'name')->whereNull('deleted_by');
         if ($ignoreId) {
             $codeUnique->ignore($ignoreId);
+            $nameUnique->ignore($ignoreId);
         }
 
         $validated = $request->validate([
             'code' => ['required', 'string', 'max:50', $codeUnique],
-            'name' => 'required|string|max:255',
+            'name' => ['required', 'string', 'max:255', $nameUnique],
             'type' => 'required|in:single,paket',
             'description' => 'nullable|string',
             'items' => 'required|array|min:1',
@@ -236,6 +245,9 @@ class InstrumentCatalogController extends Controller
             'items.*.quantity' => 'required|integer|min:1',
             'items.*.standard_condition_id' => 'nullable|integer|exists:conditions,id',
             'items.*.note' => 'nullable|string|max:255',
+        ], [
+            'code.unique' => 'Kode katalog ini sudah dipakai katalog lain yang masih aktif.',
+            'name.unique' => 'Nama katalog ini sudah dipakai katalog lain yang masih aktif. Nama paket harus unik karena stok steril dicocokkan berdasarkan nama persis.',
         ]);
 
         if ($validated['type'] === 'single' && count($validated['items']) !== 1) {

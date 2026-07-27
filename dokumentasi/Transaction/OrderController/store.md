@@ -123,6 +123,34 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
 }
 ```
 
+### Error (422) — stok steril tidak mencukupi
+Stok divalidasi ulang di server sebelum order dibuat, **di dalam transaksi** dan dengan
+`lockForUpdate()` atas baris gudang yang dihitung, sehingga dua order yang dikirim
+bersamaan tidak bisa sama-sama lolos atas stok yang sama.
+
+Order berstatus `diajukan` belum memotong stok apa pun (unit fisik baru dialokasikan
+saat CSSD menerima order), jadi jumlah yang sudah dipesan order lain yang masih
+`diajukan` **ikut dikurangkan** dari stok tersedia. Tanpa ini dua order berurutan tetap
+bisa sama-sama lolos atas unit yang sama.
+
+Seluruh transaksi di-rollback — tidak ada baris `order` maupun `order_request_item`
+yang tertinggal.
+
+```json
+{
+  "status": false,
+  "message": "Stok steril paket \"GV SET\" tidak mencukupi: diminta 1 set, tersisa 0 set. Stok mungkin baru saja diambil order lain — muat ulang halaman."
+}
+```
+
+Baris `satuan` memakai satuan **unit**:
+```json
+{
+  "status": false,
+  "message": "Stok steril \"Gunting\" tidak mencukupi: diminta 2 unit, tersisa 0 unit. Stok mungkin baru saja diambil order lain — muat ulang halaman."
+}
+```
+
 ### Error (500)
 ```json
 {
