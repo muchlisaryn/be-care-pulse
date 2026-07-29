@@ -26,17 +26,28 @@ berkas asal, supaya bisa diperbaiki lalu diimport ulang.
 | rows[].row | integer | Tidak | Nomor baris di berkas asal — dipakai pada laporan `errors` |
 | rows[].name | string | Ya* | Nama user |
 | rows[].username | string | Ya* | Unik di antara user aktif |
-| rows[].email | string | Ya* | Unik di antara user aktif |
+| rows[].email | string | Tidak | Boleh kosong (`users.email` nullable). Bila diisi harus format email valid & unik di antara user aktif |
 | rows[].no_telephone | string | Tidak | Maks 20 karakter |
 | rows[].authority_id | integer | Tidak | Bila diisi, menang atas `authority` |
-| rows[].authority | string | Tidak | NAMA otoritas, dicocokkan **tanpa peka huruf besar/kecil** |
+| rows[].authority | string | Tidak | NAMA otoritas. Dicocokkan **tanpa peka huruf besar/kecil** dan spasi ganda dirapatkan — `administrator`, `Administrator`, dan `Perawat  CSSD` semuanya cocok |
 | rows[].password | string | Tidak | Bila kosong, dipakai `default_password` |
 | default_password | string | Ya | Min 8 karakter. Password untuk baris tanpa password sendiri — sengaja **tidak** ada default tersembunyi di server |
 
 *) wajib pada level baris: bila kosong, baris itu masuk `errors`, bukan menggagalkan request.
 
+`email` **opsional** — banyak petugas tidak punya email kantor & berkas import sering
+tidak memuat kolom itu. Baris tanpa email tetap dibuat dengan `email = NULL`. Indeks
+unique kolom ini dipertahankan; MySQL mengizinkan banyak baris NULL, jadi email yang
+diisi tetap tidak boleh kembar. Lihat migration `make_email_nullable_on_users_table`.
+
 Otoritas wajib terisi hasil akhirnya: `authority_id` langsung, atau `authority` yang
 namanya cocok dengan data otoritas. Bila keduanya gagal, barisnya ditolak.
+
+Berkas import dari frontend mengirim **nama**, bukan id. Alasannya keamanan: salah ketik
+nama tidak akan cocok dengan apa pun sehingga barisnya ditolak, sedangkan salah ketik id
+bisa mendarat di id sah yang lain dan diam-diam memberi user hak akses yang keliru —
+`Rule::in` tidak bisa membedakannya. `authority_id` tetap diterima untuk pemanggil lain
+yang memang sudah memegang id yang benar (mis. migrasi data antar sistem).
 
 ### Response
 
@@ -50,8 +61,8 @@ namanya cocok dengan data otoritas. Bila keduanya gagal, barisnya ditolak.
     "created": 2,
     "failed": 3,
     "errors": [
-      { "row": 4, "username": "imp_tiga", "message": "The name field is required." },
-      { "row": 5, "username": "imp_satu", "message": "The username has already been taken." },
+      { "row": 4, "username": "imp_tiga", "message": "Kolom name wajib diisi." },
+      { "row": 5, "username": "imp_satu", "message": "Username \"imp_satu\" sudah dipakai user lain." },
       { "row": 6, "username": "imp_lima", "message": "Kolom authority kosong atau nama otoritasnya tidak dikenal." }
     ]
   }

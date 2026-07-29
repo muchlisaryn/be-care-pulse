@@ -130,7 +130,7 @@ class UserController extends Controller
         // Otoritas dipetakan sekali per panggilan: berkas biasanya menulis NAMA
         // otoritas, bukan id. Pencocokan nama tidak peka huruf besar/kecil.
         $authorities = Authority::pluck('id', 'name')
-            ->mapWithKeys(fn ($id, $name) => [mb_strtolower(trim((string) $name)) => (int) $id])
+            ->mapWithKeys(fn ($id, $name) => [$this->normalizeName($name) => (int) $id])
             ->all();
         $authorityIds = array_flip($authorities);
 
@@ -150,7 +150,7 @@ class UserController extends Controller
             // authority_id langsung menang; bila kosong, cari lewat nama otoritas.
             $authorityId = $this->cleanCell($raw['authority_id'] ?? null);
             if ($authorityId === null) {
-                $name = mb_strtolower((string) $this->cleanCell($raw['authority'] ?? null));
+                $name = $this->normalizeName($this->cleanCell($raw['authority'] ?? null));
                 $authorityId = $authorities[$name] ?? null;
             }
             $data['authority_id'] = $authorityId === null ? null : (int) $authorityId;
@@ -158,7 +158,10 @@ class UserController extends Controller
             $validator = Validator::make($data, [
                 'name' => 'required|string|max:255',
                 'username' => ['required', 'string', 'max:100', Rule::unique('users', 'username')->whereNull('deleted_by')],
-                'email' => ['required', 'email', Rule::unique('users', 'email')->whereNull('deleted_by')],
+                // Email OPSIONAL saat import: banyak petugas tidak punya email kantor
+                // & berkasnya sering tidak memuat kolom itu. Bila diisi tetap harus
+                // valid dan unik (kolomnya nullable, jadi NULL boleh berulang).
+                'email' => ['nullable', 'email', Rule::unique('users', 'email')->whereNull('deleted_by')],
                 'no_telephone' => 'nullable|string|max:20',
                 'authority_id' => ['required', 'integer', Rule::in(array_keys($authorityIds))],
                 'password' => 'required|string|min:8',
@@ -168,6 +171,13 @@ class UserController extends Controller
                 // petugas tahu yang salah adalah isi kolom `authority`.
                 'authority_id.required' => 'Kolom authority kosong atau nama otoritasnya tidak dikenal.',
                 'authority_id.in' => 'Otoritas tidak ditemukan.',
+                // Pesan bawaan berbahasa Inggris & tidak menyebut nilainya. Petugas
+                // perlu tahu username mana yang bentrok agar bisa langsung diperbaiki
+                // di berkas baris gagal yang diunduh dari modal import.
+                'username.unique' => 'Username ":input" sudah dipakai user lain.',
+                'username.required' => 'Kolom username wajib diisi.',
+                'name.required' => 'Kolom name wajib diisi.',
+                'email.unique' => 'Email ":input" sudah dipakai user lain.',
             ], [
                 'authority_id' => 'otoritas',
             ]);
@@ -201,6 +211,17 @@ class UserController extends Controller
             'failed' => count($errors),
             'errors' => $errors,
         ]);
+    }
+
+    /**
+     * Bentuk baku nama otoritas untuk dicocokkan: huruf besar/kecil diabaikan dan
+     * spasi ganda dirapatkan. Petugas mengetik "administrator", "Administrator",
+     * maupun "Perawat  CSSD" — ketiganya harus mengarah ke otoritas yang sama.
+     * Harus setara dengan normalize() di halaman import frontend.
+     */
+    private function normalizeName($value): string
+    {
+        return mb_strtolower(trim(preg_replace('/\s+/u', ' ', (string) $value)));
     }
 
     /**
