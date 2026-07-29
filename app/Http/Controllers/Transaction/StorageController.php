@@ -160,12 +160,15 @@ class StorageController extends Controller
      * `tersimpan`: yang ditampilkan hanya unit yang fisiknya benar-benar ada di rak,
      * yaitu yang kondisinya `tersedia`. Barisnya tetap ada di database (tidak dihapus).
      *
-     * Hanya baris ber-`order_id` TERISI yang ditampilkan. Baris gudang lahir dengan
-     * `order_id = null` (stok bebas hasil pipeline produksi); begitu order diterima,
-     * `OrderController@acceptDistribution` memindahkan kepemilikan baris itu ke order
-     * (order_id terisi) sebagai reservasi dan statusnya tetap `tersimpan` sampai
-     * benar-benar didistribusikan. Daftar ini menampilkan baris yang sudah terikat
-     * order tersebut.
+     * ?allocation= menyaring berdasarkan kepemilikan baris gudang. Baris gudang lahir
+     * dengan `order_id` NULL (stok bebas hasil pipeline produksi); begitu order
+     * diterima, `OrderController@acceptDistribution` memindahkan kepemilikan baris itu
+     * ke order sebagai reservasi — statusnya tetap `tersimpan` sampai benar-benar
+     * didistribusikan.
+     * - `bebas`         → `order_id` NULL, yaitu stok pool produksi yang belum
+     *   direservasi order manapun (kandidat alokasi FEFO order berikutnya).
+     * - `dialokasikan`  → `order_id` terisi, sudah dipesan untuk sebuah order.
+     * Tanpa parameter ini seluruh baris ditampilkan seperti sebelumnya.
      */
     public function inventory(Request $request): JsonResponse
     {
@@ -178,11 +181,12 @@ class StorageController extends Controller
             'sterilization',
         ])
             ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
-            ->whereNotNull('order_id')
             ->whereHas(
                 'instrumentStock',
                 fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
             )
+            ->when($request->allocation === 'bebas', fn ($q) => $q->whereNull('order_id'))
+            ->when($request->allocation === 'dialokasikan', fn ($q) => $q->whereNotNull('order_id'))
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('rack_code', 'like', "%{$s}%")
