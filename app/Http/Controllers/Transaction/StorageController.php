@@ -155,10 +155,12 @@ class StorageController extends Controller
      * status kedaluwarsa (alert merah bila ≤ ambang hari atau sudah lewat).
      * ?days= ambang early-warning (default 7).
      *
-     * Unit yang sudah keluar gudang (didistribusikan → `dipinjam`, atau sedang
-     * diproses ulang → `sterilisasi`) TIDAK ditampilkan meski baris gudangnya masih
-     * `tersimpan`: yang ditampilkan hanya unit yang fisiknya benar-benar ada di rak,
-     * yaitu yang kondisinya `tersedia`. Barisnya tetap ada di database (tidak dihapus).
+     * SATU-SATUNYA penyaring baris adalah kolom `instrument_storages.order_id` lewat
+     * ?allocation= — status baris gudang (`tersimpan`/`keluar`) dan kondisi unitnya
+     * (`tersedia`/`dipinjam`/`sterilisasi`) TIDAK ikut menyaring. Jadi unit yang sudah
+     * didistribusikan atau sedang diproses ulang tetap tampil selama `order_id`-nya
+     * sesuai; halaman ini memang menampilkan riwayat kepemilikan rak, bukan hanya isi
+     * rak saat ini.
      *
      * ?allocation= menyaring berdasarkan kepemilikan baris gudang. Baris gudang lahir
      * dengan `order_id` NULL (stok bebas hasil pipeline produksi); begitu order
@@ -180,11 +182,6 @@ class StorageController extends Controller
             'order',
             'sterilization',
         ])
-            ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
-            ->whereHas(
-                'instrumentStock',
-                fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
-            )
             ->when($request->allocation === 'bebas', fn ($q) => $q->whereNull('order_id'))
             ->when($request->allocation === 'dialokasikan', fn ($q) => $q->whereNotNull('order_id'))
             ->when(

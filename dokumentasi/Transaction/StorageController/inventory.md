@@ -10,11 +10,11 @@ status kedaluwarsa. **Early-warning**: `alert = true` (merah) bila masa berlaku
 steril ≤ ambang hari atau sudah lewat. Diurutkan dari yang paling cepat
 kedaluwarsa.
 
-**Filter isi rak:** hanya baris gudang berstatus `tersimpan` yang unitnya masih
-berkondisi `tersedia`. Unit yang sudah keluar gudang (sudah didistribusikan →
-`dipinjam`, atau sedang diproses ulang → `sterilisasi`) tidak ikut ditampilkan meski
-baris gudangnya masih `tersimpan`. Baris tersebut tetap tersimpan di database — hanya
-disembunyikan dari daftar isi rak.
+**Filter baris:** satu-satunya penyaring adalah kolom `instrument_storages.order_id`
+lewat parameter `allocation`. Status baris gudang (`tersimpan` / `keluar`) dan kondisi
+unitnya (`tersedia` / `dipinjam` / `sterilisasi`) **tidak** ikut menyaring — unit yang
+sudah didistribusikan atau sedang diproses ulang tetap tampil selama `order_id`-nya
+sesuai. Halaman ini menampilkan kepemilikan baris rak, bukan hanya isi rak saat ini.
 
 **Sumber nama instrumen:** `unit.code`, `unit.instrument`, `source`, dan `package_name`
 diambil dari tabel `production_item` (snapshot batch produksi unit tersebut) lewat FK
