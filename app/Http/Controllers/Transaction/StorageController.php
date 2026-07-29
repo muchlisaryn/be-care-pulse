@@ -155,22 +155,15 @@ class StorageController extends Controller
      * status kedaluwarsa (alert merah bila ≤ ambang hari atau sudah lewat).
      * ?days= ambang early-warning (default 7).
      *
-     * SATU-SATUNYA penyaring baris adalah kolom `instrument_storages.order_id` lewat
-     * ?allocation= — status baris gudang (`tersimpan`/`keluar`) dan kondisi unitnya
-     * (`tersedia`/`dipinjam`/`sterilisasi`) TIDAK ikut menyaring. Jadi unit yang sudah
-     * didistribusikan atau sedang diproses ulang tetap tampil selama `order_id`-nya
-     * sesuai; halaman ini memang menampilkan riwayat kepemilikan rak, bukan hanya isi
-     * rak saat ini.
+     * SATU-SATUNYA penyaring baris adalah `instrument_storages.order_id` yang harus
+     * NULL — yaitu stok steril pool produksi yang belum direservasi order manapun.
+     * Begitu order diterima, `OrderController@acceptDistribution` memindahkan
+     * kepemilikan baris gudang ke order tersebut (order_id terisi) dan barisnya keluar
+     * dari daftar ini.
      *
-     * ?allocation= menyaring berdasarkan kepemilikan baris gudang. Baris gudang lahir
-     * dengan `order_id` NULL (stok bebas hasil pipeline produksi); begitu order
-     * diterima, `OrderController@acceptDistribution` memindahkan kepemilikan baris itu
-     * ke order sebagai reservasi — statusnya tetap `tersimpan` sampai benar-benar
-     * didistribusikan.
-     * - `bebas`         → `order_id` NULL, yaitu stok pool produksi yang belum
-     *   direservasi order manapun (kandidat alokasi FEFO order berikutnya).
-     * - `dialokasikan`  → `order_id` terisi, sudah dipesan untuk sebuah order.
-     * Tanpa parameter ini seluruh baris ditampilkan seperti sebelumnya.
+     * Status baris gudang (`tersimpan`/`keluar`) dan kondisi unitnya (`tersedia`/
+     * `dipinjam`/`sterilisasi`) SENGAJA tidak ikut menyaring — jangan tambahkan
+     * `where('status', ...)` di sini.
      */
     public function inventory(Request $request): JsonResponse
     {
@@ -182,8 +175,7 @@ class StorageController extends Controller
             'order',
             'sterilization',
         ])
-            ->when($request->allocation === 'bebas', fn ($q) => $q->whereNull('order_id'))
-            ->when($request->allocation === 'dialokasikan', fn ($q) => $q->whereNotNull('order_id'))
+            ->whereNull('order_id')
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('rack_code', 'like', "%{$s}%")

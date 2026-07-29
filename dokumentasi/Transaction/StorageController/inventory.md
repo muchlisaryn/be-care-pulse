@@ -10,11 +10,15 @@ status kedaluwarsa. **Early-warning**: `alert = true` (merah) bila masa berlaku
 steril ≤ ambang hari atau sudah lewat. Diurutkan dari yang paling cepat
 kedaluwarsa.
 
-**Filter baris:** satu-satunya penyaring adalah kolom `instrument_storages.order_id`
-lewat parameter `allocation`. Status baris gudang (`tersimpan` / `keluar`) dan kondisi
-unitnya (`tersedia` / `dipinjam` / `sterilisasi`) **tidak** ikut menyaring — unit yang
-sudah didistribusikan atau sedang diproses ulang tetap tampil selama `order_id`-nya
-sesuai. Halaman ini menampilkan kepemilikan baris rak, bukan hanya isi rak saat ini.
+**Filter baris:** satu-satunya penyaring adalah `instrument_storages.order_id` yang
+harus **NULL** — stok steril pool produksi yang belum direservasi order manapun.
+Begitu order diterima, `OrderController@acceptDistribution` memindahkan kepemilikan
+baris gudang ke order tersebut (`order_id` terisi) dan barisnya keluar dari daftar ini.
+
+Status baris gudang (`tersimpan` / `keluar`) dan kondisi unitnya (`tersedia` /
+`dipinjam` / `sterilisasi`) **tidak** ikut menyaring. Konsekuensinya field `order`
+pada setiap baris selalu `null`, dan filter `search` per kode order tidak pernah
+menghasilkan baris.
 
 **Sumber nama instrumen:** `unit.code`, `unit.instrument`, `source`, dan `package_name`
 diambil dari tabel `production_item` (snapshot batch produksi unit tersebut) lewat FK
@@ -29,17 +33,15 @@ gudang tersebut. Satu label = satu bungkus, jadi seluruh unit dalam satu set
 berbagi nomor yang sama. Baris gudang lama tanpa `sterilization_id` memakai label
 batch steril TERAKHIR unit itu.
 
-**Reservasi order:** `order` berisi order yang sudah memesan baris gudang tersebut,
-atau `null` bila unitnya masih pool produksi (`instrument_storages.order_id` NULL) —
-yaitu stok steril yang masih bebas dialokasikan ke order berikutnya. Filter
-`allocation` menyaring berdasarkan kolom ini.
+**Reservasi order:** karena daftar ini dikunci ke `instrument_storages.order_id` NULL,
+field `order` pada setiap baris **selalu `null`** — unitnya masih pool produksi yang
+bebas dialokasikan ke order berikutnya.
 
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | search | string | Tidak | Cari kode unit, nama instrumen (production_item), nomor label kemasan, rak, atau order |
 | days | integer | Tidak | Ambang early-warning (default 7) |
-| allocation | string | Tidak | `bebas` = hanya baris dengan `order_id` NULL (belum dialokasikan); `dialokasikan` = hanya yang `order_id`-nya terisi. Tanpa parameter ini semua baris ditampilkan |
 
 ### Response — Success (200)
 ```json
@@ -62,7 +64,7 @@ yaitu stok steril yang masih bebas dialokasikan ke order berikutnya. Filter
         "barcode_no": "PKG202606280011",
         "production_code": "PRD-014",
         "unit": { "id": 87, "code": "GNE-002", "instrument": "Gunting Epis" },
-        "order": { "id": 10, "code": "ORD-010", "code_transaction": "INV20260628001" }
+        "order": null
       }
     ],
     "per_page": 20,
