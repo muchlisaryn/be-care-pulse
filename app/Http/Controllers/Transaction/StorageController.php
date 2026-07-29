@@ -159,6 +159,11 @@ class StorageController extends Controller
      * diproses ulang → `sterilisasi`) TIDAK ditampilkan meski baris gudangnya masih
      * `tersimpan`: yang ditampilkan hanya unit yang fisiknya benar-benar ada di rak,
      * yaitu yang kondisinya `tersedia`. Barisnya tetap ada di database (tidak dihapus).
+     *
+     * Hanya baris ber-`order_id` NULL yang ditampilkan — yaitu stok steril yang masih
+     * BEBAS. Begitu order diterima, `acceptDistribution` memindahkan kepemilikan baris
+     * gudang ke order tersebut (order_id terisi) sebagai reservasi; unit itu sudah
+     * dialokasikan keluar sehingga tidak lagi dihitung sebagai isi inventaris.
      */
     public function inventory(Request $request): JsonResponse
     {
@@ -171,6 +176,7 @@ class StorageController extends Controller
             'sterilization',
         ])
             ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->whereNull('order_id')
             ->whereHas(
                 'instrumentStock',
                 fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
