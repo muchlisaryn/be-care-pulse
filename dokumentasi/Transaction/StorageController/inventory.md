@@ -29,11 +29,17 @@ gudang tersebut. Satu label = satu bungkus, jadi seluruh unit dalam satu set
 berbagi nomor yang sama. Baris gudang lama tanpa `sterilization_id` memakai label
 batch steril TERAKHIR unit itu.
 
+**Reservasi order:** `order` berisi order yang sudah memesan baris gudang tersebut,
+atau `null` bila unitnya masih pool produksi (`instrument_storages.order_id` NULL) —
+yaitu stok steril yang masih bebas dialokasikan ke order berikutnya. Filter
+`allocation` menyaring berdasarkan kolom ini.
+
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | search | string | Tidak | Cari kode unit, nama instrumen (production_item), nomor label kemasan, rak, atau order |
 | days | integer | Tidak | Ambang early-warning (default 7) |
+| allocation | string | Tidak | `bebas` = hanya baris dengan `order_id` NULL (belum dialokasikan); `dialokasikan` = hanya yang `order_id`-nya terisi. Tanpa parameter ini semua baris ditampilkan |
 
 ### Response — Success (200)
 ```json

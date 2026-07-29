@@ -159,6 +159,12 @@ class StorageController extends Controller
      * diproses ulang → `sterilisasi`) TIDAK ditampilkan meski baris gudangnya masih
      * `tersimpan`: yang ditampilkan hanya unit yang fisiknya benar-benar ada di rak,
      * yaitu yang kondisinya `tersedia`. Barisnya tetap ada di database (tidak dihapus).
+     *
+     * ?allocation= menyaring berdasarkan kepemilikan baris gudang:
+     * - `bebas`         → `order_id` NULL, yaitu stok pool produksi yang belum
+     *   direservasi order manapun (kandidat alokasi FEFO order berikutnya).
+     * - `dialokasikan`  → `order_id` terisi, sudah dipesan untuk sebuah order.
+     * Tanpa parameter ini seluruh baris ditampilkan seperti sebelumnya.
      */
     public function inventory(Request $request): JsonResponse
     {
@@ -175,6 +181,8 @@ class StorageController extends Controller
                 'instrumentStock',
                 fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
             )
+            ->when($request->allocation === 'bebas', fn ($q) => $q->whereNull('order_id'))
+            ->when($request->allocation === 'dialokasikan', fn ($q) => $q->whereNotNull('order_id'))
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('rack_code', 'like', "%{$s}%")
