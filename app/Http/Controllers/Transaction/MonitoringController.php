@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Transaction;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\PackagingItem;
+use App\Models\ProductionItem;
 use App\Models\Room;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -310,12 +311,20 @@ class MonitoringController extends Controller
             ->sortBy(fn (Order $o) => sprintf('%02d-%s-%06d', $stageOrder[$o->status] ?? 99, (string) $o->order_date, $o->id))
             ->values();
 
-        $rows = $orders->map(function (Order $order) use ($packedStatuses) {
+        // Penanda SET tiap unit paket: satu set = satu `package_no` dalam satu batch
+        // produksi (semua unit isi set berbagi nomor yang sama). Dipetakan sekali
+        // untuk seluruh papan agar tidak query per order.
+        $setKeyByStock = $this->setKeyByStock(
+            $orders->flatMap(fn (Order $o) => $o->items->where('source', 'paket')->pluck('instrument_stock_id'))
+                ->filter()->unique()->values()->all()
+        );
+
+        $rows = $orders->map(function (Order $order) use ($packedStatuses, $setKeyByStock) {
             $lines = [];
 
             // QTY papan monitor: PAKET dihitung per SET, SATUAN per unit fisik.
-            // Jumlah set tidak bisa disimpulkan dari unit fisik (1 set berisi 10
-            // instrumen tetap 1 set), jadi selalu dibaca dari baris permintaan.
+            // Baris permintaan dipakai sebagai cadangan bila set tidak bisa
+            // disimpulkan dari unit (lihat pemakaian $setKeyByStock di bawah).
             $setsByPackage = [];
             foreach ($order->requestItems as $line) {
                 if ($line->type !== 'paket') {
@@ -327,6 +336,7 @@ class MonitoringController extends Controller
 
             if (in_array($order->status, $packedStatuses, true) && $order->items->isNotEmpty()) {
                 $paket = [];
+                $paketSetKeys = [];
                 $satuan = [];
                 foreach ($order->items as $it) {
                     if ($it->is_returned) {
@@ -335,16 +345,29 @@ class MonitoringController extends Controller
                     if ($it->source === 'paket') {
                         $name = $it->package_name ?? 'Paket';
                         $paket[$name] = ($paket[$name] ?? 0) + 1;
+                        // Kumpulkan penanda set unit ini; jumlah set = penanda unik.
+                        if ($key = $setKeyByStock[(int) $it->instrument_stock_id] ?? null) {
+                            $paketSetKeys[$name][$key] = true;
+                        }
                     } else {
                         $name = $it->instrumentStock?->instrument?->name ?? '—';
                         $satuan[$name] = ($satuan[$name] ?? 0) + 1;
                     }
                 }
-                // Unit fisik paket hanya dipakai untuk tahu paket mana yang masih
-                // aktif; angka yang dipajang tetap jumlah set. Bila baris permintaan
-                // tak ketemu (data lama), jatuh ke jumlah unit agar tidak tampil 0.
+                // Angka paket SELALU jumlah set, tidak pernah jumlah unit:
+                //  1. dari penanda set unit yang benar-benar masih dipinjam — ini yang
+                //     tetap benar untuk order pinjam-alih (tidak punya baris permintaan)
+                //     maupun pengembalian sebagian;
+                //  2. cadangan: jumlah yang diminta di baris permintaan;
+                //  3. jalan terakhir: 1 set, supaya tidak pernah memajang jumlah unit
+                //     dengan satuan "set".
                 foreach ($paket as $name => $unitQty) {
-                    $lines[] = ['jenis' => 'Paket', 'name' => $name, 'qty' => $setsByPackage[$name] ?? $unitQty];
+                    $sets = count($paketSetKeys[$name] ?? []);
+                    $lines[] = [
+                        'jenis' => 'Paket',
+                        'name' => $name,
+                        'qty' => $sets > 0 ? $sets : ($setsByPackage[$name] ?? 1),
+                    ];
                 }
                 foreach ($satuan as $name => $qty) {
                     $lines[] = ['jenis' => 'Satuan', 'name' => $name, 'qty' => $qty];
@@ -374,5 +397,37 @@ class MonitoringController extends Controller
         })->values();
 
         return $this->success('Data papan monitoring berhasil diambil.', $rows);
+    }
+
+    /**
+     * Peta `instrument_stock_id` → penanda SET unit itu, dipakai papan monitor untuk
+     * menghitung jumlah set (bukan jumlah unit) pada baris paket.
+     *
+     * Penanda = `production_id|package_no` dari snapshot production_item: seluruh
+     * unit dalam satu set berbagi `package_no` yang sama, dan `production_id` ikut
+     * dibawa karena nomor itu hanya unik DI DALAM satu batch produksi.
+     *
+     * Unit tanpa `package_no` (data lama sebelum kolom itu ada) sengaja tidak
+     * dimasukkan — pemanggil jatuh ke baris permintaan, bukan menghitung unit.
+     *
+     * @param  array<int,int>  $stockIds
+     * @return array<int,string>
+     */
+    private function setKeyByStock(array $stockIds): array
+    {
+        if (empty($stockIds)) {
+            return [];
+        }
+
+        return ProductionItem::whereIn('instrument_stock_id', $stockIds)
+            ->whereNotNull('package_no')
+            ->orderBy('id')
+            ->get(['instrument_stock_id', 'production_id', 'package_no'])
+            // Urut id ASC → batch terbaru menimpa yang lama, sama seperti pembacaan
+            // nama/kode unit di tempat lain.
+            ->mapWithKeys(fn ($pi) => [
+                (int) $pi->instrument_stock_id => $pi->production_id.'|'.$pi->package_no,
+            ])
+            ->all();
     }
 }

@@ -52,6 +52,7 @@ sterilizations ||--o{ sterilization_items : "unit"
 instrument_stocks ||--o{ sterilization_items : ""
 order ||--o{ instrument_storages : "penyimpanan"
 sterilizations ||--o{ instrument_storages : ""
+production_item ||--o{ instrument_storages : "asal batch"
 instrument_stocks ||--o{ instrument_storages : ""
 
 %% ========== CSSD — HANDOVER (PINJAM-ALIH) ==========
@@ -301,7 +302,8 @@ instrument_storages {
     bigint id PK
     bigint order_id FK
     bigint sterilization_id FK
-    bigint instrument_stock_id FK
+    bigint production_item_id FK "sumber name, source & package_name"
+    bigint instrument_stock_id FK "unit fisik (turunan production_item)"
     string rack_code
     date expiry_date
     string status "tersimpan|keluar"
@@ -436,7 +438,8 @@ varian_clinical_pathway {
 | sterilizations         | sterilization_items | sterilization_id                   | cascade                                                     |
 | instrument_stocks      | sterilization_items | instrument_stock_id                | restrict, **unique(sterilization_id, instrument_stock_id)** |
 | order / sterilizations | instrument_storages | order_id / sterilization_id        | null                                                        |
-| instrument_stocks      | instrument_storages | instrument_stock_id                | restrict                                                    |
+| production_item        | instrument_storages | production_item_id                 | restrict — sumber `name`, `source`, `package_name`          |
+| instrument_stocks      | instrument_storages | instrument_stock_id                | restrict — unit fisik, turunan `production_item`            |
 | order                  | order_events        | order_id                           | cascade (append-only)                                       |
 | rooms                  | order_events        | room_id                            | null                                                        |
 

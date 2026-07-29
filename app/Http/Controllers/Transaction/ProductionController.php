@@ -7,7 +7,9 @@ use App\Models\Instrument;
 use App\Models\InstrumentCatalog;
 use App\Models\InstrumentStock;
 use App\Models\InstrumentStorage;
+use App\Models\OrderItem;
 use App\Models\OrderWashing;
+use App\Models\PackagingItem;
 use App\Models\PipelineEvent;
 use App\Models\Production;
 use Illuminate\Http\JsonResponse;
@@ -29,8 +31,12 @@ class ProductionController extends Controller
 {
     /**
      * Rincian instrumen beberapa batch produksi (lazy-load dari tombol Detail di
-     * timeline). Dikembalikan sebagai baris tabel: tanggal | nomor produksi | nama
-     * | jumlah. Nama & pengelompokan dari SNAPSHOT production_item.
+     * timeline). Dikembalikan sebagai baris tabel: tanggal | nomor label | nomor
+     * produksi | nama | jumlah. Nama & pengelompokan dari SNAPSHOT production_item.
+     *
+     * `?order_id=` (opsional) menyaring ke unit yang dipinjam order tsb saja —
+     * dipakai modal Pengembalian Instrumen supaya isi batch milik order lain tidak
+     * ikut tampil. Lihat OrderItem::stockIdsOfOrder().
      */
     public function detail(Request $request): JsonResponse
     {
@@ -39,21 +45,34 @@ class ProductionController extends Controller
             return $this->success('Rincian produksi.', ['items' => []]);
         }
 
+        $onlyStockIds = OrderItem::stockIdsOfOrder($request->input('order_id'));
+        // Nomor label kemasan tiap unit pada siklus ini (label lahir di tahap
+        // packaging; di sini dipakai agar tiap tahap bisa dicocokkan per label).
+        $barcodeByStock = PackagingItem::barcodeMapByProductionCodes($codes);
+
         $items = Production::with('items.instrumentStock.instrument')
             ->whereIn('code', $codes)
             ->get()
             ->sortBy(fn ($p) => optional($p->created_at)->timestamp ?? 0)
             ->flatMap(fn ($p) => $p->items
-                ->groupBy(fn ($pi) => $pi->source === 'paket'
+                ->when(
+                    $onlyStockIds !== null,
+                    fn ($items) => $items->whereIn('instrument_stock_id', $onlyStockIds)
+                )
+                // Dipecah per NOMOR LABEL juga: satu baris = satu bungkus, supaya
+                // barisnya bisa ditelusuri balik ke label fisiknya.
+                ->groupBy(fn ($pi) => ($pi->source === 'paket'
                     ? 'paket|'.($pi->package_name ?? 'Paket')
                     : 'satuan|'.($pi->name ?? 'Instrumen'))
-                ->map(function ($g) use ($p) {
+                    .'|'.($barcodeByStock[$pi->instrument_stock_id] ?? ''))
+                ->map(function ($g) use ($p, $barcodeByStock) {
                     $first = $g->first();
                     $isPaket = $first->source === 'paket';
 
                     return [
                         'tanggal' => $p->created_at,
                         'code' => $p->code,
+                        'barcode_no' => $barcodeByStock[$first->instrument_stock_id] ?? null,
                         'name' => $isPaket ? ($first->package_name ?? 'Paket') : ($first->name ?? 'Instrumen'),
                         'type' => $isPaket ? 'paket' : 'satuan',
                         'qty' => $isPaket ? $g->pluck('package_no')->unique()->count() : $g->count(),
@@ -213,7 +232,7 @@ class ProductionController extends Controller
                 $catalog = $catalogs->get($item['instrument_catalog_id'] ?? null);
                 // Nama katalog SELALU menang atas `package_name` kiriman klien: nama
                 // inilah yang jadi kunci pencocokan stok steril paket di gudang
-                // (instrument_storages.package_name, dicocokkan persis). Teks bebas dari
+                // (production_item.package_name, dicocokkan persis). Teks bebas dari
                 // klien hanya dipakai bila katalognya tidak ketemu — kalau tidak, satu
                 // typo saja sudah cukup membuat stok masuk ember yang tak dikenali
                 // katalog manapun sehingga paketnya tak pernah bisa didistribusikan.

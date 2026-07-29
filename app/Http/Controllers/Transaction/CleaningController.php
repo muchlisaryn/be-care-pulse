@@ -6,8 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Models\InstrumentStock;
 use App\Models\Order;
 use App\Models\OrderEvent;
+use App\Models\OrderItem;
 use App\Models\OrderWashing;
 use App\Models\Packaging;
+use App\Models\PackagingItem;
 use App\Models\PipelineEvent;
 use App\Models\Production;
 use App\Models\WasherMachine;
@@ -38,6 +40,10 @@ class CleaningController extends Controller
             return $this->success('Rincian cleaning.', ['items' => []]);
         }
 
+        $onlyStockIds = OrderItem::stockIdsOfOrder($request->input('order_id'));
+        // Nomor label kemasan tiap unit pada siklus cleaning ini.
+        $barcodeByStock = PackagingItem::barcodeMapByWashingCodes($codes);
+
         $washings = OrderWashing::whereIn('code', $codes)->get();
         $productions = Production::with('items.instrumentStock.instrument')
             ->whereIn('code', $washings->pluck('production_code')->filter()->unique())
@@ -45,7 +51,7 @@ class CleaningController extends Controller
 
         $items = $washings
             ->sortBy(fn ($w) => optional($w->completed_at ?? $w->created_at)->timestamp ?? 0)
-            ->flatMap(function ($w) use ($productions) {
+            ->flatMap(function ($w) use ($productions, $onlyStockIds, $barcodeByStock) {
                 $p = $productions->get($w->production_code);
                 if (! $p) {
                     return collect();
@@ -55,16 +61,23 @@ class CleaningController extends Controller
                 $petugas = $w->completed_by ?? $w->started_by;
 
                 return $p->items
-                    ->groupBy(fn ($pi) => $pi->source === 'paket'
+                    ->when(
+                        $onlyStockIds !== null,
+                        fn ($items) => $items->whereIn('instrument_stock_id', $onlyStockIds)
+                    )
+                    // Dipecah per NOMOR LABEL juga: satu baris = satu bungkus.
+                    ->groupBy(fn ($pi) => ($pi->source === 'paket'
                         ? 'paket|'.($pi->package_name ?? 'Paket')
                         : 'satuan|'.($pi->name ?? 'Instrumen'))
-                    ->map(function ($g) use ($w, $at, $petugas) {
+                        .'|'.($barcodeByStock[$pi->instrument_stock_id] ?? ''))
+                    ->map(function ($g) use ($w, $at, $petugas, $barcodeByStock) {
                         $first = $g->first();
                         $isPaket = $first->source === 'paket';
 
                         return [
                             'tanggal' => $at,
                             'code' => $w->code,
+                            'barcode_no' => $barcodeByStock[$first->instrument_stock_id] ?? null,
                             'name' => $isPaket ? ($first->package_name ?? 'Paket') : ($first->name ?? 'Instrumen'),
                             'type' => $isPaket ? 'paket' : 'satuan',
                             'qty' => $isPaket ? $g->pluck('package_no')->unique()->count() : $g->count(),

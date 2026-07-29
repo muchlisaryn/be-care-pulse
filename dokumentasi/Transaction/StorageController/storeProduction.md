@@ -15,6 +15,11 @@ Menyimpan unit-unit sebuah batch sterilisasi **pipeline produksi** (STR selesai,
 tanpa order) ke lokasi rak gudang steril. Membuat baris `instrument_storages`
 dengan `sterilization_id` (tanpa `order_id`), `expiry_date` disalin dari batch.
 
+Baris gudang menyimpan `production_item_id` (FK ke baris batch produksi unit tsb —
+sumber `name`, `source` & `package_name`) sekaligus `instrument_stock_id` (unit
+fisik, diisi otomatis dari production_item). Unit yang belum punya baris
+`production_item` **ditolak 422**.
+
 Unit tetap berstatus `tersedia` (invarian gudang) namun terkecuali dari pool
 produksi karena baris gudang berstatus `tersimpan`. Unit yang sudah tersimpan
 diabaikan (idempoten).

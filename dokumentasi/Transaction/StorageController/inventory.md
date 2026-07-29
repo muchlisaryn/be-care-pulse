@@ -16,10 +16,12 @@ berkondisi `tersedia`. Unit yang sudah keluar gudang (sudah didistribusikan →
 meski baris gudangnya masih `tersimpan`. Baris tersebut tetap tersimpan di
 database — hanya disembunyikan dari daftar isi rak.
 
-**Sumber nama instrumen:** `unit.code`, `unit.instrument`, dan `package_name`
-diambil dari tabel `production_item` (snapshot batch produksi unit tersebut). Bila
-unit belum pernah masuk batch produksi, nilainya jatuh ke `instrument_stocks.code`
-/ `instruments.name` / `instrument_storages.package_name`.
+**Sumber nama instrumen:** `unit.code`, `unit.instrument`, `source`, dan `package_name`
+diambil dari tabel `production_item` (snapshot batch produksi unit tersebut) lewat FK
+`instrument_storages.production_item_id` — baris gudang tidak lagi menyimpan salinan
+`source`/`package_name`. `unit.id` dibaca dari kolom `instrument_storages.instrument_stock_id`,
+dan `instrument_stocks.code` / `instruments.name` dipakai sebagai cadangan bila snapshot
+batch tidak mengisinya.
 
 **Nomor label kemasan:** `barcode_no` adalah nomor label yang tercetak di bungkus
 sterilnya, dibawa `sterilization_items.packaging_barcode` pada batch steril baris

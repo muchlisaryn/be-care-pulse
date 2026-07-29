@@ -46,4 +46,58 @@ class PackagingItem extends Model
     {
         return $this->belongsTo(InstrumentStock::class);
     }
+
+    /**
+     * Peta `instrument_stock_id` → NOMOR LABEL kemasan untuk siklus pipeline yang
+     * batch cleaning-nya ada di `$washingCodes`.
+     *
+     * Dibatasi per siklus, bukan "label terakhir unit": satu unit fisik bisa lewat
+     * pipeline berkali-kali dan tiap siklus punya label sendiri, jadi mengambil
+     * label terbaru akan menempelkan label siklus lain pada baris riwayat lama.
+     * Label yang sudah di-void (`disabled`) diabaikan.
+     *
+     * @param  array<int,string>  $washingCodes
+     * @return array<int,string>
+     */
+    public static function barcodeMapByWashingCodes(array $washingCodes): array
+    {
+        $washingCodes = array_values(array_filter($washingCodes));
+        if (empty($washingCodes)) {
+            return [];
+        }
+
+        // Global scope dimatikan & `deleted_by` di-kualifikasi manual: dengan JOIN,
+        // kolom itu ada di kedua tabel (lihat HasAuditColumns yang tidak meng-alias).
+        return static::withoutGlobalScopes()
+            ->join('packaging', 'packaging.id', '=', 'packaging_item.packaging_id')
+            ->whereIn('packaging.washing_code', $washingCodes)
+            ->where('packaging_item.disabled', false)
+            ->whereNotNull('packaging_item.barcode_no')
+            ->whereNull('packaging_item.deleted_by')
+            ->whereNull('packaging.deleted_by')
+            // Urut id ASC → bila satu unit punya beberapa baris pada siklus yang
+            // sama (mis. pengemasan ulang RPK), label TERBARU yang dipakai.
+            ->orderBy('packaging_item.id')
+            ->pluck('packaging_item.barcode_no', 'packaging_item.instrument_stock_id')
+            ->all();
+    }
+
+    /**
+     * Sama dengan barcodeMapByWashingCodes(), tapi titik masuknya kode batch
+     * PRODUKSI — batch cleaning-nya ditelusuri lewat `washing.production_code`.
+     *
+     * @param  array<int,string>  $productionCodes
+     * @return array<int,string>
+     */
+    public static function barcodeMapByProductionCodes(array $productionCodes): array
+    {
+        $productionCodes = array_values(array_filter($productionCodes));
+        if (empty($productionCodes)) {
+            return [];
+        }
+
+        return static::barcodeMapByWashingCodes(
+            OrderWashing::whereIn('production_code', $productionCodes)->pluck('code')->all()
+        );
+    }
 }

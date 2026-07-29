@@ -77,11 +77,14 @@ class InstrumentController extends Controller
         }
 
         return InstrumentStorage::withoutGlobalScopes()
+            // Asal unit (satuan/paket) ada di production_item, bukan di baris gudang.
+            ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
             // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null) —
             // tetap ikut terhitung sebagai stok steril siap-order.
             ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
             ->whereNull('order.deleted_by')
             // Hanya stok milik produksi yang BELUM dialokasikan ke order peminjaman —
@@ -90,8 +93,8 @@ class InstrumentController extends Controller
             ->whereNull('order.room_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
-            // Unit yang disimpan sebagai bagian PAKET tidak dihitung sebagai stok satuan.
-            ->where('instrument_storages.source', 'satuan')
+            // Unit yang diproduksi sebagai bagian PAKET tidak dihitung sebagai stok satuan.
+            ->where('production_item.source', 'satuan')
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
             ->selectRaw('instrument_stocks.instrument_id as instrument_id, count(*) as cnt')

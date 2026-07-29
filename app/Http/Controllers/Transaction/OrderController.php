@@ -269,7 +269,7 @@ class OrderController extends Controller
             }
 
             // Stok paket dicocokkan lewat NAMA katalog — sama dengan kunci yang
-            // dipakai gudang (instrument_storages.package_name).
+            // dipakai gudang (production_item.package_name).
             $byInstrument = $available[$catalog->name] ?? [];
             $sets = $catalog->items->min(function ($item) use ($byInstrument) {
                 $stock = (int) ($byInstrument[$item->instrument_id] ?? 0);
@@ -307,21 +307,24 @@ class OrderController extends Controller
         // Ambil baris (bukan agregat) supaya `lockForUpdate` benar-benar mengunci
         // tiap baris gudang yang ikut dihitung, lalu dijumlahkan di PHP.
         $rows = InstrumentStorage::withoutGlobalScopes()
+            // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
+            ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
             ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
             ->whereNull('order.deleted_by')
             ->whereNull('order.room_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
-            ->where('instrument_storages.source', $source)
+            ->where('production_item.source', $source)
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
             ->lockForUpdate()
             ->get([
                 'instrument_storages.id as storage_id',
-                'instrument_storages.package_name as package_name',
+                'production_item.package_name as package_name',
                 'instrument_stocks.instrument_id as instrument_id',
             ]);
 
@@ -1436,9 +1439,12 @@ class OrderController extends Controller
         $today = now()->toDateString();
 
         return InstrumentStorage::withoutGlobalScopes()
+            // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
+            ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
             ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
             ->whereNull('order.deleted_by')
             ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
@@ -1448,10 +1454,10 @@ class OrderController extends Controller
                 ->orWhereNull('order.room_id'))
             ->where('instrument_stocks.instrument_id', $req['instrument_id'])
             ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
-            ->where('instrument_storages.source', $req['source'])
+            ->where('production_item.source', $req['source'])
             ->when(
                 $req['source'] === 'paket',
-                fn ($q) => $q->where('instrument_storages.package_name', $req['package_name'])
+                fn ($q) => $q->where('production_item.package_name', $req['package_name'])
             )
             ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')
             ->get([
@@ -1613,10 +1619,13 @@ class OrderController extends Controller
                     // unit yang disimpan satuan, permintaan paket hanya dari unit yang
                     // disimpan sebagai paket bernama sama (produksi menentukan bentuknya).
                     $rows = InstrumentStorage::withoutGlobalScopes()
+                        // Asal (satuan/paket) & nama paket ada di production_item.
+                        ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
                         ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
                         // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null).
                         ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
                         ->whereNull('instrument_storages.deleted_by')
+                        ->whereNull('production_item.deleted_by')
                         ->whereNull('instrument_stocks.deleted_by')
                         ->whereNull('order.deleted_by')
                         ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
@@ -1625,10 +1634,10 @@ class OrderController extends Controller
                         ->whereNull('order.room_id') // hanya stok produksi yang belum dialokasikan
                         ->where('instrument_stocks.instrument_id', $req['instrument_id'])
                         ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
-                        ->where('instrument_storages.source', $req['source'])
+                        ->where('production_item.source', $req['source'])
                         ->when(
                             $req['source'] === 'paket',
-                            fn ($q) => $q->where('instrument_storages.package_name', $req['package_name'])
+                            fn ($q) => $q->where('production_item.package_name', $req['package_name'])
                         )
                         ->when($picked, fn ($q) => $q->whereNotIn('instrument_stocks.id', $picked))
                         ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')

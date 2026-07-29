@@ -58,6 +58,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('authorities', AuthorityController::class);
         Route::apiResource('title-menus', TitleMenuController::class);
         Route::apiResource('menus', MenuController::class);
+        // Import user PER BATCH (klien memecah berkasnya) — harus di atas apiResource
+        // agar tidak tertangkap route users/{user}.
+        Route::post('users/import', [UserController::class, 'import']);
         Route::apiResource('users', UserController::class);
         Route::apiResource('conditions', ConditionController::class);
 

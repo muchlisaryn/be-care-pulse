@@ -44,23 +44,26 @@ class InstrumentCatalogController extends Controller
         // `package_name` — set hanya boleh dipenuhi dari unit yang memang disimpan sebagai
         // paket tsb, bukan dari unit satuan (produksi menentukan bentuknya, bukan order).
         $sterileRows = InstrumentStorage::withoutGlobalScopes()
+            // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
+            ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
             // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null) —
             // tetap ikut. Baris yang sudah direservasi order-ruangan (room_id terisi)
             // dikecualikan oleh whereNull('order.room_id') di bawah.
             ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
             ->whereNull('order.deleted_by')
             // Hanya stok produksi yang belum dialokasikan ke order (lihat InstrumentController).
             ->whereNull('order.room_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
-            ->where('instrument_storages.source', 'paket')
+            ->where('production_item.source', 'paket')
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
-            ->selectRaw('instrument_storages.package_name as package_name, instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
-            ->groupBy('instrument_storages.package_name', 'instrument_stocks.instrument_id')
+            ->selectRaw('production_item.package_name as package_name, instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
+            ->groupBy('production_item.package_name', 'instrument_stocks.instrument_id')
             ->get();
 
         // cnt per instrument_id, di-key oleh nama paket.
@@ -221,7 +224,7 @@ class InstrumentCatalogController extends Controller
      *
      * `code` DAN `name` sama-sama wajib unik di antara katalog yang masih AKTIF
      * (deleted_by IS NULL). Nama wajib unik karena stok steril paket di gudang
-     * dicocokkan lewat `instrument_storages.package_name` — pencocokan nama
+     * dicocokkan lewat `production_item.package_name` — pencocokan nama
      * PERSIS, bukan id. Dua katalog aktif bernama sama akan membaca ember stok
      * yang sama sehingga satu unit fisik terhitung dua kali dan paket yang
      * barangnya tidak ada tetap bisa di-order.

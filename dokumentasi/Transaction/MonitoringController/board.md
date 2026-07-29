@@ -74,3 +74,20 @@ Keterangan field:
   "line": 42
 }
 ```
+
+---
+
+## Catatan QTY paket
+
+Baris `jenis: "Paket"` selalu berisi jumlah **SET**, tidak pernah jumlah unit fisik
+(1 set berisi 10 instrumen tetap dihitung 1 set). Urutan sumbernya:
+
+1. **Penanda set unit** — `production_item.production_id|package_no` dari unit yang
+   masih dipinjam; seluruh unit dalam satu set berbagi `package_no` yang sama.
+   Ini yang tetap benar untuk order **pinjam-alih** (tidak punya `order_request_item`)
+   maupun pengembalian sebagian.
+2. Cadangan: jumlah pada `order_request_item.quantity`.
+3. Jalan terakhir: `1`.
+
+Baris `jenis: "Satuan"` berisi jumlah unit fisik. Frontend menempelkan satuannya:
+`set` untuk Paket, `unit` untuk Satuan.

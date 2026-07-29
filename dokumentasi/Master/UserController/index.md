@@ -54,3 +54,10 @@
   "message": "Unauthenticated."
 }
 ```
+
+---
+
+## Catatan
+
+`?per_page=` (opsional, maks **200**, default 20) dipakai halaman Export untuk menarik
+seluruh user dalam sedikit request. Lihat [import](import.md).

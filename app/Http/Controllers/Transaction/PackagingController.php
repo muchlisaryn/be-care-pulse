@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\InstrumentStock;
+use App\Models\OrderItem;
 use App\Models\OrderWashing;
 use App\Models\Packaging;
 use App\Models\PackagingType;
@@ -44,6 +45,8 @@ class PackagingController extends Controller
             return $this->success('Rincian packaging.', ['barcodes' => []]);
         }
 
+        $onlyStockIds = OrderItem::stockIdsOfOrder($request->input('order_id'));
+
         $packagings = Packaging::with(['items', 'washing.production.items.instrumentStock.instrument'])
             ->whereIn('id', $ids)->get();
 
@@ -57,7 +60,11 @@ class PackagingController extends Controller
 
             // Kelompokkan unit packaging ini per barcode_no (label fisik).
             $byBarcode = [];
-            foreach ($pkg->items->where('disabled', false) as $it) {
+            $unitItems = $pkg->items->where('disabled', false);
+            if ($onlyStockIds !== null) {
+                $unitItems = $unitItems->whereIn('instrument_stock_id', $onlyStockIds);
+            }
+            foreach ($unitItems as $it) {
                 $bc = $it->barcode_no ?: '(tanpa barcode)';
                 $prod = $prodByStock->get($it->instrument_stock_id);
                 // Nama dari SNAPSHOT production_item (bukan master): paket → NAMA PAKET

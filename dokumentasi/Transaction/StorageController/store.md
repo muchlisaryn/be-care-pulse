@@ -9,6 +9,11 @@ Simpan unit-unit order steril ke lokasi rak gudang. Bila **seluruh** unit order
 sudah tersimpan, order → status `digudang` ("Di Dalam Gudang Steril") dan event
 timeline `disimpan` dicatat. `expiry_date` disalin dari batch sterilisasi order.
 
+Baris gudang menyimpan `production_item_id` (FK ke baris batch produksi unit tsb —
+sumber `name`, `source` & `package_name`) sekaligus `instrument_stock_id` (unit
+fisik, diisi otomatis dari production_item). Unit yang belum punya baris
+`production_item` **ditolak 422**.
+
 ### Path Parameter
 | Parameter | Type | Keterangan |
 |-----------|------|------------|

@@ -21,10 +21,15 @@ return [
         'http://127.0.0.1:3000',
         'http://10.12.12.192',
         'http://10.12.12.192:3000',
+        'http://10.12.12.177',
+        'http://10.12.12.177:3000',
     ])))),
 
-    // Semua port di host 10.12.12.192 (dev server Next.js kadang pindah port).
-    'allowed_origins_patterns' => ['#^http://10\.12\.12\.192(:\d+)?$#'],
+    // Semua port di host 10.12.12.192 / 10.12.12.177 (dev server Next.js kadang pindah port).
+    'allowed_origins_patterns' => [
+        '#^http://10\.12\.12\.192(:\d+)?$#',
+        '#^http://10\.12\.12\.177(:\d+)?$#',
+    ],
 
     'allowed_headers' => ['*'],
 

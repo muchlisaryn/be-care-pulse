@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\InstrumentStock;
+use App\Models\OrderItem;
 use App\Models\Packaging;
 use App\Models\PackagingItem;
 use App\Models\PipelineEvent;
@@ -118,9 +119,11 @@ class SterilizationPipelineController extends Controller
             'packagings.washing.production.items',
         ])->whereIn('code', $codes)->get();
 
+        $onlyStockIds = OrderItem::stockIdsOfOrder($request->input('order_id'));
+
         $items = $batches
             ->sortBy(fn ($b) => optional($b->completed_at ?? $b->sterilized_at ?? $b->created_at)->timestamp ?? 0)
-            ->flatMap(function ($b) {
+            ->flatMap(function ($b) use ($onlyStockIds) {
                 // Snapshot production_item unit batch ini (via packaging anggota → produksi).
                 $prodByStock = $b->packagings
                     ->flatMap(fn ($p) => $p->washing?->production?->items ?? collect())
@@ -130,12 +133,19 @@ class SterilizationPipelineController extends Controller
                 $petugas = $b->completed_by ?? $b->created_by;
 
                 return $b->items->where('disabled', false)
+                    ->when(
+                        $onlyStockIds !== null,
+                        fn ($items) => $items->whereIn('instrument_stock_id', $onlyStockIds)
+                    )
+                    // Nomor label dibawa sterilization_items.packaging_barcode — sudah
+                    // per unit, jadi tidak perlu ditelusuri lewat packaging lagi.
                     ->groupBy(function ($si) use ($prodByStock) {
                         $prod = $prodByStock->get($si->instrument_stock_id);
 
-                        return ($prod?->source === 'paket')
+                        return (($prod?->source === 'paket')
                             ? 'paket|'.($prod->package_name ?? 'Paket')
-                            : 'satuan|'.($prod?->name ?? $si->instrumentStock?->instrument?->name ?? 'Instrumen');
+                            : 'satuan|'.($prod?->name ?? $si->instrumentStock?->instrument?->name ?? 'Instrumen'))
+                            .'|'.($si->packaging_barcode ?? '');
                     })
                     ->map(function ($g) use ($prodByStock, $b, $at, $petugas) {
                         $prod = $prodByStock->get($g->first()->instrument_stock_id);
@@ -144,6 +154,7 @@ class SterilizationPipelineController extends Controller
                         return [
                             'tanggal' => $at,
                             'code' => $b->code,
+                            'barcode_no' => $g->first()->packaging_barcode,
                             'name' => $isPaket
                                 ? ($prod->package_name ?? 'Paket')
                                 : ($prod?->name ?? $g->first()->instrumentStock?->instrument?->name ?? 'Instrumen'),
