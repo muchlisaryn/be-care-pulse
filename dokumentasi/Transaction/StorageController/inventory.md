@@ -10,19 +10,18 @@ status kedaluwarsa. **Early-warning**: `alert = true` (merah) bila masa berlaku
 steril ≤ ambang hari atau sudah lewat. Diurutkan dari yang paling cepat
 kedaluwarsa.
 
-**Filter isi rak:** hanya baris gudang berstatus `tersimpan`, ber-`order_id` **NULL**,
+**Filter isi rak:** hanya baris gudang berstatus `tersimpan`, ber-`order_id` **NOT NULL**,
 dan unitnya masih berkondisi `tersedia`. Unit yang sudah keluar gudang (sudah
 didistribusikan → `dipinjam`, atau sedang diproses ulang → `sterilisasi`) tidak ikut
 ditampilkan meski baris gudangnya masih `tersimpan`. Baris tersebut tetap tersimpan di
 database — hanya disembunyikan dari daftar isi rak.
 
-**Kenapa `order_id` harus NULL:** baris gudang lahir dengan `order_id = null` (stok
+**Kenapa `order_id` harus terisi:** baris gudang lahir dengan `order_id = null` (stok
 steril bebas hasil pipeline produksi). Saat order diterima, `OrderController@acceptDistribution`
 memindahkan kepemilikan baris itu ke order (`order_id` terisi) sebagai reservasi —
-statusnya masih `tersimpan` sampai benar-benar didistribusikan. Unit yang sudah
-direservasi order dianggap tidak lagi jadi isi inventaris, jadi disaring keluar di
-sini. Konsekuensinya field `order` pada tiap baris **selalu `null`**, dan filter
-`search` per kode order praktis tidak pernah menghasilkan baris.
+statusnya masih `tersimpan` sampai benar-benar didistribusikan. Daftar ini hanya
+menampilkan baris yang sudah terikat order tersebut, sehingga field `order` pada tiap
+baris **selalu terisi** (tidak pernah `null`).
 
 **Sumber nama instrumen:** `unit.code`, `unit.instrument`, `source`, dan `package_name`
 diambil dari tabel `production_item` (snapshot batch produksi unit tersebut) lewat FK
@@ -64,7 +63,7 @@ batch steril TERAKHIR unit itu.
         "barcode_no": "PKG202606280011",
         "production_code": "PRD-014",
         "unit": { "id": 87, "code": "GNE-002", "instrument": "Gunting Epis" },
-        "order": null
+        "order": { "id": 10, "code": "ORD-010", "code_transaction": "INV20260628001" }
       }
     ],
     "per_page": 20,
