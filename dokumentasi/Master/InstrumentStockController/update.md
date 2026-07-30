@@ -44,3 +44,13 @@
   }
 }
 ```
+
+## Unit yang sedang dipinjam
+
+Unit berstatus `dipinjam` **ditolak 422**: barangnya ada di tangan peminjam dan masih
+tertaut order aktif, sehingga mengubah kondisi atau menghapus barisnya membuat data
+order menggantung.
+
+```json
+{ "status": false, "message": "Unit INSK-001 sedang dipinjam — tidak bisa diubah atau dihapus sampai dikembalikan." }
+```

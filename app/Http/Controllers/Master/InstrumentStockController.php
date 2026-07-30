@@ -10,8 +10,10 @@ use App\Models\OrderWashing;
 use App\Models\Packaging;
 use App\Models\ProductionItem;
 use App\Models\SterilizationItem;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
@@ -41,19 +43,48 @@ class InstrumentStockController extends Controller
         return $this->success('Data stok instrumen berhasil diambil.', $data);
     }
 
+    /**
+     * Tambah unit fisik instrumen. `quantity` memungkinkan membuat beberapa unit
+     * sekaligus (mis. isi 3 → dibuat 3 unit) — masing-masing tetap baris tersendiri
+     * dengan kodenya sendiri (`{KODE}-001`, `-002`, ...), karena kode di-generate
+     * ulang per baris. Dibungkus transaksi supaya gagal di tengah tidak menyisakan
+     * unit setengah jadi. Tanpa `quantity`, perilakunya sama seperti dulu: 1 unit.
+     *
+     * Respons SELALU berupa array unit yang dibuat, termasuk saat hanya 1.
+     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'instrument_id' => 'required|integer|exists:instruments,id',
             'condition_id' => 'nullable|integer|exists:conditions,id',
             'status' => ['nullable', Rule::in(InstrumentStock::STATUSES)],
+            // Dibatasi 100 agar salah ketik (mis. 1000) tidak membanjiri master.
+            'quantity' => 'nullable|integer|min:1|max:100',
         ]);
 
-        try {
-            $stock = InstrumentStock::create($validated);
-            $stock->load(['instrument', 'condition']);
+        $quantity = (int) ($validated['quantity'] ?? 1);
+        unset($validated['quantity']);
 
-            return $this->success('Stok instrumen berhasil ditambahkan.', $stock, 201);
+        try {
+            $stocks = DB::transaction(function () use ($validated, $quantity) {
+                // Eloquent collection (bukan collect()) supaya bisa ->load() relasinya.
+                $created = new EloquentCollection;
+                for ($i = 0; $i < $quantity; $i++) {
+                    $created->push(InstrumentStock::create($validated));
+                }
+
+                return $created;
+            });
+
+            $stocks->load(['instrument', 'condition']);
+
+            return $this->success(
+                $quantity > 1
+                    ? "{$quantity} unit stok instrumen berhasil ditambahkan."
+                    : 'Stok instrumen berhasil ditambahkan.',
+                $stocks,
+                201
+            );
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
@@ -66,8 +97,30 @@ class InstrumentStockController extends Controller
         return $this->success('Detail stok instrumen berhasil diambil.', $instrumentStock);
     }
 
+    /**
+     * Unit yang SEDANG DIPINJAM tidak boleh diubah maupun dihapus: barangnya ada di
+     * tangan peminjam dan masih tertaut order aktif, jadi mengubah kondisinya atau
+     * menghapus barisnya akan membuat data order menggantung. Ditegakkan di server —
+     * bukan sekadar tombol yang dinonaktifkan di UI.
+     */
+    private function assertNotBorrowed(InstrumentStock $stock): ?JsonResponse
+    {
+        if ($stock->status === InstrumentStock::STATUS_DIPINJAM) {
+            return $this->error(
+                "Unit {$stock->code} sedang dipinjam — tidak bisa diubah atau dihapus sampai dikembalikan.",
+                422
+            );
+        }
+
+        return null;
+    }
+
     public function update(Request $request, InstrumentStock $instrumentStock): JsonResponse
     {
+        if ($blocked = $this->assertNotBorrowed($instrumentStock)) {
+            return $blocked;
+        }
+
         $validated = $request->validate([
             'instrument_id' => 'required|integer|exists:instruments,id',
             'condition_id' => 'nullable|integer|exists:conditions,id',
@@ -86,6 +139,10 @@ class InstrumentStockController extends Controller
 
     public function destroy(InstrumentStock $instrumentStock): JsonResponse
     {
+        if ($blocked = $this->assertNotBorrowed($instrumentStock)) {
+            return $blocked;
+        }
+
         try {
             $instrumentStock->delete();
 
