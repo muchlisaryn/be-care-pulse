@@ -290,8 +290,9 @@ class OrderController extends Controller
     /**
      * Hitung unit steril siap-order sambil MENGUNCI baris gudangnya. Kriteria sama
      * persis dengan yang dipakai halaman master untuk menampilkan ketersediaan
-     * (InstrumentController & InstrumentCatalogController): berstatus `tersimpan`,
-     * belum kedaluwarsa, dan belum dialokasikan ke order ruangan manapun.
+     * (InstrumentController & InstrumentCatalogController): belum direservasi order
+     * manapun (`order_id` null), belum kedaluwarsa, dan bentuk simpannya cocok.
+     * `instrument_storages.status` tidak ikut menyaring — jangan tambahkan.
      *
      * @param  array<int,int>  $instrumentIds
      * @param  string  $source  `satuan` / `paket`
@@ -310,14 +311,12 @@ class OrderController extends Controller
             // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            ->whereNull('order.deleted_by')
-            ->whereNull('order.room_id')
+            // Pool produksi: baris gudang yang belum direservasi order manapun.
+            ->whereNull('instrument_storages.order_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
-            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
             ->where('production_item.source', $source)
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
@@ -1429,10 +1428,12 @@ class OrderController extends Controller
     }
 
     /**
-     * Kandidat unit steril di gudang untuk satu requirement order distribusi:
-     * baris gudang berstatus `tersimpan`, belum kedaluwarsa, bentuk simpannya cocok
-     * (satuan/paket bernama sama), dan pemiliknya order ini (sudah direservasi) atau
-     * masih pool produksi (belum dialokasikan ke order manapun). Urut FEFO.
+     * Kandidat unit steril di gudang untuk satu requirement order distribusi: baris
+     * gudang yang belum kedaluwarsa, bentuk simpannya cocok (satuan/paket bernama sama),
+     * dan pemiliknya order ini (sudah direservasi) atau masih pool produksi (`order_id`
+     * null). Urut FEFO. Kriteria disamakan dengan hitungan ketersediaan — termasuk TIDAK
+     * menyaring `instrument_storages.status`, agar order tidak lolos validasi lalu gagal
+     * di sini. Unit fisiknya sendiri tetap wajib `tersedia` (tidak sedang dipinjam).
      */
     private function distributionCandidates(Order $order, array $req)
     {
@@ -1442,16 +1443,14 @@ class OrderController extends Controller
             // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            ->whereNull('order.deleted_by')
-            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', $today))
+            // Milik order ini (sudah direservasi) atau masih pool produksi (order_id null).
             ->where(fn ($w) => $w->where('instrument_storages.order_id', $order->id)
-                ->orWhereNull('order.room_id'))
+                ->orWhereNull('instrument_storages.order_id'))
             ->where('instrument_stocks.instrument_id', $req['instrument_id'])
             ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
             ->where('production_item.source', $req['source'])
@@ -1622,16 +1621,14 @@ class OrderController extends Controller
                         // Asal (satuan/paket) & nama paket ada di production_item.
                         ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
                         ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-                        // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null).
-                        ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
                         ->whereNull('instrument_storages.deleted_by')
                         ->whereNull('production_item.deleted_by')
                         ->whereNull('instrument_stocks.deleted_by')
-                        ->whereNull('order.deleted_by')
-                        ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
                         ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                             ->orWhereDate('instrument_storages.expiry_date', '>=', $today))
-                        ->whereNull('order.room_id') // hanya stok produksi yang belum dialokasikan
+                        // Kriteria sama dengan hitungan ketersediaan: hanya pool produksi
+                        // yang belum direservasi; `instrument_storages.status` tidak menyaring.
+                        ->whereNull('instrument_storages.order_id')
                         ->where('instrument_stocks.instrument_id', $req['instrument_id'])
                         ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
                         ->where('production_item.source', $req['source'])

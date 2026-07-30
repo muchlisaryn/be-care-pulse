@@ -39,26 +39,22 @@ class InstrumentCatalogController extends Controller
             ->groupBy('instrument_id')
             ->pluck('cnt', 'instrument_id');
 
-        // Stok STERIL per PAKET: unit di gudang steril (status `tersimpan`) yang belum
-        // kedaluwarsa DAN diproduksi sebagai paket (`source` = paket). Dikelompokkan per
-        // `package_name` — set hanya boleh dipenuhi dari unit yang memang disimpan sebagai
-        // paket tsb, bukan dari unit satuan (produksi menentukan bentuknya, bukan order).
+        // Stok STERIL per PAKET: baris gudang yang belum direservasi order (`order_id`
+        // null), belum kedaluwarsa, DAN diproduksi sebagai paket (`source` = paket).
+        // Dikelompokkan per `package_name` — set hanya boleh dipenuhi dari unit yang memang
+        // disimpan sebagai paket tsb, bukan dari unit satuan (produksi menentukan bentuknya).
+        // `instrument_storages.status` sengaja tidak menyaring (lihat InstrumentController).
         $sterileRows = InstrumentStorage::withoutGlobalScopes()
             // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null) —
-            // tetap ikut. Baris yang sudah direservasi order-ruangan (room_id terisi)
-            // dikecualikan oleh whereNull('order.room_id') di bawah.
-            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            ->whereNull('order.deleted_by')
-            // Hanya stok produksi yang belum dialokasikan ke order (lihat InstrumentController).
-            ->whereNull('order.room_id')
+            // Hanya baris gudang yang masih pool produksi / belum direservasi order
+            // (`order_id` null) — lihat InstrumentController.
+            ->whereNull('instrument_storages.order_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
-            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
             ->where('production_item.source', 'paket')
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
                 ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))

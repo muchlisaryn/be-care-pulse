@@ -18,10 +18,13 @@ Setiap item menyertakan `image` (path relatif, `null` bila belum ada) dan `image
 
 > Setiap item menyertakan `stocks_count` — jumlah unit fisik (stok) milik instrumen tersebut,
 > `available_stocks_count` — jumlah unit yang berstatus `tersedia`, dan
-> `available_sterile_count` — jumlah unit STERIL siap-order SATUAN (ada di gudang steril,
-> `instrument_storages.status = tersimpan`, belum kedaluwarsa, **diproduksi & disimpan
-> sebagai satuan** — `instrument_storages.source = satuan`, **dan masih milik
-> produksi / belum dialokasikan ke order peminjaman** — order pemilik `room_id` null).
+> `available_sterile_count` — jumlah unit STERIL siap-order SATUAN. Kriterianya hanya tiga:
+> **belum direservasi order manapun** (`instrument_storages.order_id IS NULL`),
+> **belum kedaluwarsa**, dan **diproduksi & disimpan sebagai satuan**
+> (`production_item.source = satuan`).
+> `instrument_storages.status` **tidak** ikut menyaring — supaya angka ini sama persis
+> dengan daftar inventaris Gudang Steril (`StorageController@inventory`), yang juga hanya
+> menyaring `order_id IS NULL`. Jangan tambahkan `where('status', ...)`.
 > Unit yang diproduksi sebagai PAKET tidak dihitung di sini: bentuk barang ditentukan
 > saat produksi, sehingga hanya bisa dipinjam sebagai paket utuh (lihat
 > `available_sterile_sets` pada InstrumentCatalogController).

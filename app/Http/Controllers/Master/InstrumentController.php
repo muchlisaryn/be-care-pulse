@@ -61,10 +61,15 @@ class InstrumentController extends Controller
     }
 
     /**
-     * Jumlah unit STERIL siap-order SATUAN per instrument_id: unit di gudang steril
-     * (instrument_storages.status = `tersimpan`) yang belum kedaluwarsa DAN diproduksi
-     * sebagai satuan (`source` = satuan). Unit yang diproduksi & disimpan sebagai PAKET
+     * Jumlah unit STERIL siap-order SATUAN per instrument_id: baris gudang yang belum
+     * direservasi order (`order_id` null), belum kedaluwarsa, DAN diproduksi sebagai
+     * satuan (`source` = satuan). Unit yang diproduksi & disimpan sebagai PAKET
      * hanya boleh dipinjam sebagai paket utuh — lihat InstrumentCatalogController.
+     *
+     * `instrument_storages.status` SENGAJA tidak ikut menyaring, sama seperti daftar
+     * inventaris Gudang Steril (StorageController@inventory) — angka di sini harus
+     * sama persis dengan apa yang tampil di halaman itu. Jangan tambahkan
+     * `where('instrument_storages.status', ...)`.
      * Kolom di-kualifikasi + tanpa global scope agar JOIN tidak ambigu pada `deleted_by`.
      *
      * @param  Collection<int,int>  $instrumentIds
@@ -80,19 +85,14 @@ class InstrumentController extends Controller
             // Asal unit (satuan/paket) ada di production_item, bukan di baris gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            // LEFT JOIN: stok pipeline produksi disimpan tanpa order (order_id null) —
-            // tetap ikut terhitung sebagai stok steril siap-order.
-            ->leftJoin('order', 'order.id', '=', 'instrument_storages.order_id')
             ->whereNull('instrument_storages.deleted_by')
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            ->whereNull('order.deleted_by')
-            // Hanya stok milik produksi yang BELUM dialokasikan ke order peminjaman —
-            // begitu dialokasikan, kepemilikan baris gudang pindah ke order (room_id
-            // terisi) sehingga otomatis keluar dari hitungan ini.
-            ->whereNull('order.room_id')
+            // Hanya baris gudang yang masih jadi POOL produksi: `order_id` null. Begitu
+            // sebuah order mereservasinya, `order_id` terisi sehingga otomatis keluar
+            // dari hitungan ini — sumber angka yang sama dengan halaman Gudang Steril.
+            ->whereNull('instrument_storages.order_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
-            ->where('instrument_storages.status', InstrumentStorage::STATUS_TERSIMPAN)
             // Unit yang diproduksi sebagai bagian PAKET tidak dihitung sebagai stok satuan.
             ->where('production_item.source', 'satuan')
             ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
