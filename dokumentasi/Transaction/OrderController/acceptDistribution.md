@@ -5,16 +5,20 @@
 **Endpoint:** /api/master/orders/{order}/accept-distribution
 **Auth:** Bearer Token (wajib)
 
-Terima order masuk & **siapkan distribusi**. Karena order hanya meminta barang yang
-sudah steril, order **tidak lewat pipeline Cleaning→Inspection→Sterilization lagi**.
-Sistem mengalokasikan unit steril dari gudang secara **FEFO** (first-expired-first-out)
-sesuai jumlah & jenis yang diminta, lalu order → status `digudang` (muncul di
-Distribution & Tracking). Selanjutnya pakai endpoint `distribute` seperti biasa.
+Terima order masuk. Karena order hanya meminta barang yang sudah steril, order **tidak
+lewat pipeline Cleaning→Inspection→Sterilization lagi**: statusnya langsung → `digudang`
+(muncul di Distribution & Tracking). Selanjutnya pakai endpoint `distribute`.
 
-**Reservasi:** baris gudang (`instrument_storages`) unit terpilih dipindahkan
-kepemilikannya ke order ini (`order_id`), sehingga (a) keluar dari pool "available
-sterile" milik produksi (`room_id` null) dan (b) `distribute` menemukannya untuk
-dikeluarkan dari gudang. Status unit tetap `tersedia` sampai didistribusikan.
+**Menerima order HANYA menerima.** Endpoint ini **tidak** mengalokasikan unit, **tidak**
+membuat `order_item`, dan **tidak** mereservasi baris gudang — `instrument_storages.order_id`
+tetap `null`. Pemilihan unit terjadi di modal Distribusikan (lihat
+[distributionOptions](distributionOptions.md)), dan klaimnya terjadi di
+[distribute](distribute.md).
+
+Yang tetap dilakukan: kecukupan stok pool diperiksa lebih dulu sebagai **peringatan dini**
+— bila kurang, order ditolak 422 dan statusnya tidak berubah. Karena tidak mereservasi,
+pemeriksaan ini **tidak mengikat**: stok yang sama masih bisa diambil order lain yang
+didistribusikan lebih dulu.
 
 ### Headers
 | Key | Value | Required |
@@ -26,8 +30,19 @@ Tidak ada (alokasi otomatis). Order ditentukan dari path `{order}`.
 
 ### Prasyarat
 - Order berstatus `diajukan`.
-- Stok steril cukup untuk tiap baris permintaan (di gudang, `tersimpan`, belum
-  kedaluwarsa, milik produksi). Jika kurang → error 500 dengan pesan jelas.
+- Stok pool cukup untuk tiap baris permintaan (`order_id IS NULL`, `expiry_date >= hari ini`,
+  unit `tersedia`, bentuk simpan cocok). Jika kurang → error 422.
+
+### Transaksi & konkurensi
+Berjalan dalam satu transaksi (`DB::transaction`) — bila ada langkah yang gagal,
+semuanya di-rollback dan order tetap `diajukan`.
+
+Baris order dikunci (`SELECT ... FOR UPDATE`) lalu statusnya diperiksa ulang di dalam
+transaksi, sehingga dua permintaan "Terima order" yang datang bersamaan dijalankan
+berurutan — yang kedua menemukan status sudah bukan `diajukan` dan ditolak 422.
+
+Pemeriksaan stok di sini **tidak** mengunci baris gudang, karena tidak mereservasi.
+Perebutan stok antar order diselesaikan saat distribusi (lihat [distribute](distribute.md)).
 
 ### Response
 
@@ -46,18 +61,12 @@ Tidak ada (alokasi otomatis). Order ditentukan dari path `{order}`.
 }
 ```
 
-#### Error (422)
+#### Error (422) — order sudah diproses
 ```json
 { "status": false, "message": "Order ini sudah diproses dan tidak bisa diterima lagi." }
 ```
 
-#### Error (500) — stok steril kurang
+#### Error (422) — stok steril kurang
 ```json
-{
-  "status": false,
-  "message": "Stok steril \"Gunting Epis\" tidak cukup: butuh 2, tersedia 1.",
-  "code": 0,
-  "file": "...",
-  "line": 0
-}
+{ "status": false, "message": "Stok steril \"Gunting Epis\" tidak cukup: butuh 2, tersedia 1." }
 ```

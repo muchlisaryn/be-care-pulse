@@ -25,10 +25,30 @@ dan dibawa apa adanya ke event distribusi. Efek:
 | note | string | Tidak | Catatan |
 | stock_ids | array\<integer\> | Tidak | Unit (`instrument_stock_id`) yang dipilih petugas di modal Distribusikan — lihat [distributionOptions](distributionOptions.md). Bila dikosongkan, dipakai alokasi FEFO otomatis dari saat order diterima. |
 
-Bila `stock_ids` dikirim, jumlah unit terpilih **harus sama persis** dengan kebutuhan
-tiap baris permintaan (instrumen + bentuk simpan). Unit yang tadinya dialokasikan
-otomatis tapi tidak jadi dipilih dikembalikan ke pool stok produksi, unit terpilih
-direservasi ke order ini, lalu `order_item` ditulis ulang sesuai pilihan.
+**Di sinilah unit diklaim.** Menerima order tidak mengalokasikan apa pun (lihat
+[acceptDistribution](acceptDistribution.md)), jadi endpoint ini yang memilih unit,
+menulis `order_item`, mengisi `instrument_storages.order_id`, lalu mengeluarkannya
+dari gudang.
+
+- `stock_ids` **dikirim** → dipakai pilihan petugas. Jumlah unit terpilih harus sama
+  persis dengan kebutuhan tiap baris permintaan (instrumen + bentuk simpan). Unit yang
+  sempat direservasi tapi tidak jadi dipilih dikembalikan ke pool, unit terpilih
+  direservasi ke order ini, lalu `order_item` ditulis ulang sesuai pilihan.
+- `stock_ids` **kosong** → sistem memilihkan sendiri secara **FEFO** dari pool bebas
+  (`order_id IS NULL`, `expiry_date >= hari ini`). Bila order sudah punya alokasi dari
+  sebelumnya (order yang diterima sebelum perubahan ini), alokasi itu dipakai apa adanya.
+
+### Transaksi & konkurensi
+Seluruh efek (reservasi ulang, unit keluar gudang, unit → `dipinjam`, order →
+`dipinjam`, event) berjalan dalam satu transaksi (`DB::transaction`). Bila ada satu
+langkah gagal — misalnya unit pilihan sudah diambil order lain — semuanya di-rollback
+sehingga order tidak pernah setengah terdistribusi.
+
+Baris order dikunci (`SELECT ... FOR UPDATE`) di dalam transaksi lalu statusnya
+diperiksa ulang; baris gudang kandidat juga dikunci sebelum direservasi. Dua permintaan
+distribusi yang datang bersamaan (klik ganda / dua petugas) dijalankan berurutan —
+yang kedua menemukan status sudah bukan `digudang` dan ditolak 422, bukan mengeluarkan
+unit dua kali.
 
 ### Response — Success (200)
 ```json
@@ -55,4 +75,7 @@ direservasi ke order ini, lalu `order_item` ditulis ulang sesuai pilihan.
 ```
 ```json
 { "status": false, "message": "Ada unit terpilih yang tidak tersedia lagi di gudang steril. Muat ulang daftar unit." }
+```
+```json
+{ "status": false, "message": "Order ini sudah didistribusikan atau statusnya berubah. Muat ulang halaman." }
 ```

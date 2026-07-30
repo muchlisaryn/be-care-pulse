@@ -7,8 +7,18 @@
 
 Daftar order yang sedang **dipinjam** (oleh ruangan mana pun) beserta unit yang belum dikembalikan.
 Dipakai halaman **Pinjam Instrumen** sebagai sumber unit yang bisa diminta pinjam-alih (handover)
-antar ruangan tanpa order ulang ke CSSD. Pembeda peminjam adalah **ruangan**, bukan akun user —
-sistem dapat berjalan dengan satu akun.
+antar ruangan tanpa order ulang ke CSSD.
+
+### Order milik sendiri dikecualikan
+Tidak bisa meminjam dari diri sendiri. Sebuah order **disembunyikan** bila memenuhi
+**salah satu** syarat berikut — bukan hanya kombinasi keduanya:
+
+1. `order.user_id` = user yang sedang login (ordernya saya yang buat), termasuk bila
+   `borrowed_by` diisi nama orang lain.
+2. `order.borrowed_by` = nama user yang sedang login (saya peminjam yang tercatat),
+   termasuk bila ordernya dibuatkan orang lain.
+
+Order tanpa `borrowed_by` yang dibuat orang lain tetap muncul.
 
 ## Request
 

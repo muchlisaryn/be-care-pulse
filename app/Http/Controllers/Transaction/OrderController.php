@@ -90,7 +90,9 @@ class OrderController extends Controller
 
         $validated = $request->validate([
             'room_id' => 'required|integer|exists:rooms,id',
-            'user_id' => 'nullable|integer|exists:users,id',
+            // `user_id` SENGAJA tidak diterima dari request: pemilik order selalu akun
+            // yang membuatnya. Dulu boleh dikirim klien, sehingga order bisa didaftarkan
+            // atas nama akun lain dan muncul di daftar orang tersebut.
             'borrowed_by' => 'nullable|string|max:255',
             // Identitas pasien wajib HANYA untuk layanan rawat inap.
             'medical_record_no' => ($patientRequired ? 'required' : 'nullable').'|string|max:255',
@@ -121,9 +123,10 @@ class OrderController extends Controller
 
                 $order = Order::create([
                     'room_id' => $validated['room_id'],
-                    // Penanggung jawab default = user yang login bila tidak dikirim eksplisit.
-                    'user_id' => $validated['user_id'] ?? auth()->id(),
-                    // Nama peminjam (teks bebas) — diisi manual di form.
+                    // Pemilik order SELALU akun yang membuatnya — tidak bisa ditentukan
+                    // dari request, sehingga `user_id` konsisten dengan `created_by`.
+                    'user_id' => auth()->id(),
+                    // Nama peminjam — dipilih dari Master User di form.
                     'borrowed_by' => $validated['borrowed_by'] ?? null,
                     'medical_record_no' => $validated['medical_record_no'] ?? null,
                     'patient_name' => $validated['patient_name'] ?? null,
@@ -413,14 +416,20 @@ class OrderController extends Controller
                 ->with('instrumentStock.instrument'),
         ])
             ->where('status', Order::STATUS_DIPINJAM)
-            // Kecualikan pinjaman milik peminjam yang sedang login. Peminjam efektif =
-            // borrowed_by bila terisi, jika kosong jatuh ke pemilik order (user).
-            ->where(function ($w) use ($myId, $myName) {
-                $w->where(function ($a) use ($myName) {
-                    $a->whereNotNull('borrowed_by')->where('borrowed_by', '!=', (string) $myName);
-                })->orWhere(function ($b) use ($myId) {
-                    $b->whereNull('borrowed_by')->where('user_id', '!=', $myId);
-                });
+            // Tidak bisa meminjam dari diri sendiri. Order disembunyikan bila SALAH SATU
+            // terpenuhi, bukan hanya kombinasi keduanya:
+            //
+            // 1. Ordernya SAYA yang buat (`user_id`) — berlaku juga bila `borrowed_by`
+            //    diisi nama orang lain (order dibuatkan untuk rekan). Dulu kasus ini
+            //    lolos dan pinjaman sendiri tetap muncul di daftar.
+            // 2. SAYA peminjam yang tercatat (`borrowed_by` = nama saya) — berlaku juga
+            //    bila ordernya dibuatkan orang lain.
+            ->where('user_id', '!=', $myId)
+            ->where(function ($w) use ($myName) {
+                // `!=` di SQL tidak pernah cocok untuk NULL, jadi baris tanpa
+                // `borrowed_by` harus disebut eksplisit agar tidak ikut tersaring.
+                $w->whereNull('borrowed_by')
+                    ->orWhere('borrowed_by', '!=', (string) $myName);
             })
             ->when(
                 $request->search,
@@ -1267,7 +1276,7 @@ class OrderController extends Controller
         $needed = (int) $line->quantity;
 
         $rows = $instrument
-            ? $this->distributionCandidates($order, [
+            ? $this->distributionCandidates([
                 'instrument_id' => $instrument->id,
                 'source' => 'satuan',
                 'package_name' => null,
@@ -1324,7 +1333,7 @@ class OrderController extends Controller
         $rackByStock = [];        // lokasi rak tiap unit (untuk label opsi)
         $expiryByStock = [];
         foreach ($contents as $ci) {
-            $rows = $this->distributionCandidates($order, [
+            $rows = $this->distributionCandidates([
                 'instrument_id' => $ci->instrument->id,
                 'source' => 'paket',
                 'package_name' => $packageName,
@@ -1428,14 +1437,24 @@ class OrderController extends Controller
     }
 
     /**
-     * Kandidat unit steril di gudang untuk satu requirement order distribusi: baris
-     * gudang yang belum kedaluwarsa, bentuk simpannya cocok (satuan/paket bernama sama),
-     * dan pemiliknya order ini (sudah direservasi) atau masih pool produksi (`order_id`
-     * null). Urut FEFO. Kriteria disamakan dengan hitungan ketersediaan — termasuk TIDAK
-     * menyaring `instrument_storages.status`, agar order tidak lolos validasi lalu gagal
-     * di sini. Unit fisiknya sendiri tetap wajib `tersedia` (tidak sedang dipinjam).
+     * Kandidat unit steril di gudang untuk satu baris permintaan order. Syaratnya:
+     * `instrument_storages.order_id` NULL (masih pool bebas, belum diklaim order mana
+     * pun) dan `expiry_date >= hari ini` (wajib bertanggal & belum lewat). Bentuk
+     * simpannya harus cocok — satuan hanya dari unit yang disimpan satuan, paket hanya
+     * dari unit yang disimpan sebagai paket bernama sama. Urut FEFO.
+     *
+     * `instrument_storages.status` TIDAK menyaring, disamakan dengan daftar inventaris
+     * Gudang Steril & hitungan ketersediaan di halaman order. Unit fisiknya sendiri
+     * tetap wajib `tersedia` (tidak sedang dipinjam).
+     *
+     * `$lock` = kunci baris kandidatnya (SELECT ... FOR UPDATE). WAJIB true bila hasilnya
+     * dipakai untuk MERESERVASI unit (allocateFefo/reallocateDistribution), supaya dua
+     * order tidak membaca baris pool yang sama lalu sama-sama mengklaimnya. Biarkan
+     * false untuk penyusunan daftar pilihan yang hanya dibaca (distributionOptions) —
+     * mengunci di sana cuma menahan permintaan lain tanpa guna. Hanya berefek di dalam
+     * transaksi.
      */
-    private function distributionCandidates(Order $order, array $req)
+    private function distributionCandidates(array $req, bool $lock = false)
     {
         $today = now()->toDateString();
 
@@ -1446,11 +1465,12 @@ class OrderController extends Controller
             ->whereNull('instrument_storages.deleted_by')
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
-                ->orWhereDate('instrument_storages.expiry_date', '>=', $today))
-            // Milik order ini (sudah direservasi) atau masih pool produksi (order_id null).
-            ->where(fn ($w) => $w->where('instrument_storages.order_id', $order->id)
-                ->orWhereNull('instrument_storages.order_id'))
+            // Wajib punya tanggal kedaluwarsa DAN belum lewat. Baris tanpa tanggal
+            // (expiry_date null) tidak boleh ikut didistribusikan.
+            ->whereDate('instrument_storages.expiry_date', '>=', $today)
+            // Hanya pool bebas. Menerima order tidak lagi mereservasi apa pun, jadi
+            // sampai tombol Distribusikan ditekan seluruh kandidat pasti `order_id` null.
+            ->whereNull('instrument_storages.order_id')
             ->where('instrument_stocks.instrument_id', $req['instrument_id'])
             ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
             ->where('production_item.source', $req['source'])
@@ -1458,7 +1478,9 @@ class OrderController extends Controller
                 $req['source'] === 'paket',
                 fn ($q) => $q->where('production_item.package_name', $req['package_name'])
             )
-            ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')
+            // FEFO — kedaluwarsa terdekat dikeluarkan lebih dulu.
+            ->orderBy('instrument_storages.expiry_date')
+            ->when($lock, fn ($q) => $q->lockForUpdate())
             ->get([
                 'instrument_storages.id as storage_id',
                 'instrument_storages.expiry_date as expiry_date',
@@ -1506,10 +1528,79 @@ class OrderController extends Controller
     }
 
     /**
+     * Pilih unit steril FEFO (first-expired-first-out) untuk SELURUH baris permintaan
+     * order, dari pool gudang yang belum direservasi. Dipakai dua tahap dengan peran
+     * berbeda, lewat `$reserve`:
+     *
+     * - `false` — hanya MEMERIKSA kecukupan (saat order diterima). Tidak mengunci,
+     *   tidak menulis apa pun. Karena tidak mereservasi, hasilnya tidak mengikat:
+     *   stok yang sama masih bisa diambil order lain yang didistribusikan lebih dulu.
+     * - `true` — benar-benar MENGALOKASIKAN (saat distribusi tanpa pilihan manual):
+     *   baris kandidat dikunci, `order_item` ditulis, dan baris gudang direservasi ke
+     *   order ini agar langkah berikutnya mengeluarkannya dari gudang.
+     *
+     * Satu unit fisik tidak pernah dipakai untuk dua baris permintaan sekaligus —
+     * `$picked` menahannya lintas iterasi.
+     *
+     * @return array<int,int> instrument_stock_id yang terpilih
+     *
+     * @throws \RuntimeException bila ada baris permintaan yang tidak bisa dipenuhi
+     */
+    private function allocateFefo(Order $order, bool $reserve): array
+    {
+        $requirements = $this->buildRequirements($order);
+        if (empty($requirements)) {
+            throw new \RuntimeException('Order tidak punya baris permintaan yang bisa dialokasikan.');
+        }
+
+        $picked = [];
+        $actor = auth()->user()?->name;
+
+        foreach ($requirements as $req) {
+            $rows = $this->distributionCandidates($req, lock: $reserve)
+                ->reject(fn ($r) => in_array((int) $r->stock_id, $picked, true))
+                ->take($req['needed_qty'])
+                ->values();
+
+            if ($rows->count() < $req['needed_qty']) {
+                $bentuk = $req['source'] === 'paket'
+                    ? " (paket \"{$req['package_name']}\")"
+                    : ' (satuan)';
+                throw new \RuntimeException(
+                    "Stok steril \"{$req['instrument']['name']}\"{$bentuk} tidak cukup: butuh {$req['needed_qty']}, tersedia ".$rows->count().'.'
+                );
+            }
+
+            foreach ($rows as $row) {
+                $picked[] = (int) $row->stock_id;
+
+                if (! $reserve) {
+                    continue;
+                }
+
+                $order->items()->create([
+                    'instrument_stock_id' => $row->stock_id,
+                    'source' => $req['source'],
+                    'package_name' => $req['package_name'],
+                    'condition_out_id' => $row->condition_id,
+                    'is_returned' => false,
+                ]);
+
+                // Pindahkan kepemilikan baris gudang ke order ini.
+                InstrumentStorage::withoutGlobalScopes()
+                    ->where('id', $row->storage_id)
+                    ->update(['order_id' => $order->id, 'updated_by' => $actor]);
+            }
+        }
+
+        return $picked;
+    }
+
+    /**
      * Terapkan pilihan unit petugas saat distribusi: unit terpilih direservasi ke
-     * order ini, unit yang tadinya dialokasikan (FEFO otomatis) tapi tidak jadi
-     * dipilih dikembalikan ke pool produksi, lalu baris order_item ditulis ulang
-     * agar cocok dengan yang benar-benar dikeluarkan dari gudang.
+     * order ini, unit yang sempat direservasi tapi tidak jadi dipilih dikembalikan
+     * ke pool produksi, lalu baris order_item ditulis ulang agar cocok dengan yang
+     * benar-benar dikeluarkan dari gudang.
      */
     private function reallocateDistribution(Order $order, array $stockIds): void
     {
@@ -1520,7 +1611,9 @@ class OrderController extends Controller
         $taken = [];
 
         foreach ($requirements as $req) {
-            $rows = $this->distributionCandidates($order, $req)
+            // lock: true — hasilnya langsung dipakai untuk mereservasi baris gudang
+            // di bawah, jadi barisnya harus terkunci sejak dibaca.
+            $rows = $this->distributionCandidates($req, lock: true)
                 ->reject(fn ($r) => in_array((int) $r->stock_id, $taken, true))
                 ->values();
 
@@ -1585,100 +1678,48 @@ class OrderController extends Controller
     }
 
     /**
-     * Terima order masuk & SIAPKAN DISTRIBUSI. Karena order hanya meminta barang
-     * yang sudah steril, order tidak perlu lewat pipeline Cleaning→Sterilisasi lagi:
-     * sistem mengalokasikan unit steril dari gudang secara FEFO (first-expired-first-out),
-     * lalu order → `digudang` (muncul di Distribution & Tracking).
+     * Terima order masuk. Karena order hanya meminta barang yang sudah steril, order
+     * tidak perlu lewat pipeline Cleaning→Sterilisasi lagi: statusnya langsung →
+     * `digudang` (muncul di Distribution & Tracking).
      *
-     * Reservasi: baris gudang unit yang dipilih dipindahkan kepemilikannya ke order
-     * ini (order_id), sehingga (a) keluar dari pool "available sterile" milik produksi
-     * (room_id null) dan (b) distribute menemukannya untuk dikeluarkan dari gudang.
+     * Menerima order HANYA menerima — TIDAK mengalokasikan & TIDAK mereservasi unit.
+     * `instrument_storages.order_id` tetap null sampai barangnya benar-benar
+     * didistribusikan; pemilihan unit terjadi di modal Distribusikan (lihat
+     * `distributionOptions` & `distribute`).
+     *
+     * Yang tetap dilakukan: kecukupan stok pool diperiksa sebagai peringatan dini.
+     * Karena tidak mereservasi, hasil pemeriksaan itu tidak mengikat — stok yang sama
+     * masih bisa diambil order lain yang didistribusikan lebih dulu.
+     *
+     * Semua dalam satu transaksi + baris order dikunci, sehingga dua permintaan
+     * "Terima order" bersamaan tidak dijalankan dua kali.
      */
     public function acceptDistribution(Order $order): JsonResponse
     {
+        // Pemeriksaan awal yang murah; yang MENGIKAT ada di dalam transaksi setelah
+        // baris order dikunci.
         if ($order->status !== Order::STATUS_DIAJUKAN) {
             return $this->error('Order ini sudah diproses dan tidak bisa diterima lagi.', 422);
         }
 
         try {
             DB::transaction(function () use ($order) {
-                $requirements = $this->buildRequirements($order);
-                if (empty($requirements)) {
-                    throw new \RuntimeException('Order tidak punya baris permintaan yang bisa dialokasikan.');
+                // Kunci baris order — cegah dua permintaan "Terima order" berbarengan
+                // mengalokasikan unit dua kali untuk order yang sama.
+                $current = Order::whereKey($order->id)->lockForUpdate()->value('status');
+
+                if ($current === null) {
+                    throw new \RuntimeException('Order tidak ditemukan atau sudah dihapus.');
                 }
 
-                $today = now()->toDateString();
-                $picked = [];        // stock id yang sudah dipilih (cegah dobel antar requirement)
-                $allStockIds = [];
-
-                foreach ($requirements as $req) {
-                    // Kandidat unit steril (di gudang, belum kedaluwarsa, masih milik
-                    // produksi) untuk instrumen ini, diurutkan FEFO (kedaluwarsa terdekat).
-                    // Bentuk simpan harus cocok: permintaan satuan hanya boleh mengambil
-                    // unit yang disimpan satuan, permintaan paket hanya dari unit yang
-                    // disimpan sebagai paket bernama sama (produksi menentukan bentuknya).
-                    $rows = InstrumentStorage::withoutGlobalScopes()
-                        // Asal (satuan/paket) & nama paket ada di production_item.
-                        ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
-                        ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-                        ->whereNull('instrument_storages.deleted_by')
-                        ->whereNull('production_item.deleted_by')
-                        ->whereNull('instrument_stocks.deleted_by')
-                        ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
-                            ->orWhereDate('instrument_storages.expiry_date', '>=', $today))
-                        // Kriteria sama dengan hitungan ketersediaan: hanya pool produksi
-                        // yang belum direservasi; `instrument_storages.status` tidak menyaring.
-                        ->whereNull('instrument_storages.order_id')
-                        ->where('instrument_stocks.instrument_id', $req['instrument_id'])
-                        ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
-                        ->where('production_item.source', $req['source'])
-                        ->when(
-                            $req['source'] === 'paket',
-                            fn ($q) => $q->where('production_item.package_name', $req['package_name'])
-                        )
-                        ->when($picked, fn ($q) => $q->whereNotIn('instrument_stocks.id', $picked))
-                        ->orderByRaw('instrument_storages.expiry_date IS NULL, instrument_storages.expiry_date ASC')
-                        ->get([
-                            'instrument_storages.id as storage_id',
-                            'instrument_stocks.id as stock_id',
-                            'instrument_stocks.condition_id as condition_id',
-                        ])
-                        // Satu unit fisik bisa punya >1 baris gudang (mis. pernah
-                        // diproduksi/disimpan berkali-kali) sehingga JOIN mengembalikan
-                        // stock_id yang sama berulang. Dedup per unit — ambil baris FEFO
-                        // paling awal — agar unit yang sama tidak dialokasikan dua kali.
-                        ->unique('stock_id')
-                        ->take($req['needed_qty'])
-                        ->values();
-
-                    if ($rows->count() < $req['needed_qty']) {
-                        $bentuk = $req['source'] === 'paket'
-                            ? " (paket \"{$req['package_name']}\")"
-                            : ' (satuan)';
-                        throw new \RuntimeException(
-                            "Stok steril \"{$req['instrument']['name']}\"{$bentuk} tidak cukup: butuh {$req['needed_qty']}, tersedia ".$rows->count().'.'
-                        );
-                    }
-
-                    foreach ($rows as $row) {
-                        $picked[] = $row->stock_id;
-                        $allStockIds[] = $row->stock_id;
-
-                        $order->items()->create([
-                            'instrument_stock_id' => $row->stock_id,
-                            'source' => $req['source'],
-                            'package_name' => $req['package_name'],
-                            'condition_out_id' => $row->condition_id,
-                            'is_returned' => false,
-                        ]);
-
-                        // Pindahkan kepemilikan baris gudang ke order ini (reservasi +
-                        // agar distribute mengeluarkannya dari gudang).
-                        InstrumentStorage::withoutGlobalScopes()
-                            ->where('id', $row->storage_id)
-                            ->update(['order_id' => $order->id, 'updated_by' => auth()->user()?->name]);
-                    }
+                if ($current !== Order::STATUS_DIAJUKAN) {
+                    throw new \RuntimeException('Order ini sudah diproses dan tidak bisa diterima lagi.');
                 }
+
+                // Peringatan dini: pastikan stok pool cukup untuk seluruh baris
+                // permintaan. reserve: false — TIDAK mengunci & tidak mengubah apa pun,
+                // jadi sifatnya informatif. Stok baru benar-benar diklaim saat distribusi.
+                $this->allocateFefo($order, reserve: false);
 
                 $order->status = Order::STATUS_DIGUDANG;
                 $order->processed_at = now();
@@ -1689,13 +1730,17 @@ class OrderController extends Controller
                 $order->save();
 
                 OrderEvent::record(OrderEvent::TYPE_DITERIMA, $order, [
-                    'note' => 'Order diterima — unit steril dialokasikan (FEFO) dari gudang, siap distribusi',
+                    'note' => 'Order diterima — stok steril mencukupi, menunggu distribusi',
                 ]);
             });
 
             $order->load(self::DETAIL_RELATIONS);
 
             return $this->success('Order diterima & siap didistribusikan.', $order);
+        } catch (\RuntimeException $e) {
+            // Stok tidak cukup / order sudah diproses duluan oleh permintaan lain —
+            // validasi bisnis, bukan error server. Samakan dengan distribute().
+            return $this->error($e->getMessage(), 422);
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
@@ -1711,9 +1756,16 @@ class OrderController extends Controller
      *
      * Efek: unit keluar gudang (storage `keluar`), unit → `dipinjam`, order →
      * `dipinjam` (Terdistribusi/Digunakan), event `terdistribusi`.
+     *
+     * Seluruh efek berjalan dalam SATU transaksi — bila ada satu langkah gagal
+     * (mis. pilihan unit sudah diambil order lain), semuanya di-rollback sehingga
+     * order tidak pernah setengah terdistribusi.
      */
     public function distribute(Request $request, Order $order): JsonResponse
     {
+        // Pemeriksaan awal yang murah supaya klien dapat pesan jelas tanpa membuka
+        // transaksi. Pemeriksaan yang MENGIKAT ada di dalam transaksi (di bawah),
+        // setelah baris order dikunci — status di sini bisa sudah basi.
         if ($order->status !== Order::STATUS_DIGUDANG) {
             return $this->error('Order ini belum berada di gudang steril / tidak siap didistribusikan.', 422);
         }
@@ -1727,10 +1779,32 @@ class OrderController extends Controller
 
         try {
             DB::transaction(function () use ($validated, $order) {
-                // Petugas memilih sendiri stok yang dikeluarkan (kode produksi mana) →
-                // sesuaikan reservasi gudang & unit order sebelum dikeluarkan.
+                // KUNCI baris order lebih dulu (SELECT ... FOR UPDATE). Dua permintaan
+                // distribusi yang datang bersamaan — petugas klik dua kali, atau dua
+                // petugas membuka order yang sama — dipaksa berurutan di sini. Yang
+                // kedua baru jalan setelah yang pertama commit, lalu status ordernya
+                // sudah `dipinjam` sehingga ditolak, bukan mengeluarkan unit dua kali.
+                $current = Order::whereKey($order->id)->lockForUpdate()->value('status');
+
+                if ($current === null) {
+                    throw new \RuntimeException('Order tidak ditemukan atau sudah dihapus.');
+                }
+
+                if ($current !== Order::STATUS_DIGUDANG) {
+                    throw new \RuntimeException(
+                        'Order ini sudah didistribusikan atau statusnya berubah. Muat ulang halaman.'
+                    );
+                }
+
                 if (! empty($validated['stock_ids'])) {
+                    // Petugas memilih sendiri stok yang dikeluarkan (kode produksi mana)
+                    // → reservasi gudang & unit order disesuaikan sebelum dikeluarkan.
                     $this->reallocateDistribution($order, $validated['stock_ids']);
+                } elseif (! $order->items()->where('is_returned', false)->exists()) {
+                    // Tidak memilih apa-apa & order belum punya alokasi → sistem memilihkan
+                    // FEFO dari pool bebas. (Order yang diterima SEBELUM alokasi dipindah
+                    // ke tahap ini sudah punya order_item; alokasinya dipakai apa adanya.)
+                    $this->allocateFefo($order, reserve: true);
                 }
 
                 $stockIds = $order->items()->where('is_returned', false)

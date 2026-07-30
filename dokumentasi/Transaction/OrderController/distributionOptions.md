@@ -22,8 +22,17 @@ isi katalognya, dan seluruh isi berasal dari satu batch produksi (tidak tercampu
 Bila satu batch memproduksi beberapa set dengan nama paket sama, tiap set jadi opsi terpisah
 (`set_index` = Set 1, Set 2, …).
 
-Kandidat = unit yang sudah direservasi untuk order ini (alokasi FEFO saat order diterima) +
-unit steril milik produksi yang masih bebas. Urut FEFO; unit kedaluwarsa tidak ikut.
+Kandidat diambil dari `instrument_storages` dengan dua syarat:
+
+- `order_id IS NULL` — baris gudang yang masih pool bebas, belum diklaim order mana pun.
+  Menerima order tidak lagi mereservasi apa pun, jadi seluruh kandidat pasti `null`.
+- `expiry_date >= hari ini` — wajib bertanggal kedaluwarsa dan belum lewat. Baris tanpa
+  tanggal (`expiry_date` null) **tidak** ditawarkan.
+
+Ditambah: unit fisiknya harus berstatus `tersedia`, dan bentuk simpannya cocok (satuan
+hanya dari unit yang disimpan satuan, paket hanya dari unit yang disimpan sebagai paket
+bernama sama). Urut FEFO. `instrument_storages.status` tidak ikut menyaring — sama dengan
+daftar inventaris Gudang Steril.
 
 ### Path Parameter
 | Parameter | Type | Keterangan |

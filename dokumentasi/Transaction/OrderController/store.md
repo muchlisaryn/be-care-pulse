@@ -21,12 +21,16 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
 | Authorization | Bearer {token} | Ya |
 | Content-Type | application/json | Ya |
 
+> **Pemilik order.** `user_id` **tidak** diterima dari request — selalu diisi akun yang
+> sedang login, sehingga konsisten dengan `created_by`. Sebelumnya field ini boleh dikirim
+> klien, sehingga order bisa didaftarkan atas nama akun lain dan muncul di daftar orang
+> tersebut (lihat [index](index.md) yang menyaring `user_id`).
+
 ### Body Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
 | room_id | integer | Ya | Ruangan tujuan, harus ada di tabel rooms |
-| user_id | integer | Tidak | Petugas/penanggung jawab, harus ada di tabel users |
-| borrowed_by | string | Tidak | Nama peminjam (teks bebas), maksimal 255 karakter |
+| borrowed_by | string | Tidak | Nama peminjam (dipilih dari Master User di form), maksimal 255 karakter |
 | medical_record_no | string | Ya | No. rekam medis pasien, maksimal 255 karakter |
 | patient_name | string | Ya | Nama pasien, maksimal 255 karakter |
 | order_date | date | Ya | Tanggal pengajuan/pinjam (format `YYYY-MM-DD`) |
@@ -44,7 +48,6 @@ akan di-generate otomatis saat CSSD menerima pesanan. Semua baris permintaan dis
 ```json
 {
   "room_id": 1,
-  "user_id": 1,
   "borrowed_by": "dr. Andi",
   "medical_record_no": "00-12-34-56",
   "patient_name": "Budi Santoso",
