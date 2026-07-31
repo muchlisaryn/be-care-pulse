@@ -205,10 +205,14 @@ class StorageController extends Controller
     }
 
     /**
-     * Ringkasan angka gudang steril: total unit tersimpan, mendekati kedaluwarsa
+     * Ringkasan angka gudang steril: total instrumen tersimpan, mendekati kedaluwarsa
      * (≤ ambang hari, belum lewat) & sudah kedaluwarsa. Dipakai kartu statistik FE
      * agar tetap akurat walau daftar inventarisnya dimuat bertahap (lazy load).
      * ?days= ambang early-warning (default 7).
+     *
+     * ATURAN HITUNG: paket dihitung per SET (satu bungkus/label = 1), instrumen
+     * `satuan` dihitung per unit — jadi paket berisi 5 instrumen tetap bernilai 1.
+     * Karena itu angkanya dihitung di PHP (butuh nomor label kemasan), bukan `count()`.
      */
     public function summary(Request $request): JsonResponse
     {
@@ -216,22 +220,66 @@ class StorageController extends Controller
         $today = now()->startOfDay();
 
         // Basis sama dengan inventory(): hanya unit yang fisiknya benar-benar di rak.
-        $base = fn () => InstrumentStorage::where('status', InstrumentStorage::STATUS_TERSIMPAN)
+        $rows = InstrumentStorage::where('status', InstrumentStorage::STATUS_TERSIMPAN)
             ->whereHas(
                 'instrumentStock',
                 fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
-            );
+            )
+            ->with('productionItem:id,source,package_name')
+            ->get(['id', 'instrument_stock_id', 'sterilization_id', 'production_item_id', 'expiry_date']);
+
+        $barcodes = $this->packagingBarcodeMap($rows);
+        $limit = $today->copy()->addDays($days);
 
         return $this->success('Ringkasan gudang steril berhasil diambil.', [
-            'total' => $base()->count(),
-            'alert' => $base()->whereNotNull('expiry_date')
-                ->whereDate('expiry_date', '>=', $today)
-                ->whereDate('expiry_date', '<=', $today->copy()->addDays($days))
-                ->count(),
-            'expired' => $base()->whereNotNull('expiry_date')
-                ->whereDate('expiry_date', '<', $today)
-                ->count(),
+            'total' => $this->countAsItems($rows, $barcodes),
+            'alert' => $this->countAsItems(
+                $rows->filter(fn ($s) => $s->expiry_date
+                    && $s->expiry_date->startOfDay()->gte($today)
+                    && $s->expiry_date->startOfDay()->lte($limit)),
+                $barcodes
+            ),
+            'expired' => $this->countAsItems(
+                $rows->filter(fn ($s) => $s->expiry_date && $s->expiry_date->startOfDay()->lt($today)),
+                $barcodes
+            ),
         ]);
+    }
+
+    /**
+     * Jumlah "instrumen" menurut aturan tampilan: baris `paket` dihitung per SET
+     * (dikelompokkan per nomor label kemasan pada batch steril yang sama — satu label
+     * = satu bungkus = satu set), baris `satuan` dihitung per unit. Bungkus tanpa
+     * nomor label dihitung sebagai set tersendiri agar jumlahnya tidak mengecil palsu.
+     *
+     * @param  Collection<int,InstrumentStorage>  $rows
+     * @param  array{pairs: array<string,string>, stocks: array<int,string>}  $barcodes
+     */
+    private function countAsItems(Collection $rows, array $barcodes): int
+    {
+        $count = 0;
+        $seenSets = [];
+
+        foreach ($rows as $s) {
+            if (($s->productionItem?->source ?? 'satuan') !== 'paket') {
+                $count++;
+
+                continue;
+            }
+
+            $barcode = $barcodes['pairs'][$s->sterilization_id.'|'.$s->instrument_stock_id]
+                ?? $barcodes['stocks'][(int) $s->instrument_stock_id]
+                ?? null;
+            $key = $barcode !== null ? $s->sterilization_id.'|'.$barcode : 'tanpa-label#'.$s->id;
+
+            if (isset($seenSets[$key])) {
+                continue;
+            }
+            $seenSets[$key] = true;
+            $count++;
+        }
+
+        return $count;
     }
 
     /** Ringkasan order siap-simpan + unit & status penempatannya. */

@@ -27,6 +27,13 @@ bernilai `null` dan jumlahnya dibaca dari `qty` (unit). Frontend memakai ini aga
 kartu order menampilkan paket dalam satuan **set** dan instrumen lepas dalam
 satuan **unit**.
 
+`borrowed_count` (dipakai kartu **Unit Dipinjam** di halaman monitor) memakai
+aturan hitung berbeda dari `qty`: **paket dihitung per SET, bukan per unit fisik
+di dalamnya**, sedangkan instrumen `satuan` dihitung per unit. Jadi order berisi
+1 paket (5 instrumen) + 2 instrumen satuan menghasilkan `borrowed_count: 3`, dan
+paket 2 set menyumbang 2. Jumlah set diambil dari `order_request_item.quantity`;
+bila baris permintaannya tidak ditemukan, paket dihitung 1.
+
 Tiap unit di array `units` menyertakan `barcode_no` — nomor label fisik bungkus
 steril terbaru dari `packaging_item` (label yang sudah di-void diabaikan; `null`
 bila unit belum pernah melewati tahap packaging). Dipakai frontend agar kolom

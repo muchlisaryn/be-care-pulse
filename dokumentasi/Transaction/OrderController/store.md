@@ -131,10 +131,16 @@ Stok divalidasi ulang di server sebelum order dibuat, **di dalam transaksi** dan
 `lockForUpdate()` atas baris gudang yang dihitung, sehingga dua order yang dikirim
 bersamaan tidak bisa sama-sama lolos atas stok yang sama.
 
-Order berstatus `diajukan` belum memotong stok apa pun (unit fisik baru dialokasikan
-saat CSSD menerima order), jadi jumlah yang sudah dipesan order lain yang masih
-`diajukan` **ikut dikurangkan** dari stok tersedia. Tanpa ini dua order berurutan tetap
-bisa sama-sama lolos atas unit yang sama.
+Yang dibandingkan adalah stok steril **fisik** di gudang. Order lain yang masih
+`diajukan` **TIDAK dikurangkan**: order hanyalah permintaan — unit fisik baru diklaim
+saat **distribusi** (`instrument_storages.order_id` diisi oleh `allocateFefo`). Jadi
+stok 1 unit tetap bisa diorder lebih dari satu kali; ini disengaja, dan angkanya sama
+dengan "Tersedia" yang ditampilkan form order (`available_sterile_count` /
+`available_sterile_sets`).
+
+Bentrok stok yang nyata tetap tertangkap di titik yang mengikat:
+- `acceptDistribution` — peringatan dini saat CSSD menerima order (422 bila pool kurang)
+- `distribute` — klaim unit FEFO + `lockForUpdate` (422 bila keburu diambil order lain)
 
 Seluruh transaksi di-rollback — tidak ada baris `order` maupun `order_request_item`
 yang tertinggal.
@@ -142,7 +148,7 @@ yang tertinggal.
 ```json
 {
   "status": false,
-  "message": "Stok steril paket \"GV SET\" tidak mencukupi: diminta 1 set, tersisa 0 set. Stok mungkin baru saja diambil order lain — muat ulang halaman."
+  "message": "Stok steril paket \"GV SET\" tidak mencukupi: diminta 1 set, tersisa 0 set."
 }
 ```
 
@@ -150,7 +156,7 @@ Baris `satuan` memakai satuan **unit**:
 ```json
 {
   "status": false,
-  "message": "Stok steril \"Gunting\" tidak mencukupi: diminta 2 unit, tersisa 0 unit. Stok mungkin baru saja diambil order lain — muat ulang halaman."
+  "message": "Stok steril \"Gunting\" tidak mencukupi: diminta 2 unit, tersisa 0 unit."
 }
 ```
 

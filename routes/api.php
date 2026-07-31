@@ -117,6 +117,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('monitoring/rooms', [MonitoringController::class, 'rooms']);
         // Order masuk dari menu Order Instrumen (diajukan/disetujui, lintas user)
         Route::get('monitoring/incoming', [MonitoringController::class, 'incoming']);
+        // Jumlahnya saja — untuk badge notifikasi sidebar (dipanggil sering)
+        Route::get('monitoring/incoming-count', [MonitoringController::class, 'incomingCount']);
         // Order yang sudah dikembalikan (riwayat) — tetap dipajang di monitoring
         Route::get('monitoring/returned', [MonitoringController::class, 'returned']);
         // Papan monitor (display TV): daftar order aktif untuk dipajang

@@ -15,6 +15,13 @@ bukan hanya baris yang sudah dimuat di layar.
 **Basis perhitungan sama dengan `inventory`:** hanya baris gudang berstatus
 `tersimpan` yang unitnya masih berkondisi `tersedia`.
 
+**Aturan hitung:** baris `paket` dihitung **per SET** — dikelompokkan per nomor
+label kemasan (`sterilization_item.packaging_barcode`) pada batch steril yang sama,
+karena satu label = satu bungkus = satu set — sedangkan baris `satuan` dihitung
+**per unit**. Jadi satu paket berisi 5 instrumen bernilai 1, bukan 5. Bungkus tanpa
+nomor label dihitung sebagai set tersendiri agar jumlahnya tidak mengecil palsu.
+Aturan ini sama dengan `borrowed_count` pada `MonitoringController@rooms`.
+
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
 |-----------|------|----------|------------|
@@ -35,9 +42,9 @@ bukan hanya baris yang sudah dimuat di layar.
 
 | Field | Keterangan |
 |-------|------------|
-| total | Jumlah unit yang sedang berada di rak gudang steril |
-| alert | Unit yang kedaluwarsa dalam ≤ `days` hari (belum lewat) |
-| expired | Unit yang tanggal kedaluwarsanya sudah lewat |
+| total | Jumlah instrumen di rak gudang steril (paket = 1 per set, satuan = per unit) |
+| alert | Instrumen yang kedaluwarsa dalam ≤ `days` hari (belum lewat), aturan hitung sama |
+| expired | Instrumen yang tanggal kedaluwarsanya sudah lewat, aturan hitung sama |
 
 ### Response — Error (401)
 ```json

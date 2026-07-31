@@ -84,6 +84,10 @@ class MonitoringController extends Controller
                     $setsByPackage[$name] = ($setsByPackage[$name] ?? 0) + (int) $line->quantity;
                 }
 
+                // Paket sudah dihitung (per nama) supaya unit fisik di dalamnya
+                // tidak menambah "unit dipinjam" berulang kali.
+                $countedPackages = [];
+
                 foreach ($order->items as $item) {
                     $stock = $item->instrumentStock;
                     $instrument = $stock?->instrument;
@@ -91,7 +95,17 @@ class MonitoringController extends Controller
                         continue;
                     }
 
-                    $unitCount++;
+                    // Jumlah "unit dipinjam": paket dihitung per SET (bukan per unit
+                    // fisik di dalamnya), instrumen satuan dihitung per unit.
+                    if ($item->source === 'paket') {
+                        $pkg = $item->package_name ?? 'Paket';
+                        if (! isset($countedPackages[$pkg])) {
+                            $countedPackages[$pkg] = true;
+                            $unitCount += $setsByPackage[$pkg] ?? 1;
+                        }
+                    } else {
+                        $unitCount++;
+                    }
                     // Hitung transaksi unik berdasarkan no_transaction (code_transaction).
                     $txKeys[$order->code_transaction ?? ('ord-'.$order->id)] = true;
                     // Pisahkan per asal (satuan/paket) & nama paket agar bisa
@@ -233,6 +247,21 @@ class MonitoringController extends Controller
         });
 
         return $this->success('Data order masuk berhasil diambil.', $orders);
+    }
+
+    /**
+     * JUMLAH order masuk saja — sumber angka badge notifikasi di sidebar. Dipisah dari
+     * `incoming()` karena dipanggil sering (saat tab kembali fokus, setelah order
+     * diterima/dibatalkan/dihapus): endpoint ini hanya `count()`, tanpa memuat 20 order
+     * beserta relasinya. Penyaringnya WAJIB sama persis dengan `incoming()` — kalau
+     * `incoming()` berubah, ubah juga di sini agar badge tidak pernah berbeda dari
+     * daftar yang ditampilkan.
+     */
+    public function incomingCount(): JsonResponse
+    {
+        return $this->success('Jumlah order masuk berhasil diambil.', [
+            'count' => Order::where('status', Order::STATUS_DIAJUKAN)->count(),
+        ]);
     }
 
     /**
