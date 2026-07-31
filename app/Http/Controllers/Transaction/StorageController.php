@@ -213,20 +213,25 @@ class StorageController extends Controller
      * ATURAN HITUNG: paket dihitung per SET (satu bungkus/label = 1), instrumen
      * `satuan` dihitung per unit — jadi paket berisi 5 instrumen tetap bernilai 1.
      * Karena itu angkanya dihitung di PHP (butuh nomor label kemasan), bukan `count()`.
+     *
+     * Angka di sini WAJIB sama dengan penjumlahan kepala grup rak di halaman
+     * Inventaris Gudang. Karena itu baris yang dihitung memakai penyaring yang sama
+     * persis dengan inventory() — `order_id` NULL, tanpa menyaring status baris gudang
+     * maupun status unit. Jangan tambahkan `where('status', ...)` di sini; dulu ada,
+     * dan membuat kartu statistik memuat baris yang berbeda dari daftarnya.
      */
     public function summary(Request $request): JsonResponse
     {
         $days = max(0, (int) $request->input('days', self::EXPIRY_ALERT_DAYS));
         $today = now()->startOfDay();
 
-        // Basis sama dengan inventory(): hanya unit yang fisiknya benar-benar di rak.
-        $rows = InstrumentStorage::where('status', InstrumentStorage::STATUS_TERSIMPAN)
-            ->whereHas(
-                'instrumentStock',
-                fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA)
-            )
+        // Basis identik dengan inventory(): pool steril yang belum direservasi order.
+        $rows = InstrumentStorage::whereNull('order_id')
             ->with('productionItem:id,source,package_name')
-            ->get(['id', 'instrument_stock_id', 'sterilization_id', 'production_item_id', 'expiry_date']);
+            ->get([
+                'id', 'instrument_stock_id', 'sterilization_id', 'production_item_id',
+                'expiry_date', 'rack_code',
+            ]);
 
         $barcodes = $this->packagingBarcodeMap($rows);
         $limit = $today->copy()->addDays($days);
@@ -252,6 +257,10 @@ class StorageController extends Controller
      * = satu bungkus = satu set), baris `satuan` dihitung per unit. Bungkus tanpa
      * nomor label dihitung sebagai set tersendiri agar jumlahnya tidak mengecil palsu.
      *
+     * Pengelompokan set dibatasi PER RAK, meniru halaman Inventaris Gudang yang
+     * memecah isi per rak lebih dulu: satu paket yang unitnya tersebar di dua rak
+     * tampil sebagai satu set di masing-masing rak, jadi totalnya 2 — bukan 1.
+     *
      * @param  Collection<int,InstrumentStorage>  $rows
      * @param  array{pairs: array<string,string>, stocks: array<int,string>}  $barcodes
      */
@@ -270,7 +279,9 @@ class StorageController extends Controller
             $barcode = $barcodes['pairs'][$s->sterilization_id.'|'.$s->instrument_stock_id]
                 ?? $barcodes['stocks'][(int) $s->instrument_stock_id]
                 ?? null;
-            $key = $barcode !== null ? $s->sterilization_id.'|'.$barcode : 'tanpa-label#'.$s->id;
+            $key = $barcode !== null
+                ? $s->rack_code.'|'.$s->sterilization_id.'|'.$barcode
+                : 'tanpa-label#'.$s->id;
 
             if (isset($seenSets[$key])) {
                 continue;

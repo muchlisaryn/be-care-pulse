@@ -12,15 +12,23 @@ Dibuat terpisah dari `inventory` karena daftar inventaris dimuat **bertahap**
 (lazy load per halaman) — angka ringkasan tetap harus mencerminkan seluruh data,
 bukan hanya baris yang sudah dimuat di layar.
 
-**Basis perhitungan sama dengan `inventory`:** hanya baris gudang berstatus
-`tersimpan` yang unitnya masih berkondisi `tersedia`.
+**Basis perhitungan HARUS sama persis dengan `inventory`:** satu-satunya penyaring
+adalah `instrument_storages.order_id` NULL (pool steril yang belum direservasi order).
+Status baris gudang (`tersimpan`/`keluar`) dan kondisi unitnya **tidak** ikut
+menyaring — jangan tambahkan `where('status', ...)` di sini. Dulu penyaring itu ada
+dan membuat kartu statistik menghitung baris yang berbeda dari daftar yang tampil.
 
 **Aturan hitung:** baris `paket` dihitung **per SET** — dikelompokkan per nomor
 label kemasan (`sterilization_item.packaging_barcode`) pada batch steril yang sama,
 karena satu label = satu bungkus = satu set — sedangkan baris `satuan` dihitung
 **per unit**. Jadi satu paket berisi 5 instrumen bernilai 1, bukan 5. Bungkus tanpa
 nomor label dihitung sebagai set tersendiri agar jumlahnya tidak mengecil palsu.
-Aturan ini sama dengan `borrowed_count` pada `MonitoringController@rooms`.
+Aturan paket/satuan ini sama dengan `borrowed_count` pada `MonitoringController@rooms`.
+
+**Pengelompokan set dibatasi per RAK.** Halaman Inventaris Gudang memecah isi per rak
+lebih dulu, jadi satu paket yang unitnya tersebar di dua rak tampil sebagai satu set
+di masing-masing rak. Angka `total` mengikuti itu (2, bukan 1) supaya kartu statistik
+selalu sama dengan penjumlahan kepala grup rak di layar.
 
 ### Query Parameters
 | Parameter | Type | Required | Keterangan |
