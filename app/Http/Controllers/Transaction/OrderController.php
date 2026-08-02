@@ -346,6 +346,10 @@ class OrderController extends Controller
     public function show(Order $order): JsonResponse
     {
         $order->load(self::DETAIL_RELATIONS);
+        // Nomor label kemasan tiap unit — dipakai modal Detail Order untuk
+        // MENGELOMPOKKAN instrumen per bungkus fisik (satu label = satu set),
+        // sama seperti modal Pengembalian.
+        $this->attachBarcodeNos($order);
         // Detail Order Instrumen: timeline cukup siklus order (Dibuat → Diterima CSSD →
         // Terdistribusi → Dikembalikan), tanpa pipeline produksi/cleaning/steril.
         $this->attachTimeline($order, includePipeline: false);

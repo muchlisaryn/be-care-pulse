@@ -20,19 +20,34 @@ paket bila berasal dari paket, selain itu `null`) agar frontend bisa
 mengelompokkan tampilan **per paket**.
 
 Baris paket juga menyertakan `package_sets` — **jumlah SET** paket tersebut pada
-order, diambil dari `order_request_item.quantity` (bukan disimpulkan dari unit
-fisik). `qty` tetap jumlah unit fisik, jadi paket 2 set × 5 instrumen menghasilkan
+order (bukan jumlah unit fisik). Jumlah set dihitung dari banyaknya **nomor label
+kemasan** (`packaging_item.barcode_no`) yang berbeda di antara unit paket itu yang
+masih dipinjam — satu label = satu bungkus = satu set. Cara ini tetap benar saat
+order dikembalikan sebagian atau berasal dari pinjam-alih (yang tidak punya baris
+permintaan). Bila seluruh unitnya belum berlabel (data lama), jumlahnya jatuh ke
+`order_request_item.quantity`, lalu ke `1`.
+
+`qty` tetap jumlah unit fisik, jadi paket 2 set × 5 instrumen menghasilkan
 `package_sets: 2` dengan `qty` total 10. Untuk baris `satuan`, `package_sets`
 bernilai `null` dan jumlahnya dibaca dari `qty` (unit). Frontend memakai ini agar
 kartu order menampilkan paket dalam satuan **set** dan instrumen lepas dalam
-satuan **unit**.
+satuan **unit** — mis. "2 set paket · 10 unit satuan".
 
-`borrowed_count` (dipakai kartu **Unit Dipinjam** di halaman monitor) memakai
-aturan hitung berbeda dari `qty`: **paket dihitung per SET, bukan per unit fisik
-di dalamnya**, sedangkan instrumen `satuan` dihitung per unit. Jadi order berisi
-1 paket (5 instrumen) + 2 instrumen satuan menghasilkan `borrowed_count: 3`, dan
-paket 2 set menyumbang 2. Jumlah set diambil dari `order_request_item.quantity`;
-bila baris permintaannya tidak ditemukan, paket dihitung 1.
+`borrowed_count` (jumlah item dipinjam per ruangan) memakai aturan hitung yang sama:
+**paket dihitung per SET, bukan per unit fisik di dalamnya**, sedangkan instrumen
+`satuan` dihitung per unit. Jadi order berisi 1 paket (5 instrumen) + 2 instrumen
+satuan menghasilkan `borrowed_count: 3`, dan paket 2 set menyumbang 2.
+
+> **Endpoint ini BERAT** — tiap ruangan dimuat beserta seluruh unit dipinjam dan
+> relasinya (instrumen, kondisi, baris permintaan). Karena itu frontend hanya
+> memanggilnya saat datanya benar-benar dipakai: tab "Distribution & Tracking" dibuka,
+> atau kartu ruangan diklik. Untuk sekadar angka, pakai endpoint ringkasan:
+>
+> | Kebutuhan | Endpoint |
+> |---|---|
+> | Kartu statistik (dipinjam / order aktif / terlambat) | [`borrowed-summary`](borrowedSummary.md) |
+> | Kartu "Distribusi per Ruangan" | [`rooms-summary`](roomsSummary.md) |
+> | Badge angka tab | [`counts`](counts.md) |
 
 Tiap unit di array `units` menyertakan `barcode_no` — nomor label fisik bungkus
 steril terbaru dari `packaging_item` (label yang sudah di-void diabaikan; `null`

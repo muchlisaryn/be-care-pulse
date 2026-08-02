@@ -121,6 +121,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('monitoring/incoming-count', [MonitoringController::class, 'incomingCount']);
         // Order yang sudah dikembalikan (riwayat) — tetap dipajang di monitoring
         Route::get('monitoring/returned', [MonitoringController::class, 'returned']);
+        // Jumlah instrumen yang sedang dipinjam (paket per set, satuan per unit)
+        Route::get('monitoring/borrowed-summary', [MonitoringController::class, 'borrowedSummary']);
+        // Angka badge tab Tracking Order — count() murni, tanpa memuat daftarnya
+        Route::get('monitoring/counts', [MonitoringController::class, 'counts']);
+        // Kartu "Distribusi per Ruangan": angka per ruangan, tanpa daftar instrumennya
+        Route::get('monitoring/rooms-summary', [MonitoringController::class, 'roomsSummary']);
         // Papan monitor (display TV): daftar order aktif untuk dipajang
         Route::get('monitoring/board', [MonitoringController::class, 'board']);
 

@@ -4,11 +4,14 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Models\OrderItem;
+use App\Models\OrderRequestItem;
 use App\Models\PackagingItem;
 use App\Models\ProductionItem;
 use App\Models\Room;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 
 class MonitoringController extends Controller
 {
@@ -84,6 +87,28 @@ class MonitoringController extends Controller
                     $setsByPackage[$name] = ($setsByPackage[$name] ?? 0) + (int) $line->quantity;
                 }
 
+                // Jumlah SET nyata tiap paket = banyaknya NOMOR LABEL kemasan berbeda
+                // di antara unit yang masih dipinjam (satu label = satu bungkus = satu
+                // set). Lebih akurat daripada baris permintaan saat order dikembalikan
+                // sebagian atau berasal dari pinjam-alih (tanpa baris permintaan);
+                // unit tanpa label (data lama) jatuh ke jumlah pada baris permintaan.
+                $labelsByPackage = [];
+                foreach ($order->items as $item) {
+                    if ($item->source !== 'paket') {
+                        continue;
+                    }
+                    $pkg = $item->package_name ?? 'Paket';
+                    $labelsByPackage[$pkg] ??= [];
+                    if ($barcode = $barcodeByStock[(int) $item->instrument_stock_id] ?? null) {
+                        $labelsByPackage[$pkg][$barcode] = true;
+                    }
+                }
+                $setsOf = function (string $pkg) use ($labelsByPackage, $setsByPackage): int {
+                    $n = count($labelsByPackage[$pkg] ?? []);
+
+                    return $n > 0 ? $n : ($setsByPackage[$pkg] ?? 1);
+                };
+
                 // Paket sudah dihitung (per nama) supaya unit fisik di dalamnya
                 // tidak menambah "unit dipinjam" berulang kali.
                 $countedPackages = [];
@@ -101,7 +126,7 @@ class MonitoringController extends Controller
                         $pkg = $item->package_name ?? 'Paket';
                         if (! isset($countedPackages[$pkg])) {
                             $countedPackages[$pkg] = true;
-                            $unitCount += $setsByPackage[$pkg] ?? 1;
+                            $unitCount += $setsOf($pkg);
                         }
                     } else {
                         $unitCount++;
@@ -124,7 +149,7 @@ class MonitoringController extends Controller
                         // Jumlah SET paket ini pada order (null utk baris satuan).
                         // `qty` di bawah tetap jumlah unit fisik.
                         'package_sets' => $item->source === 'paket'
-                            ? ($setsByPackage[$item->package_name ?? 'Paket'] ?? null)
+                            ? $setsOf($item->package_name ?? 'Paket')
                             : null,
                         'instrument' => [
                             'id' => $instrument->id,
@@ -270,7 +295,7 @@ class MonitoringController extends Controller
      */
     public function returned(Request $request): JsonResponse
     {
-        $orders = Order::with(['room', 'user'])
+        $orders = Order::with(['room', 'user', 'items:id,order_id,instrument_stock_id,source,package_name'])
             ->withCount('items')
             ->where('status', Order::STATUS_DIKEMBALIKAN)
             ->when(
@@ -282,21 +307,295 @@ class MonitoringController extends Controller
             ->latest('updated_at')
             ->paginate(20);
 
-        $orders->getCollection()->transform(fn (Order $order) => [
-            'id' => $order->id,
-            'code' => $order->code,
-            'code_transaction' => $order->code_transaction,
-            'status' => $order->status,
-            'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
-            'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
-            'order_date' => $order->order_date,
-            'return_plan_date' => $order->return_plan_date,
-            // Perkiraan waktu pengembalian selesai = terakhir kali order diperbarui.
-            'returned_at' => $order->updated_at,
-            'total_units' => (int) $order->items_count,
-        ]);
+        // Nomor label kemasan seluruh unit pada halaman ini — dasar hitung SET paket
+        // (satu label = satu bungkus = satu set). Dikumpulkan sekali agar tidak N+1.
+        $barcodeByStock = $this->barcodeNoByStock(
+            collect($orders->items())
+                ->flatMap(fn (Order $order) => $order->items->pluck('instrument_stock_id'))
+                ->filter()
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all()
+        );
+
+        $setsFallback = $this->requestedSetsByOrder(
+            collect($orders->items())->pluck('id')->map(fn ($id) => (int) $id)->all()
+        );
+
+        $orders->getCollection()->transform(function (Order $order) use ($barcodeByStock, $setsFallback) {
+            // Ringkasan kartu: paket per SET, satuan per UNIT — aturan yang sama
+            // dengan kartu order aktif & kartu statistik.
+            $counts = $this->countAsSetsAndUnits($order->items, $barcodeByStock, $setsFallback);
+
+            return [
+                'id' => $order->id,
+                'code' => $order->code,
+                'code_transaction' => $order->code_transaction,
+                'status' => $order->status,
+                'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
+                'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
+                'order_date' => $order->order_date,
+                'return_plan_date' => $order->return_plan_date,
+                // Perkiraan waktu pengembalian selesai = terakhir kali order diperbarui.
+                'returned_at' => $order->updated_at,
+                'total_units' => (int) $order->items_count,
+                // Jumlah set paket & unit satuan untuk ringkasan kartu.
+                'total_sets' => $counts['sets'],
+                'total_satuan' => $counts['units'],
+            ];
+        });
 
         return $this->success('Data order dikembalikan berhasil diambil.', $orders);
+    }
+
+    /**
+     * JUMLAH order per tahap untuk badge angka pada tab halaman Tracking Order.
+     *
+     * Murni `count()` di database — tidak memuat satu pun baris order beserta
+     * relasinya. Dulu angka ini didapat frontend dengan mengambil SELURUH halaman
+     * daftar lalu menghitung panjang arraynya; untuk gudang dengan ribuan order itu
+     * berat dan lambat, padahal yang dibutuhkan cuma angka.
+     *
+     * Rentang tanggal opsional (?from=&to=, format YYYY-MM-DD) mengikuti filter di
+     * halaman agar angka badge selalu sama dengan isi daftarnya:
+     *   - siap distribusi → `processed_at` (saat diterima CSSD)
+     *   - dipinjam        → `order_date` (tanggal pinjam)
+     *   - dikembalikan    → `updated_at` (perkiraan waktu pengembalian selesai)
+     * "Order masuk" TIDAK ikut disaring: order yang belum diterima harus selalu
+     * terlihat, setua apa pun tanggalnya.
+     */
+    public function counts(Request $request): JsonResponse
+    {
+        $from = $request->input('from');
+        $to = $request->input('to');
+
+        $between = fn ($query, string $column) => $query
+            ->when($from, fn ($q, $v) => $q->whereDate($column, '>=', $v))
+            ->when($to, fn ($q, $v) => $q->whereDate($column, '<=', $v));
+
+        return $this->success('Jumlah order per tahap berhasil diambil.', [
+            'masuk' => Order::where('status', Order::STATUS_DIAJUKAN)->count(),
+            'siap_distribusi' => $between(
+                Order::where('status', Order::STATUS_DIGUDANG),
+                'processed_at'
+            )->count(),
+            'dipinjam' => $between(
+                Order::where('status', Order::STATUS_DIPINJAM),
+                'order_date'
+            )->count(),
+            'dikembalikan' => $between(
+                Order::where('status', Order::STATUS_DIKEMBALIKAN),
+                'updated_at'
+            )->count(),
+        ]);
+    }
+
+    /**
+     * Ringkasan per RUANGAN untuk kartu "Distribusi per Ruangan": nama ruangan +
+     * jumlah instrumen dipinjam & terlambat. Tanpa daftar instrumennya.
+     *
+     * Dipisah dari [rooms()] yang memuat seluruh unit beserta relasi instrumen,
+     * kondisi, dan baris permintaan tiap ruangan — payload itu hanya dibutuhkan saat
+     * daftar order dibuka, bukan untuk memajang angka di kartu. Di sini yang dibaca
+     * hanya baris order_item + kolom seperlunya, jadi jauh lebih ringan.
+     *
+     * Sengaja TIDAK dipaginasi: ini agregat (satu baris per ruangan yang sedang
+     * meminjam), sama seperti endpoint ringkasan lain — frontend memang butuh
+     * seluruhnya sekaligus untuk kartu & modal "semua ruangan".
+     */
+    public function roomsSummary(): JsonResponse
+    {
+        $items = $this->borrowedItems();
+        $barcodes = $this->barcodeNoByStock($this->stockIdsOf($items));
+        $fallback = $this->requestedSetsByOrder($items->pluck('order_id')->unique()->values()->all());
+
+        $today = now()->startOfDay();
+        $rooms = Room::whereIn('id', $items->pluck('order.room_id')->filter()->unique())
+            ->get(['id', 'code', 'name'])
+            ->keyBy('id');
+
+        $summary = $items
+            ->groupBy(fn (OrderItem $item) => (int) ($item->order?->room_id ?? 0))
+            ->map(function ($roomItems, $roomId) use ($rooms, $barcodes, $fallback, $today) {
+                // Kunci hasil groupBy selalu string — dikembalikan ke int agar cocok
+                // dengan peta ruangan yang di-key oleh id.
+                $room = $rooms->get((int) $roomId);
+                if (! $room) {
+                    return null;
+                }
+
+                $counts = $this->countAsSetsAndUnits($roomItems, $barcodes, $fallback);
+                $overdue = $this->countAsSetsAndUnits(
+                    $roomItems->filter(fn (OrderItem $i) => $i->order?->return_plan_date
+                        && $i->order->return_plan_date->startOfDay()->lt($today)),
+                    $barcodes,
+                    $fallback
+                );
+
+                return [
+                    'id' => $room->id,
+                    'code' => $room->code,
+                    'name' => $room->name,
+                    // Aturan hitung sama dengan kartu statistik: paket per SET, satuan per UNIT.
+                    'borrowed_count' => $counts['sets'] + $counts['units'],
+                    'overdue_count' => $overdue['sets'] + $overdue['units'],
+                ];
+            })
+            ->filter()
+            ->sortByDesc('borrowed_count')
+            ->values();
+
+        return $this->success('Ringkasan distribusi per ruangan berhasil diambil.', $summary);
+    }
+
+    /**
+     * Ringkasan jumlah instrumen yang SEDANG DIPINJAM — sumber angka kartu statistik
+     * "Instrumen Sedang Dipinjam" di halaman Tracking Order.
+     *
+     * ATURAN HITUNG sengaja disamakan dengan kartu "Instrumen di Gudang Steril"
+     * (StorageController@summary): baris `paket` dihitung per SET (satu nomor label
+     * kemasan = satu bungkus = satu set), baris `satuan` dihitung per UNIT fisik. Jadi
+     * satu set berisi 5 instrumen tetap bernilai 1. Endpointnya sengaja DIPISAH dari
+     * gudang steril — datanya beda (order dipinjam vs pool gudang), hanya cara
+     * hitungnya yang sama.
+     *
+     * Dipisah pula dari `rooms()` karena kartu statistik harus memuat SELURUH order
+     * dipinjam, bukan hanya 20 ruangan pada halaman pertama daftar ruangan — dan
+     * karena angkanya tidak butuh daftar unit beserta relasinya, hanya hitungannya.
+     *
+     * Mengisi KETIGA kartu statistik sekaligus (instrumen dipinjam, order aktif,
+     * instrumen terlambat) supaya halaman cukup satu permintaan, bukan menghitung
+     * sendiri dari daftar ruangan yang dimuat penuh.
+     */
+    public function borrowedSummary(): JsonResponse
+    {
+        $items = $this->borrowedItems();
+        $barcodes = $this->barcodeNoByStock($this->stockIdsOf($items));
+        $fallback = $this->requestedSetsByOrder($items->pluck('order_id')->unique()->values()->all());
+
+        $counts = $this->countAsSetsAndUnits($items, $barcodes, $fallback);
+
+        // Terlambat = masih dipinjam tapi rencana kembali sudah lewat (turunan, bukan
+        // status di database) — ambang harinya sama dengan tampilan frontend.
+        $today = now()->startOfDay();
+        $overdue = $this->countAsSetsAndUnits(
+            $items->filter(fn (OrderItem $i) => $i->order?->return_plan_date
+                && $i->order->return_plan_date->startOfDay()->lt($today)),
+            $barcodes,
+            $fallback
+        );
+
+        return $this->success('Ringkasan instrumen dipinjam berhasil diambil.', [
+            // Angka yang dipajang kartu = set paket + unit satuan.
+            'borrowed' => $counts['sets'] + $counts['units'],
+            'sets' => $counts['sets'],
+            'units' => $counts['units'],
+            // Order aktif = order yang masih punya unit belum dikembalikan.
+            'orders' => $items->pluck('order_id')->unique()->count(),
+            'overdue' => $overdue['sets'] + $overdue['units'],
+        ]);
+    }
+
+    /**
+     * Baris unit yang SEDANG DIPINJAM (belum dikembalikan) beserta kolom order yang
+     * dibutuhkan penghitung: ruangan & rencana kembali. Basis bersama kartu statistik
+     * dan ringkasan per ruangan — kolomnya sengaja dibatasi agar ringan.
+     *
+     * @return Collection<int,OrderItem>
+     */
+    private function borrowedItems(): Collection
+    {
+        return OrderItem::query()
+            ->where('is_returned', false)
+            ->whereHas('order', fn ($q) => $q->where('status', Order::STATUS_DIPINJAM))
+            ->with('order:id,room_id,return_plan_date')
+            ->get(['id', 'order_id', 'instrument_stock_id', 'source', 'package_name']);
+    }
+
+    /**
+     * Id unit fisik unik dari sekumpulan baris order.
+     *
+     * @param  Collection<int,OrderItem>  $items
+     * @return array<int,int>
+     */
+    private function stockIdsOf(Collection $items): array
+    {
+        return $items->pluck('instrument_stock_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Jumlah instrumen menurut aturan tampilan: baris `paket` dihitung per SET,
+     * baris `satuan` dihitung per unit fisik.
+     *
+     * Satu set = satu nomor label kemasan (`packaging_item.barcode_no`) berbeda di
+     * dalam satu paket pada satu order — satu label = satu bungkus = satu set. Bila
+     * seluruh unit sebuah paket tidak punya nomor label (data lama sebelum tahap
+     * packaging), jumlahnya jatuh ke baris permintaan (`$setsFallback`), lalu ke 1 —
+     * jangan pernah ke jumlah unit, supaya isi set tidak dihitung satu per satu.
+     *
+     * @param  Collection<int,OrderItem>  $items
+     * @param  array<int,string>  $barcodeByStock  instrument_stock_id → nomor label
+     * @param  array<string,int>  $setsFallback  "orderId|namaPaket" → jumlah set diminta
+     * @return array{sets: int, units: int}
+     */
+    private function countAsSetsAndUnits(Collection $items, array $barcodeByStock, array $setsFallback = []): array
+    {
+        $units = 0;
+        $labels = [];
+
+        foreach ($items as $item) {
+            if ($item->source !== 'paket') {
+                $units++;
+
+                continue;
+            }
+
+            $key = $item->order_id.'|'.($item->package_name ?? 'Paket');
+            $labels[$key] ??= [];
+            if ($barcode = $barcodeByStock[(int) $item->instrument_stock_id] ?? null) {
+                $labels[$key][$barcode] = true;
+            }
+        }
+
+        $sets = 0;
+        foreach ($labels as $key => $barcodes) {
+            $sets += count($barcodes) > 0 ? count($barcodes) : ($setsFallback[$key] ?? 1);
+        }
+
+        return ['sets' => $sets, 'units' => $units];
+    }
+
+    /**
+     * Jumlah SET paket yang DIMINTA tiap order, di-key "orderId|namaPaket" — cadangan
+     * penghitung set untuk unit paket yang belum punya nomor label kemasan.
+     *
+     * @param  array<int,int>  $orderIds
+     * @return array<string,int>
+     */
+    private function requestedSetsByOrder(array $orderIds): array
+    {
+        if (empty($orderIds)) {
+            return [];
+        }
+
+        $map = [];
+        OrderRequestItem::with('catalog:id,name')
+            ->whereIn('order_id', $orderIds)
+            ->where('type', 'paket')
+            ->get(['id', 'order_id', 'instrument_catalog_id', 'package_name', 'quantity'])
+            ->each(function (OrderRequestItem $line) use (&$map) {
+                $name = $line->catalog?->name ?? $line->package_name ?? 'Paket';
+                $key = $line->order_id.'|'.$name;
+                $map[$key] = ($map[$key] ?? 0) + (int) $line->quantity;
+            });
+
+        return $map;
     }
 
     /**

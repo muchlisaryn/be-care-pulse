@@ -78,6 +78,7 @@
         "condition_out_id": 1,
         "condition_in_id": null,
         "is_returned": false,
+        "barcode_no": "PKG260802011",
         "instrument_stock": {
           "id": 1, "code": "ZHVQ-001", "status": "dipinjam",
           "instrument": { "id": 1, "code": "ZHVQ", "name": "stetoskop" }
@@ -109,6 +110,12 @@
   }
 }
 ```
+
+> Catatan: tiap baris `items` membawa `barcode_no` — nomor label kemasan bungkus steril
+> unit itu (`packaging_item.barcode_no` terbaru yang belum di-void), `null` bila unit
+> belum pernah melewati tahap packaging. Frontend memakainya untuk MENGELOMPOKKAN
+> daftar "Instrumen Dipinjam" per bungkus: satu label = satu bungkus = satu set, jadi
+> paket 2 set tampil sebagai 2 grup terpisah.
 
 > Catatan: `timeline` (Riwayat Peminjaman) menggabungkan seluruh event dari semua order
 > yang berbagi `code_transaction` (rantai pinjam-alih antar unit). Bila order belum

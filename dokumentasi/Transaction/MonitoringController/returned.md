@@ -10,6 +10,12 @@ monitoring sebagai riwayat (tidak hilang setelah semua unit kembali). Berisi rin
 order; detail unit + kondisi keluar/masuk diambil lewat endpoint
 `POST /api/master/orders/scan` saat baris dibuka (modal Riwayat Pengembalian).
 
+Ringkasan jumlah pada kartu memakai aturan yang sama dengan kartu order aktif &
+[`borrowed-summary`](borrowedSummary.md): **paket dihitung per SET** (satu nomor label
+kemasan = satu bungkus = satu set), **satuan dihitung per UNIT** fisik — lihat field
+`total_sets` & `total_satuan`. `total_units` (jumlah seluruh baris unit) tetap dikirim
+sebagai cadangan tampilan.
+
 ## Request
 
 ### Headers
@@ -42,7 +48,9 @@ order; detail unit + kondisi keluar/masuk diambil lewat endpoint
         "order_date": "2026-06-17T00:00:00.000000Z",
         "return_plan_date": "2026-06-18T00:00:00.000000Z",
         "returned_at": "2026-06-19T08:30:00.000000Z",
-        "total_units": 5
+        "total_units": 12,
+        "total_sets": 2,
+        "total_satuan": 10
       }
     ],
     "per_page": 20,
