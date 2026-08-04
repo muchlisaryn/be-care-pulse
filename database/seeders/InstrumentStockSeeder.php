@@ -17,14 +17,16 @@ class InstrumentStockSeeder extends Seeder
         $conditionId = Condition::where('name', 'Baik')->value('id');
 
         foreach (Instrument::all() as $instrument) {
-            // Lanjutkan nomor urut dari unit yang sudah ada agar idempoten saat di-run ulang.
             $existing = InstrumentStock::withoutGlobalScopes()
                 ->where('instrument_id', $instrument->id)
                 ->count();
 
-            for ($i = 1; $i <= self::PER_INSTRUMENT; $i++) {
-                $seq = $existing + $i;
-
+            // Idempotent: sasarannya JUMLAH TOTAL unit per instrumen, bukan "tambah
+            // PER_INSTRUMENT lagi". Versi lama melanjutkan nomor urut dari unit yang
+            // sudah ada — memang tidak menabrak `code` unik, tapi setiap `db:seed`
+            // ulang menambah 5 unit baru per instrumen sehingga master membengkak
+            // diam-diam. Bila kuotanya sudah terpenuhi, loop ini tidak jalan.
+            for ($seq = $existing + 1; $seq <= self::PER_INSTRUMENT; $seq++) {
                 // Set code eksplisit (bukan mass-assign): aman walau event model dimatikan
                 // (DatabaseSeeder pakai WithoutModelEvents). Bila event aktif, HasAutoCode
                 // membiarkan code yang sudah terisi.

@@ -18,7 +18,17 @@ class TitleMenuSeeder extends Seeder
         ];
 
         foreach ($items as $item) {
-            TitleMenus::create($item);
+            // Idempotent: `title_menuses` tidak punya index unik pada `title`,
+            // jadi create() polos akan MENGGANDAKAN seluruh title tiap kali
+            // `db:seed` dijalankan ulang di DB yang sudah terisi.
+            //
+            // withTrashed(): title yang sudah dihapus admin tidak dibangkitkan
+            // ulang — cukup dibiarkan terhapus, dan tidak digandakan.
+            $exists = TitleMenus::withTrashed()->where('title', $item['title'])->exists();
+
+            if (! $exists) {
+                TitleMenus::create($item);
+            }
         }
     }
 }

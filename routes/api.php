@@ -33,6 +33,7 @@ use App\Http\Controllers\Transaction\ReportController;
 use App\Http\Controllers\Transaction\SterilizationController;
 use App\Http\Controllers\Transaction\SterilizationPipelineController;
 use App\Http\Controllers\Transaction\StorageController;
+use App\Http\Controllers\Transaction\TransactionReportController;
 use Illuminate\Support\Facades\Route;
 
 // Publik
@@ -221,6 +222,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Laporan CSSD per alat (satu baris per unit di tiap batch sterilisasi)
         Route::get('reports/cssd-per-item', [ReportController::class, 'cssdPerItem']);
+        // Laporan transaksi instrumen: tgl transaksi, no invoice, nama instrumen/set
+        // (production_item) & nomor barcode label, peminjam, ruangan
+        Route::get('reports/transaksi-instrumen', [TransactionReportController::class, 'index']);
     });
 
     // Clinical Pathway

@@ -17,7 +17,7 @@ class MenuSeeder extends Seeder
         $pengaturan = TitleMenus::where('title', 'Pengaturan')->first();
 
         // Dashboard — langsung link, tidak ada sub_menu
-        Menu::create([
+        $this->menu([
             'title_menu_id' => $dashboard?->id,
             'name' => 'Dashboard',
             'url' => '/dashboard',
@@ -27,7 +27,7 @@ class MenuSeeder extends Seeder
         ]);
 
         // Master Data — parent (tidak punya url), anak-anaknya yang punya url
-        $masterParent = Menu::create([
+        $masterParent = $this->menu([
             'title_menu_id' => $masterData?->id,
             'name' => 'Master Data',
             'url' => null,
@@ -44,7 +44,7 @@ class MenuSeeder extends Seeder
         ];
 
         foreach ($children as $child) {
-            Menu::create([
+            $this->menu([
                 'title_menu_id' => $masterData?->id,
                 'parent_id' => $masterParent->id,
                 'name' => $child['name'],
@@ -59,7 +59,7 @@ class MenuSeeder extends Seeder
         // (di bawah grup "Master Data"). Berisi data acuan operasional CSSD.
         // "Instrumen" tidak lagi jadi menu tersendiri — fiturnya menyatu sebagai
         // tab di dalam "Set Instrumen" (/master/katalog-instrumen) biar terpusat.
-        $masterCssdParent = Menu::create([
+        $masterCssdParent = $this->menu([
             'title_menu_id' => $masterData?->id,
             'name' => 'Master CSSD',
             'url' => null,
@@ -85,7 +85,7 @@ class MenuSeeder extends Seeder
         ];
 
         foreach ($masterCssdChildren as $child) {
-            Menu::create([
+            $this->menu([
                 'title_menu_id' => $masterData?->id,
                 'parent_id' => $masterCssdParent->id,
                 'name' => $child['name'],
@@ -97,7 +97,7 @@ class MenuSeeder extends Seeder
         }
 
         // Medis — grup master data medis (di bawah title "Master Data").
-        $medisParent = Menu::create([
+        $medisParent = $this->menu([
             'title_menu_id' => $masterData?->id,
             'name' => 'Medis',
             'url' => null,
@@ -111,7 +111,7 @@ class MenuSeeder extends Seeder
         ];
 
         foreach ($medisChildren as $child) {
-            Menu::create([
+            $this->menu([
                 'title_menu_id' => $masterData?->id,
                 'parent_id' => $medisParent->id,
                 'name' => $child['name'],
@@ -125,7 +125,7 @@ class MenuSeeder extends Seeder
         // Clinical Pathway — grup dipindah ke title "Master Data".
         // Parent group sekarang bernama "Clinical Pathway", berisi "Kategori"
         // dan "Formulir" (sebelumnya "Template Clinical Pathway").
-        $clinicalPathwayParent = Menu::create([
+        $clinicalPathwayParent = $this->menu([
             'title_menu_id' => $masterData?->id,
             'name' => 'Clinical Pathway',
             'url' => null,
@@ -140,7 +140,7 @@ class MenuSeeder extends Seeder
         ];
 
         foreach ($clinicalPathwayChildren as $child) {
-            Menu::create([
+            $this->menu([
                 'title_menu_id' => $masterData?->id,
                 'parent_id' => $clinicalPathwayParent->id,
                 'name' => $child['name'],
@@ -151,7 +151,7 @@ class MenuSeeder extends Seeder
         }
 
         // Title "Clinical Pathway" — menu transaksi pengisian: Asesmen pasien.
-        Menu::create([
+        $this->menu([
             'title_menu_id' => $clinicalPathway?->id,
             'name' => 'Asesmen',
             'url' => '/clinical-pathway/asesmen',
@@ -185,6 +185,9 @@ class MenuSeeder extends Seeder
                     // Pantau & lacak data (read-only)
                     ['name' => 'Alat Kedaluwarsa Steril', 'url' => '/cssd/kedaluwarsa', 'sort_order' => 1],
                     ['name' => 'Laporan Alat CSSD',  'url' => '/cssd/laporan',     'sort_order' => 2],
+                    // Posisi 3 diisi "Laporan Transaksi Instrumen" lewat
+                    // LaporanTransaksiInstrumenMenuSeeder (menu pasca-rilis), yang
+                    // menggeser "Papan Monitor (TV)" ke posisi 4.
                     ['name' => 'Papan Monitor (TV)', 'url' => '/monitor',          'sort_order' => 3],
                 ],
             ],
@@ -195,7 +198,7 @@ class MenuSeeder extends Seeder
         // di dalam grup Transaksi.
 
         foreach ($cssdGroups as $group) {
-            $parent = Menu::create([
+            $parent = $this->menu([
                 'title_menu_id' => $cssd?->id,
                 'name' => $group['name'],
                 'url' => null,
@@ -205,7 +208,7 @@ class MenuSeeder extends Seeder
             ]);
 
             foreach ($group['children'] as $child) {
-                Menu::create([
+                $this->menu([
                     'title_menu_id' => $cssd?->id,
                     'parent_id' => $parent->id,
                     'name' => $child['name'],
@@ -221,7 +224,7 @@ class MenuSeeder extends Seeder
         // satu link (anak disembunyikan); sub-nav-nya (Master Printer, dst.) tampil
         // di sidebar kedua yang dibangun dari anak-anak menu ini.
         // open_sidebar=false → sidebar utama otomatis menutup saat halaman dibuka.
-        $pengaturanParent = Menu::create([
+        $pengaturanParent = $this->menu([
             'title_menu_id' => $pengaturan?->id,
             'name' => 'Pengaturan',
             'url' => '/pengaturan',
@@ -231,7 +234,7 @@ class MenuSeeder extends Seeder
             'open_sidebar' => false,
         ]);
 
-        Menu::create([
+        $this->menu([
             'title_menu_id' => $pengaturan?->id,
             'parent_id' => $pengaturanParent->id,
             'name' => 'Master Printer',
@@ -241,5 +244,33 @@ class MenuSeeder extends Seeder
             'is_open' => false,
             'open_sidebar' => false,
         ]);
+    }
+
+    /**
+     * Buat menu bila belum ada; kalau sudah ada kembalikan yang lama APA ADANYA.
+     *
+     * Wajib idempotent: tabel `menus` tidak punya index unik, jadi create() polos
+     * membuat `db:seed` ulang MENGGANDAKAN seluruh sidebar tanpa error sama sekali.
+     *
+     * Identitas menu = (title_menu_id, parent_id, name) — bukan `url`, karena menu
+     * parent ber-url null dan beberapa nama anak bisa sama di grup berbeda.
+     *
+     * Baris yang sudah ada sengaja TIDAK di-update: url/icon/sort_order boleh
+     * diubah admin lewat master menu, dan seeder tidak berhak menimpanya.
+     * withTrashed() dipakai supaya menu yang sudah dihapus admin tidak
+     * dibangkitkan ulang (sekaligus tidak digandakan).
+     */
+    private function menu(array $attributes): Menu
+    {
+        $identity = [
+            'title_menu_id' => $attributes['title_menu_id'] ?? null,
+            'parent_id' => $attributes['parent_id'] ?? null,
+            'name' => $attributes['name'],
+        ];
+
+        // where() dengan nilai null otomatis jadi `is null` di Laravel, jadi menu
+        // tingkat atas (parent_id null) tetap tercocokkan dengan benar.
+        return Menu::withTrashed()->where($identity)->first()
+            ?? Menu::create($attributes);
     }
 }
