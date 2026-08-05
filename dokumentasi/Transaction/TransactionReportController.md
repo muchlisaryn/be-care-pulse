@@ -11,6 +11,8 @@ Rantai data (berdiri sendiri, tidak memakai helper `ReportController`):
 ```
 order → instrument_storages → production_item      (nama instrumen / nama set)
 production → washing → packaging → packaging_item  (nomor barcode label)
+production.created_at                              (tanggal peminjaman)
+order_events (type = dikembalikan)                 (jam pengembalian)
 ```
 
 - Nama alat diambil dari **snapshot** `production_item` (bukan master `instruments`),
@@ -56,7 +58,13 @@ production → washing → packaging → packaging_item  (nomor barcode label)
 | type | string | `paket` (satu set dalam satu bungkus) atau `satuan` |
 | name | string\|null | Nama set (bila `paket`) atau nama instrumen (bila `satuan`) |
 | borrowed_by | string\|null | Nama peminjam |
+| borrowed_date | datetime\|null | Tanggal peminjaman = saat batch produksi unit ini dibuat (`production.created_at`). Tabel `production` tidak punya kolom `started_at` (dibuang di migration `2026_07_18_000008`) karena batch dibuat & unit dikunci dalam satu aksi — `created_at` memang waktu mulai produksinya |
 | room | string\|null | Nama ruangan peminjam |
+| medical_record_no | string\|null | No. RM pasien (`order.medical_record_no`); null bila alat belum ditautkan ke pasien |
+| patient_name | string\|null | Nama pasien (`order.patient_name`); null bila belum ditautkan |
+| returned_by | string\|null | Nama orang yang mengembalikan (`order.returned_by`) |
+| return_date | date\|null | Tanggal pengembalian (`order.return_actual_date`) — hanya tanggal, tanpa jam |
+| returned_at | datetime\|null | Momen persis pengembalian, dari event timeline `dikembalikan` (`order_events.created_at`). Bila satu order dikembalikan bertahap, yang dipakai adalah event TERAKHIR. Null pada order lama yang tidak punya event — frontend jatuh ke `return_date` |
 
 ### Response
 
@@ -77,7 +85,13 @@ production → washing → packaging → packaging_item  (nomor barcode label)
         "type": "paket",
         "name": "Set Bedah Minor",
         "borrowed_by": "Ns. Rina",
-        "room": "OK 1"
+        "borrowed_date": "2026-07-19 08:05:00",
+        "room": "OK 1",
+        "medical_record_no": "00-12-3456",
+        "patient_name": "Ahmad Fauzi",
+        "returned_by": "Ns. Rina",
+        "return_date": "2026-07-20",
+        "returned_at": "2026-07-20 14:32:11"
       },
       {
         "key": "12|PKG260719012",
@@ -88,7 +102,13 @@ production → washing → packaging → packaging_item  (nomor barcode label)
         "type": "satuan",
         "name": "Gunting Metzenbaum",
         "borrowed_by": "Ns. Rina",
-        "room": "OK 1"
+        "borrowed_date": "2026-07-19 08:05:00",
+        "room": "OK 1",
+        "medical_record_no": null,
+        "patient_name": null,
+        "returned_by": "Ns. Rina",
+        "return_date": "2026-07-20",
+        "returned_at": null
       }
     ],
     "last_page": 3,

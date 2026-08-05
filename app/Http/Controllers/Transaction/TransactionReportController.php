@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Models\OrderEvent;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -14,7 +15,9 @@ use Illuminate\Validation\Rule;
 /**
  * Laporan Transaksi Instrumen — rekap peminjaman dengan satu baris per LABEL
  * KEMASAN (`packaging_item.barcode_no`) di tiap transaksi. Kolomnya: tanggal
- * transaksi, no invoice, nama instrumen/set, nomor barcode, nama peminjam, ruangan.
+ * transaksi, no invoice, nama instrumen/set, nomor barcode, nama peminjam + tanggal
+ * peminjamannya, ruangan, identitas pasien (No. RM & nama), serta siapa yang
+ * mengembalikan dan kapan.
  *
  * Dibangun terpisah dari ReportController::transaksi (laporan lama) dan tidak
  * memakai satu pun helper-nya — laporan ini punya rantai datanya sendiri:
@@ -65,7 +68,11 @@ class TransactionReportController extends Controller
         $page = max((int) ($request->page ?: 1), 1);
 
         $units = $this->units($request);
-        $rows = $this->groupByBarcode($units, $this->barcodeMap($units));
+        $rows = $this->groupByBarcode(
+            $units,
+            $this->barcodeMap($units),
+            $this->returnedAtMap($units)
+        );
         $rows = $this->applySearch($rows, $request->search);
 
         $paginator = new LengthAwarePaginator(
@@ -123,8 +130,21 @@ class TransactionReportController extends Controller
                 'o.order_date',
                 'o.code_transaction',
                 'o.borrowed_by',
+                // Identitas pasien tujuan alat (traceability loop) — sering kosong pada
+                // order yang belum sampai tahap distribusi.
+                'o.medical_record_no',
+                'o.patient_name',
+                // Pengembalian: nama pengembali + tanggalnya. Tanggal ini hanya DATE;
+                // jam persisnya diambil dari order_events (lihat returnedAtMap).
+                'o.returned_by',
+                'o.return_actual_date',
                 'r.name as room_name',
                 'pr.code as production_code',
+                // Tanggal peminjaman = saat batch produksi unit ini dibuat. Tabel
+                // `production` sengaja tidak punya kolom started_at (dibuang di
+                // migration 2026_07_18_000008): batch dibuat & unit dikunci dalam satu
+                // aksi, jadi `created_at` MEMANG waktu mulai produksinya.
+                'pr.created_at as production_at',
                 'pi.name as item_name',
                 'pi.source',
                 'pi.package_name',
@@ -173,6 +193,47 @@ class TransactionReportController extends Controller
     }
 
     /**
+     * Waktu pengembalian per transaksi, di-key `order_id`.
+     *
+     * `order.return_actual_date` hanya menyimpan TANGGAL, sedangkan event timeline
+     * `dikembalikan` menyimpan momen persisnya — jadi jam pengembalian diambil dari
+     * sana. Order lama yang tidak punya event tetap terlaporkan lewat tanggalnya
+     * (lihat `returned_at` vs `return_date` di groupByBarcode).
+     *
+     * Urut id ASC lalu ditimpa, sehingga bila satu order sempat dikembalikan
+     * bertahap (per unit) yang menang adalah event TERAKHIR — momen order itu
+     * benar-benar tuntas kembali.
+     *
+     * `order_events` bersifat append-only dan tidak punya kolom soft delete, jadi
+     * tidak ada filter `deleted_by` di sini.
+     *
+     * @param  Collection<int,object>  $units
+     * @return array<int,string>
+     */
+    private function returnedAtMap(Collection $units): array
+    {
+        $orderIds = $units->pluck('order_id')->unique()->values()->all();
+
+        if (empty($orderIds)) {
+            return [];
+        }
+
+        $map = [];
+
+        DB::table('order_events')
+            ->whereIn('order_id', $orderIds)
+            ->where('type', OrderEvent::TYPE_DIKEMBALIKAN)
+            ->whereNotNull('created_at')
+            ->orderBy('id')
+            ->get(['order_id', 'created_at'])
+            ->each(function ($row) use (&$map) {
+                $map[(int) $row->order_id] = $row->created_at;
+            });
+
+        return $map;
+    }
+
+    /**
      * Kelompokkan unit menjadi baris laporan: satu label kemasan = satu bungkus
      * fisik = SATU BARIS. Unit dalam satu set berbagi satu `barcode_no` sehingga
      * lebur jadi satu baris bernama nama set-nya.
@@ -187,9 +248,10 @@ class TransactionReportController extends Controller
      *
      * @param  Collection<int,object>  $units
      * @param  array<string,string>  $barcodes
+     * @param  array<int,string>  $returnedAt
      * @return array<int,array<string,mixed>>
      */
-    private function groupByBarcode(Collection $units, array $barcodes): array
+    private function groupByBarcode(Collection $units, array $barcodes, array $returnedAt = []): array
     {
         $groups = [];
 
@@ -219,7 +281,16 @@ class TransactionReportController extends Controller
                 // nama setnya, bukan nama salah satu isinya.
                 'name' => $isPaket ? ($unit->package_name ?: $unit->item_name) : $unit->item_name,
                 'borrowed_by' => $unit->borrowed_by,
+                // Tanggal peminjaman, diambil dari mulainya produksi batch ini.
+                'borrowed_date' => $unit->production_at,
                 'room' => $unit->room_name,
+                'medical_record_no' => $unit->medical_record_no,
+                'patient_name' => $unit->patient_name,
+                'returned_by' => $unit->returned_by,
+                'return_date' => $unit->return_actual_date,
+                // Momen persis pengembalian; null pada order lama yang tidak punya
+                // event timeline — frontend jatuh ke `return_date` bila null.
+                'returned_at' => $returnedAt[$orderId] ?? null,
             ];
         }
 

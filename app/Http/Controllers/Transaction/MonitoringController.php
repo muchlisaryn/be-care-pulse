@@ -11,10 +11,14 @@ use App\Models\ProductionItem;
 use App\Models\Room;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 
 class MonitoringController extends Controller
 {
+    /** Baris per halaman default tab "Distribution & Tracking" (lihat [tracking()]). */
+    private const TRACKING_PER_PAGE = 30;
+
     /**
      * Monitoring per ruangan: daftar unit instrumen yang sedang dipinjam
      * di tiap ruangan (order berstatus "dipinjam" & item belum dikembalikan).
@@ -75,103 +79,15 @@ class MonitoringController extends Controller
                     continue;
                 }
 
-                // Jumlah SET per nama paket pada order ini, diambil dari baris
-                // permintaan (quantity = jumlah set yang dipinjam). Nama katalog
-                // dipakai sebagai kunci — sama dengan kunci pencocokan stok paket.
-                $setsByPackage = [];
-                foreach ($order->requestItems as $line) {
-                    if ($line->type !== 'paket') {
-                        continue;
-                    }
-                    $name = $line->catalog?->name ?? $line->package_name ?? 'Paket';
-                    $setsByPackage[$name] = ($setsByPackage[$name] ?? 0) + (int) $line->quantity;
-                }
+                $built = $this->borrowedGroupsOfOrder($order, $barcodeByStock);
+                $unitCount += $built['units'];
+                // Kunci grup sudah memuat id order, jadi tidak pernah bentrok antar
+                // order dalam satu ruangan.
+                $groups += $built['groups'];
 
-                // Jumlah SET nyata tiap paket = banyaknya NOMOR LABEL kemasan berbeda
-                // di antara unit yang masih dipinjam (satu label = satu bungkus = satu
-                // set). Lebih akurat daripada baris permintaan saat order dikembalikan
-                // sebagian atau berasal dari pinjam-alih (tanpa baris permintaan);
-                // unit tanpa label (data lama) jatuh ke jumlah pada baris permintaan.
-                $labelsByPackage = [];
-                foreach ($order->items as $item) {
-                    if ($item->source !== 'paket') {
-                        continue;
-                    }
-                    $pkg = $item->package_name ?? 'Paket';
-                    $labelsByPackage[$pkg] ??= [];
-                    if ($barcode = $barcodeByStock[(int) $item->instrument_stock_id] ?? null) {
-                        $labelsByPackage[$pkg][$barcode] = true;
-                    }
-                }
-                $setsOf = function (string $pkg) use ($labelsByPackage, $setsByPackage): int {
-                    $n = count($labelsByPackage[$pkg] ?? []);
-
-                    return $n > 0 ? $n : ($setsByPackage[$pkg] ?? 1);
-                };
-
-                // Paket sudah dihitung (per nama) supaya unit fisik di dalamnya
-                // tidak menambah "unit dipinjam" berulang kali.
-                $countedPackages = [];
-
-                foreach ($order->items as $item) {
-                    $stock = $item->instrumentStock;
-                    $instrument = $stock?->instrument;
-                    if (! $instrument) {
-                        continue;
-                    }
-
-                    // Jumlah "unit dipinjam": paket dihitung per SET (bukan per unit
-                    // fisik di dalamnya), instrumen satuan dihitung per unit.
-                    if ($item->source === 'paket') {
-                        $pkg = $item->package_name ?? 'Paket';
-                        if (! isset($countedPackages[$pkg])) {
-                            $countedPackages[$pkg] = true;
-                            $unitCount += $setsOf($pkg);
-                        }
-                    } else {
-                        $unitCount++;
-                    }
+                if ($built['groups'] !== []) {
                     // Hitung transaksi unik berdasarkan no_transaction (code_transaction).
                     $txKeys[$order->code_transaction ?? ('ord-'.$order->id)] = true;
-                    // Pisahkan per asal (satuan/paket) & nama paket agar bisa
-                    // dikelompokkan "detail per paket" di frontend monitoring.
-                    $key = $order->id.'-'.$item->source.'-'.($item->package_name ?? '').'-'.$instrument->id;
-
-                    $groups[$key] ??= [
-                        'order_code' => $order->code,
-                        'code_transaction' => $order->code_transaction,
-                        'borrowed_by' => $order->borrowed_by ?? $order->created_by,
-                        'order_date' => $order->order_date,
-                        'order_time' => optional($order->created_at)->format('H:i'),
-                        'return_plan_date' => $order->return_plan_date,
-                        'source' => $item->source,
-                        'package_name' => $item->package_name,
-                        // Jumlah SET paket ini pada order (null utk baris satuan).
-                        // `qty` di bawah tetap jumlah unit fisik.
-                        'package_sets' => $item->source === 'paket'
-                            ? $setsOf($item->package_name ?? 'Paket')
-                            : null,
-                        'instrument' => [
-                            'id' => $instrument->id,
-                            'code' => $instrument->code,
-                            'name' => $instrument->name,
-                        ],
-                        'qty' => 0,
-                        'units' => [],
-                    ];
-
-                    $groups[$key]['qty']++;
-                    $groups[$key]['units'][] = [
-                        'instrument_stock_id' => $stock->id,
-                        'code' => $stock->code,
-                        'status' => $stock->status,
-                        // Nomor label fisik bungkus steril unit ini (bisa null bila
-                        // unit belum pernah melewati tahap packaging).
-                        'barcode_no' => $barcodeByStock[(int) $stock->id] ?? null,
-                        'condition' => $stock->condition
-                            ? ['id' => $stock->condition->id, 'name' => $stock->condition->name]
-                            : null,
-                    ];
                 }
             }
 
@@ -192,6 +108,126 @@ class MonitoringController extends Controller
         });
 
         return $this->success('Data monitoring ruangan berhasil diambil.', $rooms);
+    }
+
+    /**
+     * Baris "unit dipinjam" milik SATU order, dikelompokkan per (asal, nama paket,
+     * katalog instrumen) — bentuk baris yang dipakai frontend monitoring & tracking.
+     *
+     * Dipakai bersama oleh [rooms()] (dikumpulkan per ruangan) dan [tracking()]
+     * (dikumpulkan per order). Satu implementasi supaya kedua daftar tidak pernah
+     * menghitung jumlah set / label dengan aturan yang berbeda.
+     *
+     * `units` = jumlah "unit dipinjam" versi tampilan: paket dihitung per SET, bukan
+     * per unit fisik di dalamnya; instrumen satuan dihitung per unit.
+     *
+     * @param  array<int,string>  $barcodeByStock
+     * @return array{groups: array<string,array<string,mixed>>, units: int}
+     */
+    private function borrowedGroupsOfOrder(Order $order, array $barcodeByStock): array
+    {
+        $groups = [];
+        $unitCount = 0;
+
+        // Jumlah SET per nama paket pada order ini, diambil dari baris permintaan
+        // (quantity = jumlah set yang dipinjam). Nama katalog dipakai sebagai kunci —
+        // sama dengan kunci pencocokan stok paket.
+        $setsByPackage = [];
+        foreach ($order->requestItems as $line) {
+            if ($line->type !== 'paket') {
+                continue;
+            }
+            $name = $line->catalog?->name ?? $line->package_name ?? 'Paket';
+            $setsByPackage[$name] = ($setsByPackage[$name] ?? 0) + (int) $line->quantity;
+        }
+
+        // Jumlah SET nyata tiap paket = banyaknya NOMOR LABEL kemasan berbeda
+        // di antara unit yang masih dipinjam (satu label = satu bungkus = satu
+        // set). Lebih akurat daripada baris permintaan saat order dikembalikan
+        // sebagian atau berasal dari pinjam-alih (tanpa baris permintaan);
+        // unit tanpa label (data lama) jatuh ke jumlah pada baris permintaan.
+        $labelsByPackage = [];
+        foreach ($order->items as $item) {
+            if ($item->source !== 'paket') {
+                continue;
+            }
+            $pkg = $item->package_name ?? 'Paket';
+            $labelsByPackage[$pkg] ??= [];
+            if ($barcode = $barcodeByStock[(int) $item->instrument_stock_id] ?? null) {
+                $labelsByPackage[$pkg][$barcode] = true;
+            }
+        }
+        $setsOf = function (string $pkg) use ($labelsByPackage, $setsByPackage): int {
+            $n = count($labelsByPackage[$pkg] ?? []);
+
+            return $n > 0 ? $n : ($setsByPackage[$pkg] ?? 1);
+        };
+
+        // Paket sudah dihitung (per nama) supaya unit fisik di dalamnya
+        // tidak menambah "unit dipinjam" berulang kali.
+        $countedPackages = [];
+
+        foreach ($order->items as $item) {
+            $stock = $item->instrumentStock;
+            $instrument = $stock?->instrument;
+            if (! $instrument) {
+                continue;
+            }
+
+            // Jumlah "unit dipinjam": paket dihitung per SET (bukan per unit
+            // fisik di dalamnya), instrumen satuan dihitung per unit.
+            if ($item->source === 'paket') {
+                $pkg = $item->package_name ?? 'Paket';
+                if (! isset($countedPackages[$pkg])) {
+                    $countedPackages[$pkg] = true;
+                    $unitCount += $setsOf($pkg);
+                }
+            } else {
+                $unitCount++;
+            }
+
+            // Pisahkan per asal (satuan/paket) & nama paket agar bisa
+            // dikelompokkan "detail per paket" di frontend monitoring.
+            $key = $order->id.'-'.$item->source.'-'.($item->package_name ?? '').'-'.$instrument->id;
+
+            $groups[$key] ??= [
+                'order_code' => $order->code,
+                'code_transaction' => $order->code_transaction,
+                'borrowed_by' => $order->borrowed_by ?? $order->created_by,
+                'order_date' => $order->order_date,
+                'order_time' => optional($order->created_at)->format('H:i'),
+                'return_plan_date' => $order->return_plan_date,
+                'source' => $item->source,
+                'package_name' => $item->package_name,
+                // Jumlah SET paket ini pada order (null utk baris satuan).
+                // `qty` di bawah tetap jumlah unit fisik.
+                'package_sets' => $item->source === 'paket'
+                    ? $setsOf($item->package_name ?? 'Paket')
+                    : null,
+                'instrument' => [
+                    'id' => $instrument->id,
+                    'code' => $instrument->code,
+                    'name' => $instrument->name,
+                ],
+                'qty' => 0,
+                'units' => [],
+            ];
+
+            $groups[$key]['qty']++;
+            $groups[$key]['units'][] = [
+                'instrument_stock_id' => $stock->id,
+                'code' => $stock->code,
+                'status' => $stock->status,
+                // Nomor label fisik bungkus steril unit ini (bisa null bila
+                // unit belum pernah melewati tahap packaging).
+                'barcode_no' => $barcodeByStock[(int) $stock->id] ?? null,
+                'condition' => $stock->condition
+                    ? ['id' => $stock->condition->id, 'name' => $stock->condition->name]
+                    : null,
+            ];
+        }
+
+        return ['groups' => $groups, 'units' => $unitCount];
     }
 
     /**
@@ -323,30 +359,237 @@ class MonitoringController extends Controller
             collect($orders->items())->pluck('id')->map(fn ($id) => (int) $id)->all()
         );
 
-        $orders->getCollection()->transform(function (Order $order) use ($barcodeByStock, $setsFallback) {
-            // Ringkasan kartu: paket per SET, satuan per UNIT — aturan yang sama
-            // dengan kartu order aktif & kartu statistik.
-            $counts = $this->countAsSetsAndUnits($order->items, $barcodeByStock, $setsFallback);
-
-            return [
-                'id' => $order->id,
-                'code' => $order->code,
-                'code_transaction' => $order->code_transaction,
-                'status' => $order->status,
-                'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
-                'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
-                'order_date' => $order->order_date,
-                'return_plan_date' => $order->return_plan_date,
-                // Perkiraan waktu pengembalian selesai = terakhir kali order diperbarui.
-                'returned_at' => $order->updated_at,
-                'total_units' => (int) $order->items_count,
-                // Jumlah set paket & unit satuan untuk ringkasan kartu.
-                'total_sets' => $counts['sets'],
-                'total_satuan' => $counts['units'],
-            ];
-        });
+        $orders->getCollection()->transform(
+            fn (Order $order) => $this->returnedRowPayload($order, $barcodeByStock, $setsFallback)
+        );
 
         return $this->success('Data order dikembalikan berhasil diambil.', $orders);
+    }
+
+    /**
+     * Bentuk satu baris "order dikembalikan" (kartu riwayat). Dipakai bersama oleh
+     * [returned()] dan [tracking()] supaya kartu riwayat di kedua endpoint tidak
+     * pernah berbeda isinya.
+     *
+     * @param  array<int,string>  $barcodeByStock
+     * @param  array<int,array<string,int>>  $setsFallback
+     * @return array<string,mixed>
+     */
+    private function returnedRowPayload(Order $order, array $barcodeByStock, array $setsFallback): array
+    {
+        // Ringkasan kartu: paket per SET, satuan per UNIT — aturan yang sama
+        // dengan kartu order aktif & kartu statistik.
+        $counts = $this->countAsSetsAndUnits($order->items, $barcodeByStock, $setsFallback);
+
+        return [
+            'id' => $order->id,
+            'code' => $order->code,
+            'code_transaction' => $order->code_transaction,
+            'status' => $order->status,
+            'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
+            'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
+            'order_date' => $order->order_date,
+            'return_plan_date' => $order->return_plan_date,
+            // Perkiraan waktu pengembalian selesai = terakhir kali order diperbarui.
+            'returned_at' => $order->updated_at,
+            'total_units' => (int) $order->items_count,
+            // Jumlah set paket & unit satuan untuk ringkasan kartu.
+            'total_sets' => $counts['sets'],
+            'total_satuan' => $counts['units'],
+        ];
+    }
+
+    /**
+     * Daftar tab "Distribution & Tracking" sebagai SATU daftar yang dipaginasi di
+     * SERVER: order yang sedang DIPINJAM lebih dulu (pekerjaan berjalan), lalu
+     * RIWAYAT order yang sudah DIKEMBALIKAN.
+     *
+     * Sebelumnya frontend menggabung dua endpoint (`monitoring/rooms` +
+     * `monitoring/returned`) lalu memotong hasilnya di klien. Karena kedua endpoint
+     * itu sendiri dipaginasi (20 ruangan / 20 order per halaman), "halaman 2" di layar
+     * hanya memotong data yang kebetulan sudah terkirim — order di luar itu tidak
+     * pernah bisa dibuka. Di sini urutan, penyaringan, dan potongan halamannya
+     * ditentukan server sehingga jumlah halaman & isinya benar.
+     *
+     * Kedua kelompok punya kolom tanggal dan urutan yang berbeda (dipinjam memakai
+     * `order_date`, riwayat memakai `updated_at`), jadi paginasinya dirakit manual:
+     * kelompok pertama dihitung dulu, lalu sisa kuota halaman diambil dari kelompok
+     * kedua. Batas halaman tetap tepat tanpa perlu UNION.
+     *
+     * Filter: ?search (kode order/transaksi, peminjam, ruangan, nama/kode instrumen,
+     * kode unit, nomor label kemasan), ?from & ?to (tanggal aktivitas), ?per_page
+     * (default 30). Rentang tanggalnya sengaja dibandingkan dengan tanggal AKTIVITAS
+     * TERAKHIR tiap baris — sama seperti [counts()] — supaya order lama yang baru
+     * dikembalikan tetap muncul pada rentang "7 hari terakhir".
+     */
+    public function tracking(Request $request): JsonResponse
+    {
+        $request->validate([
+            'search' => 'nullable|string|max:255',
+            'from' => 'nullable|date',
+            'to' => 'nullable|date|after_or_equal:from',
+            'per_page' => 'nullable|integer|min:1|max:100',
+        ]);
+
+        $perPage = min((int) ($request->per_page ?: self::TRACKING_PER_PAGE), 100);
+        $page = max((int) ($request->page ?: 1), 1);
+        $search = trim((string) $request->search);
+        $from = $request->input('from');
+        $to = $request->input('to');
+
+        // Nomor label kemasan dicari lewat tabel packaging_item, bukan kolom order —
+        // id unit hasil pencocokannya dipakai sebagai salah satu syarat OR di bawah.
+        $barcodeStockIds = $search === '' ? [] : PackagingItem::where('barcode_no', 'like', "%{$search}%")
+            ->whereNull('deleted_by')
+            ->pluck('instrument_stock_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        $borrowedTotal = $this->trackingQuery(
+            Order::STATUS_DIPINJAM, 'order_date', $from, $to, $search, $barcodeStockIds
+        )->count();
+        $returnedTotal = $this->trackingQuery(
+            Order::STATUS_DIKEMBALIKAN, 'updated_at', $from, $to, $search, $barcodeStockIds
+        )->count();
+
+        $offset = ($page - 1) * $perPage;
+
+        // Potongan kelompok "dipinjam" untuk halaman ini (bisa kosong pada halaman
+        // yang seluruhnya berisi riwayat).
+        $borrowedOrders = collect();
+        if ($offset < $borrowedTotal) {
+            $borrowedOrders = $this->trackingQuery(
+                Order::STATUS_DIPINJAM, 'order_date', $from, $to, $search, $barcodeStockIds
+            )
+                ->with([
+                    'room:id,name',
+                    'items' => fn ($q) => $q->where('is_returned', false)
+                        ->with(['instrumentStock.instrument', 'instrumentStock.condition']),
+                    'requestItems.catalog',
+                ])
+                ->orderByDesc('order_date')
+                // Tie-break wajib: order_date hanya DATE — tanpa ini urutan barisnya
+                // bisa bergeser antar halaman.
+                ->orderByDesc('id')
+                ->skip($offset)
+                ->take(min($perPage, $borrowedTotal - $offset))
+                ->get();
+        }
+
+        // Sisa kuota halaman diisi riwayat, mulai dari posisi setelah seluruh
+        // kelompok "dipinjam" habis.
+        $returnedOrders = collect();
+        $remaining = $perPage - $borrowedOrders->count();
+        if ($remaining > 0) {
+            $returnedOrders = $this->trackingQuery(
+                Order::STATUS_DIKEMBALIKAN, 'updated_at', $from, $to, $search, $barcodeStockIds
+            )
+                ->with(['room:id,name', 'user:id,name', 'items:id,order_id,instrument_stock_id,source,package_name'])
+                ->withCount('items')
+                ->latest('updated_at')
+                ->orderByDesc('id')
+                ->skip(max(0, $offset - $borrowedTotal))
+                ->take($remaining)
+                ->get();
+        }
+
+        // Label kemasan seluruh unit pada halaman ini — sekali query untuk kedua
+        // kelompok agar tidak N+1.
+        $barcodeByStock = $this->barcodeNoByStock(
+            $borrowedOrders->concat($returnedOrders)
+                ->flatMap(fn (Order $order) => $order->items->pluck('instrument_stock_id'))
+                ->filter()
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all()
+        );
+
+        $setsFallback = $this->requestedSetsByOrder(
+            $returnedOrders->pluck('id')->map(fn ($id) => (int) $id)->all()
+        );
+
+        $rows = [];
+
+        foreach ($borrowedOrders as $order) {
+            $built = $this->borrowedGroupsOfOrder($order, $barcodeByStock);
+
+            $rows[] = [
+                'kind' => 'borrowed',
+                'order_id' => $order->id,
+                'order_code' => $order->code,
+                // Baris unit dikirim RATA (belum dikelompokkan per paket/satuan) —
+                // frontend memakai pengelompok yang sama dengan monitoring ruangan,
+                // jadi bentuknya sengaja dibuat identik dengan `monitoring/rooms`.
+                'instruments' => array_values(array_map(
+                    fn (array $group) => $group + ['room' => $order->room?->name],
+                    $built['groups']
+                )),
+            ];
+        }
+
+        foreach ($returnedOrders as $order) {
+            $rows[] = [
+                'kind' => 'returned',
+                'order_id' => $order->id,
+                'order_code' => $order->code,
+                'order' => $this->returnedRowPayload($order, $barcodeByStock, $setsFallback),
+            ];
+        }
+
+        $paginator = new LengthAwarePaginator(
+            $rows,
+            $borrowedTotal + $returnedTotal,
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        return $this->success('Data tracking distribusi berhasil diambil.', $paginator);
+    }
+
+    /**
+     * Query dasar satu kelompok baris tracking: order pada satu status, disaring
+     * rentang tanggal (kolomnya berbeda per kelompok) dan kata kunci.
+     *
+     * Tiap syarat OR pencarian dibungkus closure sendiri — tanpa itu, kondisi
+     * relasinya bercampur dengan syarat OR di dalam subquery `whereHas` dan
+     * hasilnya ikut memuat order yang tidak dicari.
+     *
+     * @param  array<int,int>  $barcodeStockIds
+     */
+    private function trackingQuery(
+        string $status,
+        string $dateColumn,
+        ?string $from,
+        ?string $to,
+        string $search,
+        array $barcodeStockIds
+    ) {
+        $like = "%{$search}%";
+
+        return Order::where('status', $status)
+            ->when($from, fn ($q, $v) => $q->whereDate($dateColumn, '>=', $v))
+            ->when($to, fn ($q, $v) => $q->whereDate($dateColumn, '<=', $v))
+            ->when($search !== '', fn ($q) => $q->where(function ($w) use ($like, $barcodeStockIds) {
+                $w->where('code', 'like', $like)
+                    ->orWhere('code_transaction', 'like', $like)
+                    ->orWhere('borrowed_by', 'like', $like)
+                    ->orWhereHas('room', fn ($r) => $r->where('name', 'like', $like))
+                    ->orWhereHas('items.instrumentStock', fn ($s) => $s->where('code', 'like', $like))
+                    ->orWhereHas(
+                        'items.instrumentStock.instrument',
+                        fn ($i) => $i->where(fn ($x) => $x->where('name', 'like', $like)
+                            ->orWhere('code', 'like', $like))
+                    );
+
+                if (! empty($barcodeStockIds)) {
+                    $w->orWhereHas('items', fn ($i) => $i->whereIn('instrument_stock_id', $barcodeStockIds));
+                }
+            }));
     }
 
     /**

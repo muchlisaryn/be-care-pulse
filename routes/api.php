@@ -122,6 +122,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('monitoring/incoming-count', [MonitoringController::class, 'incomingCount']);
         // Order yang sudah dikembalikan (riwayat) — tetap dipajang di monitoring
         Route::get('monitoring/returned', [MonitoringController::class, 'returned']);
+        // Tab "Distribution & Tracking": dipinjam + riwayat dalam satu daftar,
+        // dipaginasi di server (30 baris/halaman)
+        Route::get('monitoring/tracking', [MonitoringController::class, 'tracking']);
         // Jumlah instrumen yang sedang dipinjam (paket per set, satuan per unit)
         Route::get('monitoring/borrowed-summary', [MonitoringController::class, 'borrowedSummary']);
         // Angka badge tab Tracking Order — count() murni, tanpa memuat daftarnya
@@ -220,8 +223,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('sterilizations/expiring', [SterilizationController::class, 'expiring']);
         Route::apiResource('sterilizations', SterilizationController::class);
 
-        // Laporan CSSD per alat (satu baris per unit di tiap batch sterilisasi)
+        // Laporan CSSD per alat (satu baris per label kemasan di tiap batch sterilisasi)
         Route::get('reports/cssd-per-item', [ReportController::class, 'cssdPerItem']);
+        // Pilihan filter mesin laporan di atas — diambil dari batch yang ada, bukan master
+        Route::get('reports/cssd-machines', [ReportController::class, 'cssdMachines']);
         // Laporan transaksi instrumen: tgl transaksi, no invoice, nama instrumen/set
         // (production_item) & nomor barcode label, peminjam, ruangan
         Route::get('reports/transaksi-instrumen', [TransactionReportController::class, 'index']);
