@@ -199,6 +199,16 @@
 > - `menu` (anak) hanya punya `name` & `url` — **tanpa `icon`** (icon hanya di level `menus`).
 > - `menu: []` (kosong) → menu induk langsung jadi link via `url`. `menu` berisi array → menu induk jadi header accordion.
 > - `is_open` → status default accordion saat halaman dimuat (`true` = terbuka, `false` = tertutup). Default dari server `false`.
+>
+> **Aturan induk pelengkap:** bila sebuah sub-menu diberi akses tapi menu induknya
+> **tidak** ikut diceklis di otoritas (lazim terjadi setelah menu dipindah ke induk
+> baru), induk tersebut tetap dikirim sebagai **wadah** agar anaknya tidak hilang
+> dari sidebar. Induk pelengkap ini selalu ber-`url: null`, sehingga hanya berfungsi
+> sebagai header accordion dan **tidak** memberi akses ke halaman milik induk.
+>
+> **Menu tanpa grup:** menu induk yang `title_menu_id`-nya kosong (atau menunjuk
+> grup yang sudah dihapus) dikirim dalam satu section terakhir dengan
+> `title_menu: null` — dirender tanpa judul section, bukan dibuang.
 
 #### Error (401)
 
