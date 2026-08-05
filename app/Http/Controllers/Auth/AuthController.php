@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Models\Menu;
 use App\Models\TitleMenus;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
@@ -143,33 +145,83 @@ class AuthController extends Controller
         $parentMenus = $allMenus->whereNull('parent_id');
         $childMenus = $allMenus->whereNotNull('parent_id');
 
-        $grouped = $parentMenus->groupBy('title_menu_id');
-        $titleMenuIds = $grouped->keys()->filter()->values()->all();
+        // Anak yang diberi akses tapi induknya tidak ikut diceklis — lazim terjadi
+        // setelah sebuah menu dipindah ke induk baru. Anak semacam ini tidak punya
+        // tempat menempel sehingga hilang dari sidebar walau otoritasnya sudah benar.
+        // Induk pelengkap ditarik sebagai WADAH saja: `url`-nya dikosongkan supaya
+        // halaman milik induk tidak ikut terbuka aksesnya.
+        $orphanParentIds = $childMenus->pluck('parent_id')
+            ->filter()
+            ->unique()
+            ->diff($parentMenus->pluck('id'))
+            ->values();
 
-        $titleMenus = TitleMenus::whereIn('id', $titleMenuIds)->orderBy('sort_order')->get();
+        if ($orphanParentIds->isNotEmpty()) {
+            $containers = Menu::whereIn('id', $orphanParentIds)
+                ->whereNull('parent_id')
+                ->get()
+                ->each(fn (Menu $menu) => $menu->url = null);
 
-        return $titleMenus->map(fn ($title) => [
+            $parentMenus = $parentMenus->concat($containers);
+        }
+
+        // Induk tanpa judul dikumpulkan di kunci 0 agar tidak hilang saat difilter.
+        $grouped = $parentMenus->sortBy('sort_order')
+            ->groupBy(fn (Menu $menu) => (int) $menu->title_menu_id);
+
+        $titleMenus = TitleMenus::whereIn('id', $grouped->keys()->filter()->all())
+            ->orderBy('sort_order')
+            ->get();
+
+        $sections = $titleMenus->map(fn ($title) => [
             'title_menu' => $title->title,
-            'menus' => $grouped->get($title->id, collect())
-                ->map(function ($menu) use ($childMenus) {
-                    $children = $childMenus->where('parent_id', $menu->id)->values();
+            'menus' => $this->mapParentMenus($grouped->get($title->id, collect()), $childMenus),
+        ]);
 
-                    return [
-                        'name' => $menu->name,
-                        'url' => $menu->url,
-                        'icon' => $menu->icon,
-                        'sort_order' => $menu->sort_order,
-                        'is_open' => (bool) $menu->is_open,
-                        'open_sidebar' => (bool) $menu->open_sidebar,
-                        'menu' => $children->map(fn ($child) => [
-                            'name' => $child->name,
-                            'url' => $child->url,
-                            'icon' => $child->icon,
-                            'open_sidebar' => (bool) $child->open_sidebar,
-                        ])->values()->toArray(),
-                    ];
-                })->values()->toArray(),
-        ])->values()->toArray();
+        // Induk tanpa grup (title_menu_id kosong atau menunjuk grup yang sudah
+        // dihapus) tetap ditampilkan tanpa judul. Sebelumnya diam-diam dibuang,
+        // sehingga menunya ikut hilang walau otoritasnya sudah diceklis — padahal
+        // di halaman Master Menu menu tersebut tetap terlihat.
+        $ungrouped = $grouped
+            ->reject(fn ($menus, $id) => $titleMenus->contains('id', (int) $id))
+            ->flatten(1);
+
+        if ($ungrouped->isNotEmpty()) {
+            $sections->push([
+                'title_menu' => null,
+                'menus' => $this->mapParentMenus($ungrouped->sortBy('sort_order'), $childMenus),
+            ]);
+        }
+
+        return $sections->values()->toArray();
+    }
+
+    /**
+     * Susun daftar menu induk beserta anak-anaknya sesuai bentuk response sidebar.
+     *
+     * @param  Collection<int, Menu>  $parents
+     * @param  Collection<int, Menu>  $childMenus
+     */
+    private function mapParentMenus($parents, $childMenus): array
+    {
+        return $parents->map(function (Menu $menu) use ($childMenus) {
+            $children = $childMenus->where('parent_id', $menu->id)->sortBy('sort_order');
+
+            return [
+                'name' => $menu->name,
+                'url' => $menu->url,
+                'icon' => $menu->icon,
+                'sort_order' => $menu->sort_order,
+                'is_open' => (bool) $menu->is_open,
+                'open_sidebar' => (bool) $menu->open_sidebar,
+                'menu' => $children->map(fn (Menu $child) => [
+                    'name' => $child->name,
+                    'url' => $child->url,
+                    'icon' => $child->icon,
+                    'open_sidebar' => (bool) $child->open_sidebar,
+                ])->values()->toArray(),
+            ];
+        })->values()->toArray();
     }
 
     public function update(Request $request): JsonResponse
