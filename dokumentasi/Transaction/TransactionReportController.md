@@ -21,6 +21,16 @@ order_events (type = dikembalikan)                 (jam pengembalian)
   bukan "label terakhir unit" — satu unit fisik bisa melewati pipeline berkali-kali.
 - Unit dalam satu set berbagi satu `barcode_no` sehingga lebur menjadi **satu baris**
   bernama nama setnya. Unit yang belum punya label tidak pernah digabung.
+- Nama baris ditentukan `production_item.source` dan **tidak saling menggantikan**:
+  `paket` → `package_name`, `satuan` → `name`.
+- Untuk `paket`, `package_name` dicari dari anggota **mana pun** yang terisi, bukan
+  dari unit pertama saja. Nilainya tidak dijamin seragam di seluruh anggota satu
+  set; bila yang kosong kebetulan unit pertama (urutan `st.id`), nama setnya hilang
+  padahal anggota lain masih menyimpannya.
+- `name` bernilai **null** bila seluruh anggota set memang tidak menyimpan nama set
+  — barisnya tampil `—`. Nama instrumen sengaja tidak dipinjamkan ke baris paket:
+  satu label paket memuat banyak instrumen, jadi menampilkan salah satunya sebagai
+  nama set akan menyesatkan.
 
 ---
 

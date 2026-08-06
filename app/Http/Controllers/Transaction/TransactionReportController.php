@@ -30,6 +30,9 @@ use Illuminate\Validation\Rule;
  * instrumen di-rename. Nomor barcode dicocokkan per SIKLUS (kode produksi + unit),
  * bukan "label terakhir unit": satu unit fisik bisa melewati pipeline berkali-kali
  * dan tiap siklus punya labelnya sendiri.
+ *
+ * Nama baris ditentukan `production_item.source`: `paket` memakai `package_name`,
+ * `satuan` memakai `name`. Keduanya tidak saling menggantikan.
  */
 class TransactionReportController extends Controller
 {
@@ -234,6 +237,45 @@ class TransactionReportController extends Controller
     }
 
     /**
+     * Nama set per baris laporan, di-key `orderId|label`.
+     *
+     * Nama set diambil dari `production_item.package_name` anggota MANA PUN yang
+     * terisi, bukan dari unit pertama saja. `package_name` tidak dijamin seragam
+     * di seluruh anggota satu set — pada data lama sebagian unit bisa kosong, dan
+     * kalau yang kosong itu kebetulan unit pertama (urutan `st.id`), nama setnya
+     * hilang padahal anggota lain masih menyimpannya.
+     *
+     * Bernilai null bila SELURUH anggota memang tidak menyimpan nama set; barisnya
+     * lalu tampil "—", bukan dipinjamkan nama instrumen.
+     *
+     * @param  Collection<int,object>  $units
+     * @param  array<string,string>  $barcodes
+     * @return array<string,string>
+     */
+    private function packageNameMap(Collection $units, array $barcodes): array
+    {
+        $map = [];
+
+        foreach ($units as $unit) {
+            if ($unit->source !== 'paket') {
+                continue;
+            }
+
+            $packageName = trim((string) ($unit->package_name ?? ''));
+            if ($packageName === '') {
+                continue;
+            }
+
+            $barcode = $barcodes[$unit->production_code.'|'.$unit->instrument_stock_id] ?? null;
+            $label = $barcode ?? 'tanpa-label#'.$unit->storage_id;
+            // Anggota pertama yang terisi yang menang; sisanya tidak menimpa.
+            $map[$unit->order_id.'|'.$label] ??= $packageName;
+        }
+
+        return $map;
+    }
+
+    /**
      * Kelompokkan unit menjadi baris laporan: satu label kemasan = satu bungkus
      * fisik = SATU BARIS. Unit dalam satu set berbagi satu `barcode_no` sehingga
      * lebur jadi satu baris bernama nama set-nya.
@@ -253,6 +295,7 @@ class TransactionReportController extends Controller
      */
     private function groupByBarcode(Collection $units, array $barcodes, array $returnedAt = []): array
     {
+        $packageNames = $this->packageNameMap($units, $barcodes);
         $groups = [];
 
         foreach ($units as $unit) {
@@ -267,6 +310,9 @@ class TransactionReportController extends Controller
             }
 
             $isPaket = $unit->source === 'paket';
+            // Nama set diambil dari peta (anggota mana pun yang `package_name`-nya
+            // terisi), bukan dari unit pertama saja — lihat packageNameMap().
+            $packageName = $packageNames[$orderId.'|'.$label] ?? null;
 
             $groups[$orderId][$label] = [
                 // Kunci baris unik lintas transaksi — dipakai frontend sebagai React key.
@@ -277,9 +323,12 @@ class TransactionReportController extends Controller
                 'invoice_no' => $unit->code_transaction,
                 'barcode_no' => $barcode,
                 'type' => $isPaket ? 'paket' : 'satuan',
-                // Satu label paket memuat banyak instrumen — yang ditampilkan HARUS
-                // nama setnya, bukan nama salah satu isinya.
-                'name' => $isPaket ? ($unit->package_name ?: $unit->item_name) : $unit->item_name,
+                // Nama mengikuti `source`, tanpa saling meminjam: `paket` SELALU dari
+                // `package_name`, `satuan` SELALU dari `name`. Satu label paket memuat
+                // banyak instrumen, jadi memakai `name` di situ berarti menampilkan
+                // nama SALAH SATU isinya seolah-olah itu nama setnya. Lebih baik null
+                // (tampil "—") daripada menyesatkan.
+                'name' => $isPaket ? $packageName : $unit->item_name,
                 'borrowed_by' => $unit->borrowed_by,
                 // Tanggal peminjaman, diambil dari mulainya produksi batch ini.
                 'borrowed_date' => $unit->production_at,
