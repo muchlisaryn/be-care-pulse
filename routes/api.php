@@ -227,6 +227,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('reports/cssd-per-item', [ReportController::class, 'cssdPerItem']);
         // Pilihan filter mesin laporan di atas — diambil dari batch yang ada, bukan master
         Route::get('reports/cssd-machines', [ReportController::class, 'cssdMachines']);
+        // Pilihan filter indikator kimia (nomor lot) — juga diambil dari batch yang ada
+        Route::get('reports/cssd-chemical-indicators', [ReportController::class, 'cssdChemicalIndicators']);
         // Laporan transaksi instrumen: tgl transaksi, no invoice, nama instrumen/set
         // (production_item) & nomor barcode label, peminjam, ruangan
         Route::get('reports/transaksi-instrumen', [TransactionReportController::class, 'index']);

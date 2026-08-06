@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
-use App\Models\OrderItem;
 use App\Models\PackagingItem;
 use App\Models\ProductionItem;
 use App\Models\Sterilization;
@@ -11,18 +10,26 @@ use App\Models\SterilizationItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class ReportController extends Controller
 {
     /**
+     * Nilai indikator biologi (pembanding & uji) — sama dengan yang diterima
+     * SterilizationPipelineController::validateResult saat hasil batch divalidasi.
+     */
+    private const BIO_INDICATOR_VALUES = ['Negatif', 'Positif'];
+
+    /**
      * Laporan CSSD Per Alat: satu baris per LABEL KEMASAN (`packaging_item.barcode_no`)
      * di setiap batch sterilisasi. Satu label = satu bungkus fisik, jadi seluruh unit
      * yang dikemas bersama lebur menjadi satu baris yang bisa di-expand.
      *
-     * Sumber data = SterilizationItem → Sterilization + InstrumentStock, dengan nama
-     * alat/paket dari SNAPSHOT `production_item` supaya laporan lama tidak berubah
-     * saat master instrumen di-rename.
+     * Sumber data = SterilizationItem → Sterilization + InstrumentStock. Nama alat/paket
+     * HANYA dari SNAPSHOT `production_item` supaya laporan lama tidak berubah saat
+     * master instrumen di-rename — master `instruments` dan `order_item` tidak lagi
+     * dipakai sebagai cadangan. Snapshot dicari per SIKLUS, lihat productionItemByCycle().
      *
      * Pengelompokannya sengaja TIDAK lagi memakai asal "paket"/"satuan" dari
      * order_item: label kemasan adalah yang benar-benar dipegang petugas, dan satu
@@ -31,8 +38,9 @@ class ReportController extends Controller
      * tampak sebagai satu baris.
      *
      * Filter: ?search (nama/kode alat), ?status, ?method, ?machine, ?result
-     * (berhasil/gagal), ?date_from, ?date_to (tanggal sterilisasi). ?per_page boleh
-     * dipakai untuk export (default 20, maks 2000).
+     * (berhasil/gagal), ?chemical_indicator (nomor lot), ?bio_indicator_control &
+     * ?bio_indicator_test (Negatif/Positif), ?date_from, ?date_to (tanggal
+     * sterilisasi). ?per_page boleh dipakai untuk export (default 20, maks 2000).
      *
      * Unit yang GAGAL steril tetap dilaporkan (barisnya ditandai `failed`), bukan
      * disembunyikan — laporan ini juga dipakai menelusuri kegagalan.
@@ -44,6 +52,12 @@ class ReportController extends Controller
             'method' => ['nullable', Rule::in(Sterilization::METHODS)],
             'machine' => 'nullable|string|max:255',
             'result' => ['nullable', Rule::in([Sterilization::RESULT_BERHASIL, Sterilization::RESULT_GAGAL])],
+            // Indikator hasil validasi batch. `chemical_indicator` berisi nomor lot
+            // (teks bebas) sehingga dicocokkan persis dengan nilai yang dipilih dari
+            // daftar yang memang ada di data — bukan pencarian sebagian.
+            'chemical_indicator' => 'nullable|string|max:100',
+            'bio_indicator_control' => ['nullable', Rule::in(self::BIO_INDICATOR_VALUES)],
+            'bio_indicator_test' => ['nullable', Rule::in(self::BIO_INDICATOR_VALUES)],
             'date_from' => 'nullable|date',
             'date_to' => 'nullable|date',
             'per_page' => 'nullable|integer|min:1',
@@ -60,6 +74,9 @@ class ReportController extends Controller
                 $q->when($request->status, fn ($q, $s) => $q->where('status', $s))
                     ->when($request->method, fn ($q, $m) => $q->where('method', $m))
                     ->when($request->machine, fn ($q, $m) => $q->where('machine', $m))
+                    ->when($request->chemical_indicator, fn ($q, $v) => $q->where('chemical_indicator', $v))
+                    ->when($request->bio_indicator_control, fn ($q, $v) => $q->where('bio_indicator_control', $v))
+                    ->when($request->bio_indicator_test, fn ($q, $v) => $q->where('bio_indicator_test', $v))
                     ->when($request->date_from, fn ($q, $d) => $q->whereDate('sterilized_at', '>=', $d))
                     ->when($request->date_to, fn ($q, $d) => $q->whereDate('sterilized_at', '<=', $d));
             })
@@ -78,43 +95,56 @@ class ReportController extends Controller
             ->latest()
             ->get();
 
-        // Nama paket per unit — cadangan bila snapshot production_item tidak punya
-        // `package_name`: kunci (order_id, instrument_stock_id).
-        $orderIds = $items->pluck('sterilization.order_id')->filter()->unique()->all();
-        $orderItems = OrderItem::whereIn('order_id', $orderIds)
-            ->get(['order_id', 'instrument_stock_id', 'source', 'package_name'])
-            ->keyBy(fn ($oi) => $oi->order_id.'-'.$oi->instrument_stock_id);
+        $stockIds = $items->pluck('instrument_stock_id')->filter()->map(fn ($id) => (int) $id)->unique()->all();
 
-        // Nama instrumen/paket dari SNAPSHOT production_item (bukan master). keyBy pada
-        // urutan id ASC → entri TERAKHIR (batch terbaru) menang per unit.
-        $prodByStock = ProductionItem::whereIn(
-            'instrument_stock_id',
-            $items->pluck('instrument_stock_id')->filter()->unique()
-        )->orderBy('id')->get()->keyBy('instrument_stock_id');
+        // Cadangan untuk unit yang barisnya belum menyimpan label: snapshot TERBARU
+        // unit itu (keyBy pada urutan id ASC → entri terakhir menang).
+        $prodByStock = ProductionItem::whereIn('instrument_stock_id', $stockIds)
+            ->orderBy('id')
+            ->get()
+            ->keyBy('instrument_stock_id');
 
-        $barcodeByStock = $this->barcodeNoByStock(
-            $items->pluck('instrument_stock_id')->filter()->map(fn ($id) => (int) $id)->unique()->all()
+        $barcodeByStock = $this->barcodeNoByStock($stockIds);
+
+        // Snapshot production_item PER SIKLUS — lihat productionItemByCycle().
+        $prodByCycle = $this->productionItemByCycle(
+            $items->pluck('packaging_barcode')
+                ->filter()
+                ->merge(array_values($barcodeByStock))
+                ->unique()
+                ->values()
+                ->all(),
+            $stockIds
         );
+
+        // Nama baris dihitung setelah seluruh anggota terkumpul: `package_name` tidak
+        // dijamin terisi di semua anggota satu bungkus, jadi tidak boleh hanya
+        // mengandalkan unit yang kebetulan pertama masuk.
+        $rowNames = [];
 
         $groups = [];
         foreach ($items as $item) {
             $batch = $item->sterilization;
             $stock = $item->instrumentStock;
-            $oi = $orderItems->get($batch?->order_id.'-'.$item->instrument_stock_id);
-            $prod = $prodByStock->get($item->instrument_stock_id);
             // Label yang unit ini BENAR-BENAR bawa saat batch itu disterilkan —
             // tersimpan di barisnya sendiri, jadi laporan lama tidak ikut bergeser
             // saat unitnya dikemas ulang di siklus berikutnya. Baris lama yang belum
             // punya kolom itu jatuh ke label terbaru unitnya.
             $barcode = $item->packaging_barcode ?? $barcodeByStock[(int) $item->instrument_stock_id] ?? null;
 
+            // Snapshot siklus batch ini; unit tanpa label jatuh ke snapshot terbaru.
+            $prod = $prodByCycle[$barcode.'|'.$item->instrument_stock_id]
+                ?? $prodByStock->get($item->instrument_stock_id);
+
             $unit = [
                 'id' => $item->id,
-                // Nama dari snapshot production_item; relasi master hanya cadangan.
-                'name' => $prod?->name ?? $stock?->instrument?->name,
+                // Nama unit SELALU `production_item.name` — nama instrumennya sendiri,
+                // bukan nama paket, dan bukan master `instruments` yang bisa di-rename.
+                'name' => $prod?->name,
                 'unit_code' => $stock?->code,
                 'result' => $item->result,
-                // Gagal steril — sumbernya kolom `disabled` baris ini.
+                // Gagal steril — sumbernya kolom `disabled` baris ini. Unit gagal TETAP
+                // dilaporkan; validasi batch hanya menandainya, tidak menghapusnya.
                 'failed' => (bool) $item->disabled,
             ];
 
@@ -124,14 +154,20 @@ class ReportController extends Controller
                 ? 'nolabel|'.$item->id
                 : 'label|'.$batch?->id.'|'.$barcode;
 
+            // Nama baris mengikuti `source`: paket → `package_name`, satuan → `name`.
+            // Keduanya dari production_item dan tidak saling menggantikan — memakai
+            // nama instrumen pada baris paket berarti menampilkan salah satu isinya
+            // seolah-olah nama setnya.
+            $candidate = $prod?->source === 'paket' ? $prod?->package_name : $prod?->name;
+            if ($candidate !== null && trim((string) $candidate) !== '') {
+                $rowNames[$key] ??= $candidate;
+            }
+
             $groups[$key] ??= [
                 'key' => $key,
                 'barcode_no' => $barcode,
-                // Nama baris: nama paket bila unitnya memang bagian dari sebuah paket,
-                // selain itu nama instrumennya sendiri.
-                'name' => $prod?->package_name
-                    ?? (($oi?->source) === 'paket' ? $oi?->package_name : null)
-                    ?? $unit['name'],
+                // Diisi setelah seluruh anggota terkumpul (lihat $rowNames).
+                'name' => null,
                 'batch_code' => $batch?->code,
                 'method' => $batch?->method,
                 'machine' => $batch?->machine,
@@ -163,6 +199,8 @@ class ReportController extends Controller
         // gabungan tidak punya satu kode unit — kodenya ada di detail tiap unit.
         foreach ($groups as $key => $group) {
             $groups[$key]['unit_code'] = $group['qty'] === 1 ? $group['units'][0]['unit_code'] : null;
+            // null bila tidak satu pun anggota menyimpan namanya — FE menampilkan "—".
+            $groups[$key]['name'] = $rowNames[$key] ?? null;
         }
 
         $all = array_values($groups);
@@ -194,6 +232,85 @@ class ReportController extends Controller
             ->values();
 
         return $this->success('Daftar mesin sterilisasi berhasil diambil.', $machines);
+    }
+
+    /**
+     * Pilihan filter INDIKATOR KIMIA untuk laporan CSSD per alat: nomor lot yang
+     * benar-benar pernah tercatat pada batch sterilisasi.
+     *
+     * Sama alasannya dengan cssdMachines: kolomnya teks bebas (nomor lot diketik
+     * petugas saat validasi batch), jadi tidak ada master yang bisa dijadikan
+     * sumber pilihan. Diambil dari datanya sendiri supaya pilihan di dropdown
+     * selalu sama dengan isi laporan — tidak ada opsi yang hasilnya kosong.
+     */
+    public function cssdChemicalIndicators(): JsonResponse
+    {
+        $indicators = Sterilization::query()
+            ->whereNotNull('chemical_indicator')
+            ->where('chemical_indicator', '!=', '')
+            ->distinct()
+            ->orderBy('chemical_indicator')
+            ->pluck('chemical_indicator')
+            ->values();
+
+        return $this->success('Daftar indikator kimia berhasil diambil.', $indicators);
+    }
+
+    /**
+     * Snapshot `production_item` yang unit ini bawa PADA SIKLUS batch tersebut,
+     * di-key `barcodeNo|instrumentStockId`.
+     *
+     * Sebelumnya nama diambil dari `ProductionItem::keyBy('instrument_stock_id')`,
+     * yang hanya menyisakan SATU snapshot per unit — yang terbaru. Satu unit fisik
+     * melewati pipeline berkali-kali, jadi laporan batch lama ikut menampilkan nama
+     * dari batch terbaru; persis hal yang seharusnya dicegah oleh snapshot.
+     *
+     * Rantainya: `packaging_item.barcode_no` → `packaging` → `washing.production_code`
+     * → `production` → `production_item` (batch + unit). Label yang sudah di-void
+     * (`disabled`) SENGAJA tidak disaring: unit yang gagal steril labelnya di-void
+     * dan dikemas ulang, tapi baris laporannya tetap merujuk siklus yang lama.
+     *
+     * @param  array<int,string>  $barcodes
+     * @param  array<int,int>  $stockIds
+     * @return array<string,object>
+     */
+    private function productionItemByCycle(array $barcodes, array $stockIds): array
+    {
+        if (empty($barcodes) || empty($stockIds)) {
+            return [];
+        }
+
+        $map = [];
+
+        DB::table('packaging_item as pit')
+            ->join('packaging as pk', 'pk.id', '=', 'pit.packaging_id')
+            ->join('washing as w', 'w.code', '=', 'pk.washing_code')
+            ->join('production as pr', 'pr.code', '=', 'w.production_code')
+            ->join('production_item as pi', function ($join) {
+                $join->on('pi.production_id', '=', 'pr.id')
+                    ->on('pi.instrument_stock_id', '=', 'pit.instrument_stock_id');
+            })
+            ->whereIn('pit.barcode_no', $barcodes)
+            ->whereIn('pit.instrument_stock_id', $stockIds)
+            // Query builder mentah tidak ikut global scope `active`, jadi soft delete
+            // tiap tabel dikualifikasi manual. `production` memang tanpa kolom itu.
+            ->whereNull('pit.deleted_by')
+            ->whereNull('pk.deleted_by')
+            ->whereNull('w.deleted_by')
+            ->whereNull('pi.deleted_by')
+            ->orderBy('pi.id')
+            ->get([
+                'pit.barcode_no',
+                'pit.instrument_stock_id',
+                'pi.name',
+                'pi.source',
+                'pi.package_name',
+            ])
+            ->each(function ($row) use (&$map) {
+                $map[$row->barcode_no.'|'.$row->instrument_stock_id] = $row;
+            });
+
+        return $map;
     }
 
     /**

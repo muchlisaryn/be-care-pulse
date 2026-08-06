@@ -18,8 +18,27 @@ jatuh ke label terbaru unit itu (`packaging_item.barcode_no`, label void diabaik
 Unit yang belum punya label sama sekali TIDAK pernah digabung — kalau digabung, dua
 bungkus berbeda akan tampak sebagai satu baris.
 
-Nama alat/paket diambil dari SNAPSHOT `production_item` (bukan master) supaya laporan
-lama tidak berubah saat instrumen di-rename; `order_item` hanya cadangan nama paket.
+Nama alat/paket diambil **hanya** dari SNAPSHOT `production_item` supaya laporan lama
+tidak berubah saat instrumen di-rename. Master `instruments` dan `order_item` sudah
+TIDAK dipakai lagi sebagai cadangan nama.
+
+- Snapshot dicari **per siklus**, bukan per unit: `packaging_item.barcode_no` →
+  `packaging` → `washing.production_code` → `production` → `production_item`. Satu unit
+  fisik melewati pipeline berkali-kali; mengambil snapshot terbaru per unit membuat
+  laporan batch lama ikut menampilkan nama dari batch terbaru. Unit yang barisnya belum
+  menyimpan label jatuh ke snapshot terbaru unit itu.
+- Nama mengikuti `production_item.source` dan tidak saling menggantikan:
+  `paket` → `package_name`, `satuan` → `name`. Untuk baris paket, `package_name` dicari
+  dari anggota **mana pun** yang terisi (nilainya tidak dijamin seragam di seluruh
+  anggota satu bungkus).
+- `name` di tiap **unit** selalu `production_item.name` — nama instrumennya sendiri.
+- Bernilai **null** bila snapshot-nya memang tidak menyimpan nama; FE menampilkan `—`.
+
+Unit yang **gagal steril tetap dilaporkan**, ditandai `failed: true` pada unit dan pada
+barisnya. Validasi batch hanya menyetel `sterilization_items.disabled`, bukan soft
+delete, jadi datanya tidak pernah tersaring keluar. Tanpa `?result`, unit berhasil dan
+gagal muncul berdampingan.
+
 BMHP tidak termasuk (hanya didistribusi, tidak disterilkan).
 
 Pengelompokan dilakukan di server lalu dipaginasi per-grup (agar satu bungkus tidak
@@ -47,6 +66,9 @@ terpotong antar halaman).
 | method | string | Tidak | Filter metode steril: `uap` / `eo` / `plasma` / `panas_kering` |
 | machine | string | Tidak | Filter mesin (cocok persis dengan `sterilizations.machine`). Pilihannya diambil dari [cssdMachines](#2-cssdmachines) |
 | result | string | Tidak | Filter hasil unit: `berhasil` / `gagal`. Dibaca dari `sterilization_items.disabled` (unit gagal di-void saat validasi batch) |
+| chemical_indicator | string | Tidak | Filter indikator kimia / nomor lot (cocok **persis** dengan `sterilizations.chemical_indicator`). Pilihannya diambil dari [cssdChemicalIndicators](#3-cssdchemicalindicators) |
+| bio_indicator_control | string | Tidak | Filter indikator biologi pembanding: `Negatif` / `Positif` |
+| bio_indicator_test | string | Tidak | Filter indikator biologi uji: `Negatif` / `Positif` |
 | date_from | date | Tidak | Tanggal sterilisasi (`sterilized_at`) ≥ tanggal ini |
 | date_to | date | Tidak | Tanggal sterilisasi (`sterilized_at`) ≤ tanggal ini |
 | page | integer | Tidak | Halaman pagination |
@@ -60,7 +82,7 @@ Setiap baris pada `data.data` adalah satu **label kemasan**:
 |-------|------|------------|
 | key | string | Kunci baris unik (`label\|batchId\|barcode`, atau `nolabel\|itemId` bila unit belum berlabel) |
 | barcode_no | string\|null | Nomor label kemasan; `null` bila unitnya belum pernah dikemas |
-| name | string\|null | Nama paket bila unitnya bagian dari sebuah paket, selain itu nama instrumennya |
+| name | string\|null | `production_item.package_name` bila `source` = paket, selain itu `production_item.name`. Null bila snapshot tidak menyimpan namanya |
 | unit_code | string\|null | Kode unit — hanya terisi bila label ini berisi SATU unit; `null` untuk baris gabungan |
 | batch_code | string\|null | Kode batch sterilisasi (STR-NNN) |
 | machine | string\|null | Mesin sterilisasi, mis. `AUTOCLAVE 285 LTR` |
@@ -201,6 +223,49 @@ Tidak ada.
   "status": true,
   "message": "Daftar mesin sterilisasi berhasil diambil.",
   "data": ["AUTOCLAVE 100 LTR", "AUTOCLAVE 285 LTR"]
+}
+```
+
+#### Error (401)
+```json
+{
+  "status": false,
+  "message": "Unauthenticated."
+}
+```
+
+---
+
+## 3. cssdChemicalIndicators
+
+Pilihan filter **indikator kimia** (nomor lot) untuk laporan CSSD per alat: nilai yang
+benar-benar pernah tercatat pada batch sterilisasi.
+
+Alasannya sama dengan [cssdMachines](#2-cssdmachines): `sterilizations.chemical_indicator`
+adalah teks bebas yang diketik petugas saat validasi batch, jadi tidak ada master yang
+bisa dijadikan sumber pilihan. Diambil dari datanya sendiri supaya tidak ada opsi yang
+hasilnya pasti kosong.
+
+**Method:** GET  
+**Endpoint:** /api/master/reports/cssd-chemical-indicators  
+**Auth:** Bearer Token (wajib)
+
+### Headers
+| Key | Value | Required |
+|-----|-------|----------|
+| Authorization | Bearer {token} | Ya |
+
+### Query Parameters
+Tidak ada.
+
+### Response
+
+#### Success (200)
+```json
+{
+  "status": true,
+  "message": "Daftar indikator kimia berhasil diambil.",
+  "data": ["LOT-001", "LOT-002"]
 }
 ```
 
