@@ -12,7 +12,9 @@ Rantai data (berdiri sendiri, tidak memakai helper `ReportController`):
 order → instrument_storages → production_item      (nama instrumen / nama set)
 production → washing → packaging → packaging_item  (nomor barcode label)
 production.created_at                              (tanggal peminjaman)
-order_events (type = dikembalikan)                 (jam pengembalian)
+order_events (type = terdistribusi)                (petugas yang mendistribusikan)
+order.distributed_to / distributed_at              (penerima & waktu distribusi)
+order_events (type = dikembalikan)                 (jam + petugas penerima pengembalian)
 ```
 
 - Nama alat diambil dari **snapshot** `production_item` (bukan master `instruments`),
@@ -72,7 +74,11 @@ order_events (type = dikembalikan)                 (jam pengembalian)
 | room | string\|null | Nama ruangan peminjam |
 | medical_record_no | string\|null | No. RM pasien (`order.medical_record_no`); null bila alat belum ditautkan ke pasien |
 | patient_name | string\|null | Nama pasien (`order.patient_name`); null bila belum ditautkan |
-| returned_by | string\|null | Nama orang yang mengembalikan (`order.returned_by`) |
+| distributed_by | string\|null | Petugas yang **menyerahkan** alat steril — `actor` event timeline `terdistribusi` (user yang login saat distribusi). Order tidak menyimpan kolom ini sendiri. Bila order sempat didistribusikan lebih dari sekali, dipakai event TERAKHIR. Null bila order belum sampai tahap distribusi |
+| received_by | string\|null | Pihak yang **menerima** hasil distribusi (`order.distributed_to`) — ruangan/petugas hasil scan saat penyerahan. Null bila belum didistribusikan |
+| distributed_at | datetime\|null | Momen alat steril diserahkan (`order.distributed_at`). Null bila order belum sampai tahap distribusi |
+| returned_by | string\|null | Orang dari **ruangan** yang menyerahkan alat kembali (`order.returned_by`) |
+| return_received_by | string\|null | Petugas **CSSD** yang menerima pengembalian — `actor` event timeline `dikembalikan`. Peran berbeda dari `returned_by` dan tidak saling menggantikan. Bila order dikembalikan bertahap, dipakai event TERAKHIR. Null pada order lama tanpa event timeline |
 | return_date | date\|null | Tanggal pengembalian (`order.return_actual_date`) — hanya tanggal, tanpa jam |
 | returned_at | datetime\|null | Momen persis pengembalian, dari event timeline `dikembalikan` (`order_events.created_at`). Bila satu order dikembalikan bertahap, yang dipakai adalah event TERAKHIR. Null pada order lama yang tidak punya event — frontend jatuh ke `return_date` |
 
@@ -99,7 +105,11 @@ order_events (type = dikembalikan)                 (jam pengembalian)
         "room": "OK 1",
         "medical_record_no": "00-12-3456",
         "patient_name": "Ahmad Fauzi",
+        "distributed_by": "Petugas CSSD",
+        "received_by": "OK 1 — Ns. Sari",
+        "distributed_at": "2026-07-19 09:12:40",
         "returned_by": "Ns. Rina",
+        "return_received_by": "Petugas CSSD",
         "return_date": "2026-07-20",
         "returned_at": "2026-07-20 14:32:11"
       },
@@ -116,7 +126,11 @@ order_events (type = dikembalikan)                 (jam pengembalian)
         "room": "OK 1",
         "medical_record_no": null,
         "patient_name": null,
+        "distributed_by": null,
+        "received_by": null,
+        "distributed_at": null,
         "returned_by": "Ns. Rina",
+        "return_received_by": null,
         "return_date": "2026-07-20",
         "returned_at": null
       }

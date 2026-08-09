@@ -1841,6 +1841,12 @@ class OrderController extends Controller
             'status' => $order->status,
             'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
             'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name, 'code' => $order->room->code] : null,
+            // Pasien tujuan alat — diisi saat order dibuat & dibawa apa adanya ke event
+            // distribusi. Ditampilkan di kartu "Siap Distribusi" supaya petugas bisa
+            // mencocokkan bungkus steril dengan pasiennya sebelum diserahkan, tanpa
+            // membuka modal Distribusikan lebih dulu.
+            'medical_record_no' => $order->medical_record_no,
+            'patient_name' => $order->patient_name,
             'processed_at' => $order->processed_at,
             'expiry_date' => $expiry,
             'unit_count' => $units->count(),
@@ -2251,24 +2257,12 @@ class OrderController extends Controller
             $stockIds = OrderItem::whereIn('order_id', $orderIds)
                 ->pluck('instrument_stock_id')->filter()->unique();
             $pipeline = $this->pipelineTimeline($stockIds, $returnedAt);
-
-            // Bila unit disimpan ke gudang steril SETELAH dikembalikan (penataan rak
-            // menyusul), event "Di Gudang Steril" mengikuti waktu pengembalian — bukan
-            // waktu penataan rak yang bisa terjadi berjam-jam kemudian.
-            if ($returnedAt) {
-                $pipeline = $pipeline->map(function ($e) use ($returnedAt) {
-                    if ($e['type'] === 'disimpan' && $e['created_at'] && $e['created_at']->gt($returnedAt)) {
-                        $e['created_at'] = $returnedAt;
-                    }
-
-                    return $e;
-                });
-            }
         }
 
         // Gabung & urut kronologis (produksi/steril/simpan terjadi sebelum dipinjam).
-        // Event pipeline membawa kunci `sort` (urutan tahap dikunci) — event lain
-        // memakai waktunya sendiri.
+        // Event pipeline membawa kunci `sort` (urutan tahap dikunci, termasuk "Di Gudang
+        // Steril" yang selalu menempel di bawah Steril / Siap Rilis) — event lain memakai
+        // waktunya sendiri.
         $events = $orderEvents->concat($pipeline)
             ->sortBy(fn ($e) => $e['sort'] ?? (optional($e['created_at'])->timestamp ?? 0))
             ->values();
@@ -2417,10 +2411,11 @@ class OrderController extends Controller
         $stageGroups = $events->filter(fn ($e) => in_array($e['type'], $pipelineTypes, true))
             ->groupBy(fn ($e) => $stageKey($e['type']));
 
-        // Urutan tahap DIKUNCI: Produksi → Cleaning → Packaging → Steril, di-anchor ke
-        // waktu produksi — supaya tidak terbalik walau event terbaru tiap tahap berasal
-        // dari batch berbeda (mis. produksi batch-2 lebih baru dari cuci batch-1).
-        $rank = ['produksi' => 0, 'cleaning' => 1, 'packaging' => 2, 'steril' => 3];
+        // Urutan tahap DIKUNCI: Produksi → Cleaning → Packaging → Steril → Di Gudang
+        // Steril, di-anchor ke waktu produksi — supaya tidak terbalik walau event
+        // terbaru tiap tahap berasal dari batch berbeda (mis. produksi batch-2 lebih
+        // baru dari cuci batch-1).
+        $rank = ['produksi' => 0, 'cleaning' => 1, 'packaging' => 2, 'steril' => 3, 'disimpan' => 4];
         $prodFirst = ($stageGroups['produksi'] ?? collect())->first();
         $base = $prodFirst ? (optional($prodFirst['created_at'] ?? null)->timestamp ?? 0) : 0;
 
@@ -2444,6 +2439,28 @@ class OrderController extends Controller
             $keep['sort'] = $base + (($rank[$key] ?? 9) * 0.001);
             $deduped->push($keep);
         }
+
+        // "Di Gudang Steril" ikut dikunci tepat SETELAH Steril / Siap Rilis, bukan
+        // diurutkan lewat waktunya sendiri: penataan rak sering baru dicatat berjam-jam
+        // (bahkan berhari-hari) setelah batch dinyatakan steril — kadang setelah order
+        // dikembalikan — sehingga kalau memakai `stored_at` barisnya melompat ke bawah,
+        // terpisah dari tahap yang menghasilkannya. Waktu yang DITAMPILKAN tetap waktu
+        // penataan rak yang sebenarnya; yang dikunci hanya posisinya.
+        //
+        // Tidak dilebur seperti tahap lain (rak berbeda = lokasi, bukan proses ganda);
+        // beberapa rak tetap tampil masing-masing, urut menaik lewat pengali $i.
+        //
+        // `$base === 0` berarti tahap produksinya tidak ada di timeline ini (mis. batch
+        // produksinya terpotong cutoff pengembalian). Tanpa jangkar, mengunci urutan
+        // justru melempar barisnya ke paling atas — jadi biarkan memakai waktunya
+        // sendiri seperti sebelumnya.
+        $others = $others->values()->map(function ($e, $i) use ($base, $rank) {
+            if ($base > 0 && $e['type'] === 'disimpan') {
+                $e['sort'] = $base + ($rank['disimpan'] * 0.001) + ($i * 0.00001);
+            }
+
+            return $e;
+        });
 
         return $deduped->concat($others)->values();
     }

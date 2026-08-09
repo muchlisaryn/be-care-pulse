@@ -92,6 +92,13 @@ dipindai belum pernah masuk order manapun.
 > **`timeline`** — riwayat tracking lintas seluruh order yang berbagi `code_transaction` (rantai
 > handover antar ruangan), diurutkan kronologis. Tipe event: `dibuat` / `diterima` / `dipinjam` /
 > `dipindah` / `dikembalikan`.
+>
+> Tahap pipeline CSSD yang ikut disisipkan urutannya **DIKUNCI** — `produksi` → `cleaning`
+> (`diproses`/`selesai_cuci`/`gagal_cuci`) → `packaging` → `steril` → `disimpan` (Di Gudang
+> Steril) — di-anchor ke waktu produksi, bukan ke waktu tiap event. Penataan rak sering baru
+> dicatat berjam-jam setelah batch dinyatakan steril (kadang setelah order dikembalikan), jadi
+> `disimpan` selalu menempel tepat di bawah `steril`. `created_at` yang dikirim tetap waktu
+> aslinya — yang dikunci hanya posisi barisnya.
 
 ### Error (404)
 ```json

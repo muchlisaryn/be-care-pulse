@@ -16,8 +16,9 @@ use Illuminate\Validation\Rule;
  * Laporan Transaksi Instrumen — rekap peminjaman dengan satu baris per LABEL
  * KEMASAN (`packaging_item.barcode_no`) di tiap transaksi. Kolomnya: tanggal
  * transaksi, no invoice, nama instrumen/set, nomor barcode, nama peminjam + tanggal
- * peminjamannya, ruangan, identitas pasien (No. RM & nama), serta siapa yang
- * mengembalikan dan kapan.
+ * peminjamannya, ruangan, identitas pasien (No. RM & nama), petugas yang
+ * mendistribusikan + pihak yang menerimanya + kapan diserahkan, serta siapa yang
+ * mengembalikan, petugas yang menerima pengembaliannya, dan kapan.
  *
  * Dibangun terpisah dari ReportController::transaksi (laporan lama) dan tidak
  * memakai satu pun helper-nya — laporan ini punya rantai datanya sendiri:
@@ -74,7 +75,8 @@ class TransactionReportController extends Controller
         $rows = $this->groupByBarcode(
             $units,
             $this->barcodeMap($units),
-            $this->returnedAtMap($units)
+            $this->returnEventMap($units),
+            $this->distributedByMap($units)
         );
         $rows = $this->applySearch($rows, $request->search);
 
@@ -138,9 +140,14 @@ class TransactionReportController extends Controller
                 'o.medical_record_no',
                 'o.patient_name',
                 // Pengembalian: nama pengembali + tanggalnya. Tanggal ini hanya DATE;
-                // jam persisnya diambil dari order_events (lihat returnedAtMap).
+                // jam persisnya diambil dari order_events (lihat returnEventMap).
                 'o.returned_by',
                 'o.return_actual_date',
+                // Penerima hasil distribusi (ruangan/petugas yang diisi saat alat
+                // steril diserahkan) + momen penyerahannya. Petugas yang MENYERAHKAN
+                // diambil dari event timeline — lihat distributedByMap().
+                'o.distributed_to',
+                'o.distributed_at',
                 'r.name as room_name',
                 'pr.code as production_code',
                 // Tanggal peminjaman = saat batch produksi unit ini dibuat. Tabel
@@ -196,12 +203,19 @@ class TransactionReportController extends Controller
     }
 
     /**
-     * Waktu pengembalian per transaksi, di-key `order_id`.
+     * Event pengembalian per transaksi, di-key `order_id`, berisi `at` (momen persis)
+     * & `actor` (petugas CSSD yang MENERIMA pengembaliannya).
      *
      * `order.return_actual_date` hanya menyimpan TANGGAL, sedangkan event timeline
      * `dikembalikan` menyimpan momen persisnya — jadi jam pengembalian diambil dari
      * sana. Order lama yang tidak punya event tetap terlaporkan lewat tanggalnya
      * (lihat `returned_at` vs `return_date` di groupByBarcode).
+     *
+     * Petugas penerima ikut diambil di sini, bukan lewat query kedua: keduanya berasal
+     * dari BARIS event yang sama, jadi memisahkannya berisiko memasangkan jam dari satu
+     * event dengan petugas dari event lain saat sebuah order dikembalikan bertahap.
+     * `order.returned_by` TIDAK dipakai untuk ini — kolom itu menyimpan nama orang dari
+     * ruangan yang menyerahkan alatnya, bukan petugas CSSD yang menerima.
      *
      * Urut id ASC lalu ditimpa, sehingga bila satu order sempat dikembalikan
      * bertahap (per unit) yang menang adalah event TERAKHIR — momen order itu
@@ -211,9 +225,9 @@ class TransactionReportController extends Controller
      * tidak ada filter `deleted_by` di sini.
      *
      * @param  Collection<int,object>  $units
-     * @return array<int,string>
+     * @return array<int,array{at:string,actor:string|null}>
      */
-    private function returnedAtMap(Collection $units): array
+    private function returnEventMap(Collection $units): array
     {
         $orderIds = $units->pluck('order_id')->unique()->values()->all();
 
@@ -228,9 +242,49 @@ class TransactionReportController extends Controller
             ->where('type', OrderEvent::TYPE_DIKEMBALIKAN)
             ->whereNotNull('created_at')
             ->orderBy('id')
-            ->get(['order_id', 'created_at'])
+            ->get(['order_id', 'created_at', 'actor'])
             ->each(function ($row) use (&$map) {
-                $map[(int) $row->order_id] = $row->created_at;
+                $map[(int) $row->order_id] = ['at' => $row->created_at, 'actor' => $row->actor];
+            });
+
+        return $map;
+    }
+
+    /**
+     * Petugas yang mendistribusikan tiap transaksi, di-key `order_id`.
+     *
+     * Diambil dari `actor` event timeline `terdistribusi` — user yang login saat alat
+     * steril diserahkan. Order tidak menyimpan kolom "distribusi oleh"-nya sendiri;
+     * yang tersimpan di sana hanya `distributed_to` (pihak PENERIMA).
+     *
+     * Urut id ASC lalu ditimpa: bila order sempat didistribusikan lebih dari sekali,
+     * yang dilaporkan adalah petugas pada penyerahan TERAKHIR — sejalan dengan cara
+     * `returnEventMap` memilih event pengembalian.
+     *
+     * `order_events` append-only & tanpa kolom soft delete, jadi tidak ada filter
+     * `deleted_by`.
+     *
+     * @param  Collection<int,object>  $units
+     * @return array<int,string>
+     */
+    private function distributedByMap(Collection $units): array
+    {
+        $orderIds = $units->pluck('order_id')->unique()->values()->all();
+
+        if (empty($orderIds)) {
+            return [];
+        }
+
+        $map = [];
+
+        DB::table('order_events')
+            ->whereIn('order_id', $orderIds)
+            ->where('type', OrderEvent::TYPE_TERDISTRIBUSI)
+            ->whereNotNull('actor')
+            ->orderBy('id')
+            ->get(['order_id', 'actor'])
+            ->each(function ($row) use (&$map) {
+                $map[(int) $row->order_id] = $row->actor;
             });
 
         return $map;
@@ -290,11 +344,16 @@ class TransactionReportController extends Controller
      *
      * @param  Collection<int,object>  $units
      * @param  array<string,string>  $barcodes
-     * @param  array<int,string>  $returnedAt
+     * @param  array<int,array{at:string,actor:string|null}>  $returnEvents
+     * @param  array<int,string>  $distributedBy
      * @return array<int,array<string,mixed>>
      */
-    private function groupByBarcode(Collection $units, array $barcodes, array $returnedAt = []): array
-    {
+    private function groupByBarcode(
+        Collection $units,
+        array $barcodes,
+        array $returnEvents = [],
+        array $distributedBy = []
+    ): array {
         $packageNames = $this->packageNameMap($units, $barcodes);
         $groups = [];
 
@@ -335,11 +394,22 @@ class TransactionReportController extends Controller
                 'room' => $unit->room_name,
                 'medical_record_no' => $unit->medical_record_no,
                 'patient_name' => $unit->patient_name,
+                // Distribusi: petugas yang menyerahkan (dari event timeline) & pihak
+                // yang menerima (diisi petugas saat distribusi). Keduanya null pada
+                // order yang belum sampai tahap distribusi.
+                'distributed_by' => $distributedBy[$orderId] ?? null,
+                'received_by' => $unit->distributed_to,
+                'distributed_at' => $unit->distributed_at,
+                // Pengembalian: orang dari RUANGAN yang menyerahkan alat kembali
+                // (`order.returned_by`) vs petugas CSSD yang MENERIMA penyerahan itu
+                // (pelaku event `dikembalikan`) — dua peran berbeda, tidak saling
+                // menggantikan.
                 'returned_by' => $unit->returned_by,
+                'return_received_by' => $returnEvents[$orderId]['actor'] ?? null,
                 'return_date' => $unit->return_actual_date,
                 // Momen persis pengembalian; null pada order lama yang tidak punya
                 // event timeline — frontend jatuh ke `return_date` bila null.
-                'returned_at' => $returnedAt[$orderId] ?? null,
+                'returned_at' => $returnEvents[$orderId]['at'] ?? null,
             ];
         }
 
