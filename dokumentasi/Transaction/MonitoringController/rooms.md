@@ -87,6 +87,8 @@ pencarian bisa menemukan order dari hasil scan barcode bungkus.
           {
             "order_code": "ORD-002",
             "borrowed_by": "Bagas",
+            "patient_name": "SITI AMINAH",
+            "medical_record_no": "000123",
             "order_date": "2026-06-10T00:00:00.000000Z",
             "return_plan_date": "2026-06-12T00:00:00.000000Z",
             "source": "satuan",

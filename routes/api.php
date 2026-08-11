@@ -30,6 +30,7 @@ use App\Http\Controllers\Transaction\OrderTransferController;
 use App\Http\Controllers\Transaction\PackagingController;
 use App\Http\Controllers\Transaction\ProductionController;
 use App\Http\Controllers\Transaction\ReportController;
+use App\Http\Controllers\Transaction\SterileExpiryController;
 use App\Http\Controllers\Transaction\SterilizationController;
 use App\Http\Controllers\Transaction\SterilizationPipelineController;
 use App\Http\Controllers\Transaction\StorageController;
@@ -196,6 +197,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // Kandidat unit steril per baris permintaan (untuk memilih stok/kode produksi)
         Route::get('orders/{order}/distribution-options', [OrderController::class, 'distributionOptions']);
         Route::post('orders/{order}/distribute', [OrderController::class, 'distribute']);
+        // Order untuk beberapa pasien sekaligus — satu record order per pasien,
+        // dibuat dalam satu transaksi (harus di atas apiResource agar tidak
+        // tertangkap sebagai parameter {order})
+        Route::post('orders/bulk', [OrderController::class, 'bulkStore']);
         Route::apiResource('orders', OrderController::class);
 
         // Pinjam-alih (handover) instrumen antar peminjam tanpa order ulang ke CSSD
@@ -218,6 +223,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('storage/summary', [StorageController::class, 'summary']);
         Route::post('orders/{order}/store', [StorageController::class, 'store']);
         Route::post('sterilization/{sterilization}/store', [StorageController::class, 'storeProduction']);
+
+        // Alat Kedaluwarsa Steril — API TERSENDIRI (bukan milik Storage Steril maupun
+        // CRUD sterilisasi) untuk halaman /cssd/kedaluwarsa
+        Route::get('sterile-expiry/summary', [SterileExpiryController::class, 'summary']);
+        Route::get('sterile-expiry', [SterileExpiryController::class, 'index']);
 
         // Sterilisasi CSSD: batch/siklus sterilisasi + unit di dalamnya
         Route::get('sterilizations/expiring', [SterilizationController::class, 'expiring']);

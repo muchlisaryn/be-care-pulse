@@ -41,6 +41,8 @@ katalog: nama, kode, dan jumlah per paket). Untuk item `satuan`, `contents` koso
         "code": "ORD-001",
         "status": "diajukan",
         "borrowed_by": "Muchlis Aryana",
+        "patient_name": "SITI AMINAH",
+        "medical_record_no": "000123",
         "room": { "id": 1, "name": "Annur 1" },
         "order_date": "2026-06-17T00:00:00.000000Z",
         "return_plan_date": "2026-06-18T00:00:00.000000Z",

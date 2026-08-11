@@ -120,41 +120,7 @@ class OrderController extends Controller
                 // yang sama (race condition), termasuk bila halaman peminjam basi.
                 $this->assertSterileStockSufficient($validated['items']);
 
-                $order = Order::create([
-                    'room_id' => $validated['room_id'],
-                    // Pemilik order SELALU akun yang membuatnya — tidak bisa ditentukan
-                    // dari request, sehingga `user_id` konsisten dengan `created_by`.
-                    'user_id' => auth()->id(),
-                    // Nama peminjam — dipilih dari Master User di form.
-                    'borrowed_by' => $validated['borrowed_by'] ?? null,
-                    'medical_record_no' => $validated['medical_record_no'] ?? null,
-                    'patient_name' => $validated['patient_name'] ?? null,
-                    'order_date' => $validated['order_date'],
-                    'order_time' => $validated['order_time'],
-                    'return_plan_date' => $validated['return_plan_date'] ?? null,
-                    'note' => $validated['note'] ?? null,
-                    'status' => Order::STATUS_DIAJUKAN,
-                ]);
-
-                foreach ($validated['items'] as $item) {
-                    $isPaket = $item['type'] === 'paket';
-                    $order->requestItems()->create([
-                        'type' => $item['type'],
-                        'instrument_id' => $isPaket ? null : ($item['instrument_id'] ?? null),
-                        'instrument_catalog_id' => $isPaket ? ($item['instrument_catalog_id'] ?? null) : null,
-                        'package_name' => $isPaket ? ($item['package_name'] ?? null) : null,
-                        'quantity' => $item['quantity'],
-                    ]);
-                }
-
-                // Timeline: order dibuat (code_transaction masih null, diisi saat diterima).
-                OrderEvent::record(OrderEvent::TYPE_DIBUAT, $order, [
-                    'note' => 'Order peminjaman diajukan'
-                        .($order->medical_record_no ? ' · RM '.$order->medical_record_no : '')
-                        .($order->patient_name ? ' · '.$order->patient_name : ''),
-                ]);
-
-                return $order;
+                return $this->createOrder($validated, $validated['items']);
             });
 
             $order->load(self::DETAIL_RELATIONS);
@@ -170,6 +136,142 @@ class OrderController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Order untuk BEBERAPA PASIEN sekaligus dalam satu pengiriman form.
+     *
+     * Data peminjaman (peminjam, ruangan, jadwal, catatan) dipakai bersama; tiap
+     * pasien — dikelompokkan per No. RM + nama pasien — punya daftar permintaannya
+     * sendiri dan menjadi SATU record order tersendiri, persis seperti dibuat satu per
+     * satu lewat store().
+     *
+     * Seluruh order dibuat dalam SATU transaksi: bila satu pasien gagal (mis. stok
+     * steril kurang), tidak ada satu pun order yang tersimpan — supaya petugas tidak
+     * perlu menebak pasien mana yang sudah masuk dan mana yang belum.
+     */
+    public function bulkStore(Request $request): JsonResponse
+    {
+        // Sama seperti store(): identitas pasien hanya wajib untuk RAWAT INAP.
+        $room = Room::find($request->input('room_id'));
+        $patientRequired = $room && $room->layanan === 'rawat_inap';
+
+        $validated = $request->validate([
+            'room_id' => 'required|integer|exists:rooms,id',
+            'borrowed_by' => 'nullable|string|max:255',
+            'order_date' => 'required|date',
+            'order_time' => 'required|date_format:H:i',
+            'return_plan_date' => 'nullable|date',
+            'note' => 'nullable|string',
+            // Satu elemen `patients` = satu pasien = satu record order.
+            'patients' => 'required|array|min:1',
+            'patients.*.medical_record_no' => ($patientRequired ? 'required' : 'nullable').'|string|max:255',
+            'patients.*.patient_name' => ($patientRequired ? 'required' : 'nullable').'|string|max:255',
+            'patients.*.items' => 'required|array|min:1',
+            'patients.*.items.*.type' => ['required', Rule::in(['satuan', 'paket'])],
+            'patients.*.items.*.quantity' => 'required|integer|min:1',
+            'patients.*.items.*.instrument_id' => 'required_if:patients.*.items.*.type,satuan|nullable|integer|exists:instruments,id',
+            'patients.*.items.*.instrument_catalog_id' => 'required_if:patients.*.items.*.type,paket|nullable|integer|exists:instrument_catalogs,id',
+            'patients.*.items.*.package_name' => 'nullable|string|max:255',
+        ]);
+
+        // Satu pasien = satu order: No. RM yang sama tidak boleh dikirim dua kali,
+        // karena permintaannya seharusnya digabung dalam satu order.
+        $rms = collect($validated['patients'])
+            ->pluck('medical_record_no')
+            ->filter(fn ($v) => filled($v))
+            ->map(fn ($v) => trim((string) $v));
+        if ($rms->count() !== $rms->unique()->count()) {
+            return $this->error(
+                'No. Rekam Medis tidak boleh sama antar pasien — gabungkan permintaannya dalam satu pasien.',
+                422
+            );
+        }
+
+        try {
+            $orders = DB::transaction(function () use ($validated) {
+                // Stok steril dicek SEKALI untuk gabungan permintaan SELURUH pasien:
+                // semuanya diambil dari kolam stok yang sama, jadi kalau dicek per
+                // pasien, stok yang sama bisa terhitung cukup berkali-kali.
+                $this->assertSterileStockSufficient(
+                    collect($validated['patients'])->flatMap(fn ($p) => $p['items'])->all()
+                );
+
+                return collect($validated['patients'])
+                    ->map(fn ($patient) => $this->createOrder($validated + [
+                        'medical_record_no' => $patient['medical_record_no'] ?? null,
+                        'patient_name' => $patient['patient_name'] ?? null,
+                    ], $patient['items']))
+                    ->all();
+            });
+
+            foreach ($orders as $order) {
+                $order->load(self::DETAIL_RELATIONS);
+                // Satu siaran per order — CSSD menerimanya sebagai order terpisah,
+                // sama seperti bila dibuat satu per satu.
+                broadcast(new OrderSubmitted($order));
+            }
+
+            return $this->success(
+                count($orders).' order peminjaman berhasil dibuat.',
+                $orders,
+                201
+            );
+        } catch (\RuntimeException $e) {
+            // Stok steril tidak cukup — validasi bisnis, bukan error server.
+            return $this->error($e->getMessage(), 422);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Buat satu record order + baris permintaannya + catatan timeline. Dipakai
+     * store() (satu order) dan bulkStore() (satu order per pasien) supaya keduanya
+     * menghasilkan data yang sama persis.
+     *
+     * WAJIB dipanggil di dalam transaksi yang sudah memeriksa stok steril.
+     *
+     * @param  array<string,mixed>  $data  data peminjaman + identitas pasien
+     * @param  array<int,array<string,mixed>>  $items  baris permintaan
+     */
+    private function createOrder(array $data, array $items): Order
+    {
+        $order = Order::create([
+            'room_id' => $data['room_id'],
+            // Pemilik order SELALU akun yang membuatnya — tidak bisa ditentukan
+            // dari request, sehingga `user_id` konsisten dengan `created_by`.
+            'user_id' => auth()->id(),
+            // Nama peminjam — dipilih dari Master User di form.
+            'borrowed_by' => $data['borrowed_by'] ?? null,
+            'medical_record_no' => $data['medical_record_no'] ?? null,
+            'patient_name' => $data['patient_name'] ?? null,
+            'order_date' => $data['order_date'],
+            'order_time' => $data['order_time'],
+            'return_plan_date' => $data['return_plan_date'] ?? null,
+            'note' => $data['note'] ?? null,
+            'status' => Order::STATUS_DIAJUKAN,
+        ]);
+
+        foreach ($items as $item) {
+            $isPaket = $item['type'] === 'paket';
+            $order->requestItems()->create([
+                'type' => $item['type'],
+                'instrument_id' => $isPaket ? null : ($item['instrument_id'] ?? null),
+                'instrument_catalog_id' => $isPaket ? ($item['instrument_catalog_id'] ?? null) : null,
+                'package_name' => $isPaket ? ($item['package_name'] ?? null) : null,
+                'quantity' => $item['quantity'],
+            ]);
+        }
+
+        // Timeline: order dibuat (code_transaction masih null, diisi saat diterima).
+        OrderEvent::record(OrderEvent::TYPE_DIBUAT, $order, [
+            'note' => 'Order peminjaman diajukan'
+                .($order->medical_record_no ? ' · RM '.$order->medical_record_no : '')
+                .($order->patient_name ? ' · '.$order->patient_name : ''),
+        ]);
+
+        return $order;
     }
 
     /**

@@ -194,6 +194,9 @@ class MonitoringController extends Controller
                 'order_code' => $order->code,
                 'code_transaction' => $order->code_transaction,
                 'borrowed_by' => $order->borrowed_by ?? $order->created_by,
+                // Identitas pasien (rawat inap) — ditampilkan di kartu Daftar Order.
+                'patient_name' => $order->patient_name,
+                'medical_record_no' => $order->medical_record_no,
                 'order_date' => $order->order_date,
                 'order_time' => optional($order->created_at)->format('H:i'),
                 'return_plan_date' => $order->return_plan_date,
@@ -283,6 +286,9 @@ class MonitoringController extends Controller
                 'code' => $order->code,
                 'status' => $order->status,
                 'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
+                // Identitas pasien (rawat inap) — ditampilkan di kartu Daftar Order.
+                'patient_name' => $order->patient_name,
+                'medical_record_no' => $order->medical_record_no,
                 'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
                 'order_date' => $order->order_date,
                 'return_plan_date' => $order->return_plan_date,
@@ -387,6 +393,9 @@ class MonitoringController extends Controller
             'code_transaction' => $order->code_transaction,
             'status' => $order->status,
             'borrowed_by' => $order->borrowed_by ?? $order->user?->name,
+            // Identitas pasien (rawat inap) — ditampilkan di kartu Daftar Order.
+            'patient_name' => $order->patient_name,
+            'medical_record_no' => $order->medical_record_no,
             'room' => $order->room ? ['id' => $order->room->id, 'name' => $order->room->name] : null,
             'order_date' => $order->order_date,
             'return_plan_date' => $order->return_plan_date,
