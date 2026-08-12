@@ -69,16 +69,16 @@ class MenuSeeder extends Seeder
         ]);
 
         $masterCssdChildren = [
-            ['name' => 'Ruangan',       'url' => '/master/ruangan',           'icon' => null,              'sort_order' => 1],
-            ['name' => 'Set Instrumen', 'url' => '/master/katalog-instrumen', 'icon' => null,              'sort_order' => 2],
-            ['name' => 'Kondisi',       'url' => '/master/kondisi',           'icon' => null,              'sort_order' => 3],
+            ['name' => 'Room',           'url' => '/master/ruangan',           'icon' => null,              'sort_order' => 1],
+            ['name' => 'Instrument Set', 'url' => '/master/katalog-instrumen', 'icon' => null,              'sort_order' => 2],
+            ['name' => 'Condition',      'url' => '/master/kondisi',           'icon' => null,              'sort_order' => 3],
             ['name' => 'BMHP',          'url' => '/master/bmhp',              'icon' => null,              'sort_order' => 4],
             // Master mesin washer — acuan scan barcode mesin pada tahap Cleaning.
-            ['name' => 'Mesin Washer',  'url' => '/master/mesin-washer',      'icon' => 'washing-machine', 'sort_order' => 5],
+            ['name' => 'Washer Machine', 'url' => '/master/mesin-washer',      'icon' => 'washing-machine', 'sort_order' => 5],
             // Master mesin sterilisator — pilihan mesin pada tahap Sterilization.
-            ['name' => 'Mesin Sterilisator', 'url' => '/master/mesin-sterilisator', 'icon' => 'washing-machine', 'sort_order' => 6],
+            ['name' => 'Sterilizer Machine', 'url' => '/master/mesin-sterilisator', 'icon' => 'washing-machine', 'sort_order' => 6],
             // Master rak — pilihan lokasi rak saat menyimpan unit steril ke gudang.
-            ['name' => 'Rak',           'url' => '/master/rak',               'icon' => 'archive',         'sort_order' => 7],
+            ['name' => 'Rack',           'url' => '/master/rak',               'icon' => 'archive',         'sort_order' => 7],
             // Master jenis kemasan — pilihan pada tahap Packaging; masa simpannya
             // menentukan tgl kedaluwarsa steril batch.
             ['name' => 'Packaging',     'url' => '/master/jenis-kemasan',     'icon' => 'package',         'sort_order' => 8],
@@ -170,11 +170,11 @@ class MenuSeeder extends Seeder
                 'sort_order' => 1,
                 'children' => [
                     // Aktivitas input yang menghasilkan data
-                    ['name' => 'Produksi CSSD',   'url' => '/cssd/produksi',        'icon' => 'factory',   'sort_order' => 1],
+                    ['name' => 'CSSD Production', 'url' => '/cssd/produksi',        'icon' => 'factory',   'sort_order' => 1],
                     ['name' => 'Storage Steril',  'url' => '/cssd/storage-steril',  'icon' => 'warehouse', 'sort_order' => 2],
                     ['name' => 'Order Instrumen', 'url' => '/cssd/order/instrumen', 'sort_order' => 3],
                     ['name' => 'Tracking Order',  'url' => '/cssd/tracking-order',  'sort_order' => 4],
-                    ['name' => 'Distribusi BMHP', 'url' => '/cssd/distribusi',      'sort_order' => 5],
+                    ['name' => 'BMHP Distribution', 'url' => '/cssd/distribusi',    'sort_order' => 5],
                 ],
             ],
             [
@@ -183,12 +183,12 @@ class MenuSeeder extends Seeder
                 'sort_order' => 2,
                 'children' => [
                     // Pantau & lacak data (read-only)
-                    ['name' => 'Alat Kedaluwarsa Steril', 'url' => '/cssd/kedaluwarsa', 'sort_order' => 1],
-                    ['name' => 'Laporan Alat CSSD',  'url' => '/cssd/laporan',     'sort_order' => 2],
+                    ['name' => 'Sterile Expiry', 'url' => '/cssd/kedaluwarsa', 'sort_order' => 1],
+                    ['name' => 'CSSD Instrument Report', 'url' => '/cssd/laporan', 'sort_order' => 2],
                     // Posisi 3 diisi "Laporan Transaksi Instrumen" lewat
                     // LaporanTransaksiInstrumenMenuSeeder (menu pasca-rilis), yang
                     // menggeser "Papan Monitor (TV)" ke posisi 4.
-                    ['name' => 'Papan Monitor (TV)', 'url' => '/monitor',          'sort_order' => 3],
+                    ['name' => 'Monitor Board (TV)', 'url' => '/monitor',      'sort_order' => 3],
                 ],
             ],
         ];
