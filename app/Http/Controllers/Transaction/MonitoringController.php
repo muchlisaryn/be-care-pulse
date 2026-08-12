@@ -887,23 +887,31 @@ class MonitoringController extends Controller
         // ulang di banyak titik sepanjang alur CSSD dan bisa tertinggal, sedangkan
         // jejak di bawah hanya ditulis sekali tepat saat kejadiannya.
         //
-        //  - dibatalkan  → `canceled_at` terisi (juga `deleted_by` lewat global scope
-        //                  `active` dari HasAuditColumns untuk order yang dihapus);
-        //  - belum diproses CSSD (`processed_at` kosong) → unitnya memang belum
-        //                  dialokasikan; itu justru pekerjaan paling awal, tetap tampil;
-        //  - sudah diproses → wajib masih memegang unit yang belum kembali. Ini
-        //                  sekaligus menutup order sumber PINJAM-ALIH yang seluruh
-        //                  unitnya sudah berpindah ke order peminjam baru (unitnya
-        //                  dipindah, bukan ditandai kembali) — papan tidak boleh lagi
-        //                  memajangnya sebagai pekerjaan berjalan.
+        //  - dibatalkan → `canceled_at` terisi (juga `deleted_by` lewat global scope
+        //    `active` dari HasAuditColumns untuk order yang dihapus);
+        //  - masih memegang unit yang belum kembali → PEKERJAAN BERJALAN, tampil.
+        //    Dibaca per unit (`order_item.is_returned`), bukan dari `return_actual_date`
+        //    di header, karena pengembalian boleh dicicil: order dengan sebagian unit
+        //    masih di ruangan tetap pekerjaan berjalan;
+        //  - belum punya unit sama sekali DAN belum pernah keluar gudang maupun
+        //    dikembalikan → order yang masih di tahap paling awal (baru diajukan),
+        //    unitnya memang belum dialokasikan. Tampil.
         //
-        // "Sudah kembali" dibaca per unit (`order_item.is_returned`), bukan dari
-        // `return_actual_date` di header, karena pengembalian boleh dicicil.
+        // Syarat "belum pernah keluar/kembali" pada cabang kedua itu WAJIB. Tanpa itu,
+        // order yang sudah dikembalikan tapi tidak punya jejak `processed_at` — order
+        // lama dari sebelum kolom itu ada, dan SETIAP order hasil pinjam-alih yang
+        // memang tidak pernah melewati penerimaan CSSD — ikut lolos dan nyangkut di
+        // papan selamanya. Cabang ini juga menutup order sumber pinjam-alih yang
+        // seluruh unitnya sudah berpindah ke order peminjam baru (unitnya dipindah,
+        // bukan ditandai kembali): `distributed_at`-nya sudah terisi.
         $orders = Order::query()
             ->whereNull('canceled_at')
             ->when($roomId, fn ($q, $v) => $q->where('room_id', $v))
-            ->where(fn ($q) => $q->whereNull('processed_at')
-                ->orWhereHas('items', fn ($i) => $i->where('is_returned', false)))
+            ->where(fn ($q) => $q
+                ->whereHas('items', fn ($i) => $i->where('is_returned', false))
+                ->orWhere(fn ($w) => $w->whereDoesntHave('items')
+                    ->whereNull('distributed_at')
+                    ->whereNull('return_actual_date')))
             ->with([
                 // Kolom dibatasi seperlunya — papan ini disegarkan tiap 20 detik di
                 // layar TV, jadi tiap kolom yang tidak dipakai ikut jadi beban tetap.

@@ -19,10 +19,13 @@
 > `available_sets` — berapa set paket yang masih bisa dipenuhi dari stok `tersedia`
 > (= minimum dari `floor(stok_tersedia / qty_per_set)` atas seluruh isinya; `0` jika ada item yang habis),
 > dan `available_sterile_sets` — sama, tetapi dihitung dari stok STERIL yang memang
-> **disimpan sebagai paket ini** (belum direservasi order manapun —
-> `instrument_storages.order_id IS NULL`, belum kedaluwarsa,
-> `production_item.source = paket`, dan `package_name` = nama katalog ini).
-> `instrument_storages.status` tidak ikut menyaring — lihat InstrumentController.
+> **disimpan sebagai paket ini** (`production_item.source = paket` dan `package_name` =
+> nama katalog ini).
+>
+> Syaratnya **sama persis dengan distribusi** — scope `InstrumentStorage::sterilePool()`
+> (`deleted_by` NULL + `status = 'tersimpan'` + `order_id` NULL), tanggal kedaluwarsa
+> wajib ada & belum lewat, dan bungkusnya tidak berisi unit kedaluwarsa. Lihat
+> InstrumentController untuk alasannya.
 > Unit satuan tidak bisa dipakai untuk memenuhi paket, karena bentuk barang (satuan /
 > paket) ditentukan saat produksi. Dipakai halaman order karena order hanya boleh atas
 > barang yang sudah steril.

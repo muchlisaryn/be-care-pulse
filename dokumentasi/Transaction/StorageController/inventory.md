@@ -10,6 +10,12 @@ status kedaluwarsa. **Early-warning**: `alert = true` (merah) bila masa berlaku
 steril ≤ ambang hari atau sudah lewat. Diurutkan dari yang paling cepat
 kedaluwarsa.
 
+> **Tab "Inventaris" halaman Gudang Steril tidak lagi memakai endpoint ini.** Halaman itu
+> punya endpoint tersendiri, `GET /api/master/sterile-inventory`
+> (`SterileInventoryController`), supaya aturan tampilannya — baris kedaluwarsa tetap
+> ditampilkan dengan penanda `can_distribute = false` — tidak ikut mengubah pemakai lain.
+> Endpoint ini dipertahankan untuk konsumen lama.
+
 **Filter baris:** memakai scope BERSAMA `InstrumentStorage::sterilePool()` — scope yang
 sama dipakai `@summary` dan penyusun kandidat distribusi
 (`OrderController::distributionCandidates`), supaya ketiganya mustahil menyimpang:

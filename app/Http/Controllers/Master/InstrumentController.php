@@ -66,10 +66,17 @@ class InstrumentController extends Controller
      * satuan (`source` = satuan). Unit yang diproduksi & disimpan sebagai PAKET
      * hanya boleh dipinjam sebagai paket utuh — lihat InstrumentCatalogController.
      *
-     * `instrument_storages.status` SENGAJA tidak ikut menyaring, sama seperti daftar
-     * inventaris Gudang Steril (StorageController@inventory) — angka di sini harus
-     * sama persis dengan apa yang tampil di halaman itu. Jangan tambahkan
-     * `where('instrument_storages.status', ...)`.
+     * Aturannya WAJIB sama persis dengan penyusun kandidat distribusi
+     * (OrderController::distributionCandidates): scope `sterilePool()` + tanggal
+     * kedaluwarsa wajib ada & belum lewat + bungkusnya tidak berisi unit kedaluwarsa.
+     * Angka ini adalah janji ke pemesan — begitu ia lebih longgar dari syarat
+     * distribusi, form order menjanjikan barang yang nanti ditolak sendiri saat mau
+     * dikeluarkan dari gudang.
+     *
+     * Bedanya dengan daftar Inventaris Gudang Steril: daftar itu TETAP menampilkan
+     * baris kedaluwarsa (dengan penanda `can_distribute`/`blocked_reason`) supaya
+     * petugas tahu barangnya ada tapi perlu diproses ulang; angka siap-order di sini
+     * tidak menghitungnya.
      * Kolom di-kualifikasi + tanpa global scope agar JOIN tidak ambigu pada `deleted_by`.
      *
      * @param  Collection<int,int>  $instrumentIds
@@ -81,22 +88,36 @@ class InstrumentController extends Controller
             return collect();
         }
 
+        $blocked = InstrumentStorage::blockedPackagingBarcodes();
+
         return InstrumentStorage::withoutGlobalScopes()
+            // Scope BERSAMA dengan penyusun kandidat distribusi & daftar Gudang Steril:
+            // belum dihapus, masih `tersimpan` di rak, `order_id` null (belum diklaim
+            // order mana pun).
+            ->sterilePool()
             // Asal unit (satuan/paket) ada di production_item, bukan di baris gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->whereNull('instrument_storages.deleted_by')
+            ->leftJoin('sterilization_items', function ($join) {
+                $join->on('sterilization_items.sterilization_id', '=', 'instrument_storages.sterilization_id')
+                    ->on('sterilization_items.instrument_stock_id', '=', 'instrument_storages.instrument_stock_id')
+                    ->whereNull('sterilization_items.deleted_by');
+            })
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            // Hanya baris gudang yang masih jadi POOL produksi: `order_id` null. Begitu
-            // sebuah order mereservasinya, `order_id` terisi sehingga otomatis keluar
-            // dari hitungan ini — sumber angka yang sama dengan halaman Gudang Steril.
-            ->whereNull('instrument_storages.order_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             // Unit yang diproduksi sebagai bagian PAKET tidak dihitung sebagai stok satuan.
             ->where('production_item.source', 'satuan')
-            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
-                ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
+            // Angka ini adalah JANJI ke pemesan, jadi syaratnya WAJIB sama persis dengan
+            // yang dipakai saat distribusi (OrderController::distributionCandidates):
+            // wajib bertanggal & belum lewat, dan bungkusnya tidak berisi unit
+            // kedaluwarsa. Kalau lebih longgar, form order menjanjikan barang yang
+            // nanti ditolak sendiri saat mau dikeluarkan dari gudang.
+            ->whereDate('instrument_storages.expiry_date', '>=', now()->toDateString())
+            ->when(! empty($blocked), fn ($q) => $q->where(
+                fn ($w) => $w->whereNull('sterilization_items.packaging_barcode')
+                    ->orWhereNotIn('sterilization_items.packaging_barcode', $blocked)
+            ))
             ->selectRaw('instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
             ->groupBy('instrument_stocks.instrument_id')
             ->pluck('cnt', 'instrument_id');

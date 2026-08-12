@@ -16,18 +16,28 @@ tertinggal kalau ada satu proses yang gagal memperbaruinya; papan monitor tidak
 boleh kehilangan pekerjaan berjalan hanya karena itu. Karena itu penyaringnya
 dibaca dari kolom audit/jejak waktu:
 
-| Dikeluarkan dari papan | Kondisi |
-|---|---|
-| Order dibatalkan | `canceled_at IS NOT NULL` |
-| Order dihapus | `deleted_by IS NOT NULL` (global scope `active`, trait `HasAuditColumns`) |
-| Order selesai | sudah diproses (`processed_at`) tapi tidak lagi memegang unit yang belum kembali (`order_item.is_returned`) |
-| Order sumber pinjam-alih yang habis | tercakup aturan di atas — unitnya berpindah ke order peminjam baru, jadi order sumber tidak lagi memegang unit |
+Sebuah order **tampil** bila `canceled_at` NULL, `deleted_by` NULL (global scope
+`active` dari `HasAuditColumns`), dan salah satu dari dua ini terpenuhi:
 
-Order yang belum diterima CSSD (`processed_at IS NULL`) belum punya `order_item`
-sama sekali — itu justru pekerjaan paling awal, jadi tetap ikut tampil. "Sudah
-kembali" dibaca **per unit**, bukan dari `return_actual_date` di header, karena
-pengembalian boleh dicicil: order dengan sebagian unit masih di ruangan tetap
-tampil di papan.
+| Cabang | Kondisi | Maksudnya |
+|---|---|---|
+| Pekerjaan berjalan | ada `order_item` dengan `is_returned = false` | masih memegang unit yang belum kembali |
+| Tahap paling awal | **tidak punya** `order_item` sama sekali **dan** `distributed_at` NULL **dan** `return_actual_date` NULL | baru diajukan, unitnya memang belum dialokasikan |
+
+"Sudah kembali" dibaca **per unit** (`order_item.is_returned`), bukan dari
+`return_actual_date` di header, karena pengembalian boleh dicicil: order dengan
+sebagian unit masih di ruangan tetap pekerjaan berjalan.
+
+**Kenapa cabang kedua wajib membawa syarat `distributed_at`/`return_actual_date`:**
+versi sebelumnya memakai `processed_at IS NULL` sebagai penanda "belum diproses", dan
+itu bocor. Order yang sudah dikembalikan tapi tidak punya jejak `processed_at` ikut
+lolos dan nyangkut di papan selamanya — yaitu order lama dari sebelum kolom itu ada,
+**dan setiap order hasil pinjam-alih**, yang memang tidak pernah melewati penerimaan
+CSSD sehingga `processed_at`-nya selalu NULL.
+
+Order **sumber pinjam-alih** yang seluruh unitnya sudah berpindah ke order peminjam
+baru juga tertutup: ia tidak lagi punya `order_item` (unitnya dipindah, bukan ditandai
+kembali), tapi `distributed_at`-nya sudah terisi.
 
 ### Nama peminjam = peminjam TERAKHIR
 

@@ -32,6 +32,7 @@ use App\Http\Controllers\Transaction\PackagingController;
 use App\Http\Controllers\Transaction\ProductionController;
 use App\Http\Controllers\Transaction\ReportController;
 use App\Http\Controllers\Transaction\SterileExpiryController;
+use App\Http\Controllers\Transaction\SterileInventoryController;
 use App\Http\Controllers\Transaction\SterilizationController;
 use App\Http\Controllers\Transaction\SterilizationPipelineController;
 use App\Http\Controllers\Transaction\StorageController;
@@ -229,6 +230,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // Batch steril pipeline PRODUKSI yang siap disimpan (tanpa order)
         Route::get('storage/production-incoming', [StorageController::class, 'productionIncoming']);
         Route::get('storage/inventory', [StorageController::class, 'inventory']);
+        // Tab "Inventaris" halaman Gudang Steril — endpoint TERSENDIRI: baris
+        // kedaluwarsa tetap ditampilkan di sini (ditandai can_distribute=false),
+        // aturan yang tidak berlaku di tempat lain
+        Route::get('sterile-inventory', [SterileInventoryController::class, 'index']);
+        Route::get('sterile-inventory/summary', [SterileInventoryController::class, 'summary']);
         // Angka ringkasan gudang (total / mendekati kedaluwarsa / kedaluwarsa)
         Route::get('storage/summary', [StorageController::class, 'summary']);
         Route::post('orders/{order}/store', [StorageController::class, 'store']);

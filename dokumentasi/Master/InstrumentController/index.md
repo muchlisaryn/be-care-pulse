@@ -18,13 +18,21 @@ Setiap item menyertakan `image` (path relatif, `null` bila belum ada) dan `image
 
 > Setiap item menyertakan `stocks_count` — jumlah unit fisik (stok) milik instrumen tersebut,
 > `available_stocks_count` — jumlah unit yang berstatus `tersedia`, dan
-> `available_sterile_count` — jumlah unit STERIL siap-order SATUAN. Kriterianya hanya tiga:
-> **belum direservasi order manapun** (`instrument_storages.order_id IS NULL`),
-> **belum kedaluwarsa**, dan **diproduksi & disimpan sebagai satuan**
-> (`production_item.source = satuan`).
-> `instrument_storages.status` **tidak** ikut menyaring — supaya angka ini sama persis
-> dengan daftar inventaris Gudang Steril (`StorageController@inventory`), yang juga hanya
-> menyaring `order_id IS NULL`. Jangan tambahkan `where('status', ...)`.
+> `available_sterile_count` — jumlah unit STERIL siap-order SATUAN.
+>
+> Kriterianya **wajib sama persis dengan syarat distribusi**
+> (`OrderController::distributionCandidates`), karena angka ini adalah janji ke pemesan:
+> scope `InstrumentStorage::sterilePool()` (`deleted_by` NULL + `status = 'tersimpan'` +
+> `order_id` NULL), **tanggal kedaluwarsa wajib ada dan belum lewat**, **bungkusnya tidak
+> berisi unit kedaluwarsa** (`InstrumentStorage::blockedPackagingBarcodes()`), dan
+> **diproduksi & disimpan sebagai satuan** (`production_item.source = satuan`).
+> Begitu syarat di sini lebih longgar, form order menjanjikan barang yang nanti ditolak
+> sendiri saat mau dikeluarkan dari gudang — itu yang dulu terjadi: baris kedaluwarsa dan
+> baris tanpa tanggal ikut terhitung siap-order.
+>
+> Berbeda dengan tab **Inventaris** Gudang Steril (`SterileInventoryController@index`)
+> yang justru TETAP menampilkan baris kedaluwarsa — di sana ditandai
+> `can_distribute = false`, di sini tidak dihitung sama sekali.
 > Unit yang diproduksi sebagai PAKET tidak dihitung di sini: bentuk barang ditentukan
 > saat produksi, sehingga hanya bisa dipinjam sebagai paket utuh (lihat
 > `available_sterile_sets` pada InstrumentCatalogController).

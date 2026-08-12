@@ -44,20 +44,32 @@ class InstrumentCatalogController extends Controller
         // Dikelompokkan per `package_name` — set hanya boleh dipenuhi dari unit yang memang
         // disimpan sebagai paket tsb, bukan dari unit satuan (produksi menentukan bentuknya).
         // `instrument_storages.status` sengaja tidak menyaring (lihat InstrumentController).
+        $blocked = InstrumentStorage::blockedPackagingBarcodes();
+
         $sterileRows = InstrumentStorage::withoutGlobalScopes()
+            // Scope BERSAMA dengan penyusun kandidat distribusi & daftar Gudang Steril.
+            ->sterilePool()
             // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->whereNull('instrument_storages.deleted_by')
+            ->leftJoin('sterilization_items', function ($join) {
+                $join->on('sterilization_items.sterilization_id', '=', 'instrument_storages.sterilization_id')
+                    ->on('sterilization_items.instrument_stock_id', '=', 'instrument_storages.instrument_stock_id')
+                    ->whereNull('sterilization_items.deleted_by');
+            })
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            // Hanya baris gudang yang masih pool produksi / belum direservasi order
-            // (`order_id` null) — lihat InstrumentController.
-            ->whereNull('instrument_storages.order_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('production_item.source', 'paket')
-            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
-                ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
+            // Syarat sama persis dengan distribusi — lihat InstrumentController:
+            // tanggal kedaluwarsa wajib ada & belum lewat, bungkus tidak berisi unit
+            // kedaluwarsa. Set yang dijanjikan form order harus benar-benar bisa keluar
+            // dari gudang.
+            ->whereDate('instrument_storages.expiry_date', '>=', now()->toDateString())
+            ->when(! empty($blocked), fn ($q) => $q->where(
+                fn ($w) => $w->whereNull('sterilization_items.packaging_barcode')
+                    ->orWhereNotIn('sterilization_items.packaging_barcode', $blocked)
+            ))
             ->selectRaw('production_item.package_name as package_name, instrument_stocks.instrument_id as instrument_id, count(*) as cnt')
             ->groupBy('production_item.package_name', 'instrument_stocks.instrument_id')
             ->get();
