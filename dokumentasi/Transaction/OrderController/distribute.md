@@ -79,3 +79,20 @@ unit dua kali.
 ```json
 { "status": false, "message": "Order ini sudah didistribusikan atau statusnya berubah. Muat ulang halaman." }
 ```
+
+**Stok tidak cukup — pesannya menyebut SEBAB.** Dulu isinya hanya "butuh 2, tersedia 0",
+dan petugas yang melihat barangnya jelas ada di rak melaporkannya sebagai stok kosong.
+Sekarang rinciannya ikut dihitung dari pool yang sama (hanya saat alokasi gagal, jadi
+tidak membebani jalur normal):
+
+```json
+{
+  "status": false,
+  "message": "Stok steril \"Gunting\" (satuan) tidak cukup: butuh 5, tersedia 1. Dari 6 baris gudang instrumen ini: 3 sudah keluar dari rak, 2 kedaluwarsa."
+}
+```
+
+Sebab yang bisa muncul: `sudah keluar dari rak`, `direservasi order lain` (disertai kode
+ordernya), `tanpa tanggal kedaluwarsa`, `kedaluwarsa`, `bungkusnya berisi unit
+kedaluwarsa`, `unitnya sedang dipinjam`. Bila instrumennya memang tidak ada sama sekali
+di gudang, pesannya: *"Tidak ada satu pun unit instrumen ini di gudang steril."*

@@ -28,6 +28,13 @@ use Illuminate\Validation\Rule;
 
 class OrderController extends Controller
 {
+    /**
+     * Cache per-permintaan daftar nomor label kemasan yang isinya tidak layak
+     * distribusi (lihat expiredPackagingBarcodes). distributionCandidates() dipanggil
+     * sekali per baris permintaan order, sedangkan daftarnya sama untuk semuanya.
+     */
+    private ?array $expiredBarcodes = null;
+
     /** Relasi yang dimuat saat menampilkan detail order. */
     private const DETAIL_RELATIONS = [
         'room',
@@ -53,6 +60,10 @@ class OrderController extends Controller
                 'items as paket_items_count' => fn ($q) => $q->where('source', 'paket'),
                 'items as satuan_items_count' => fn ($q) => $q->where('source', 'satuan'),
             ])
+            // Angka kolom "Instrumen": PAKET per SET, SATUAN per unit — lihat
+            // attachItemCount(). Dibaca dari baris permintaan supaya sudah terisi sejak
+            // order baru diajukan, bukan menunggu unit fisik dialokasikan CSSD.
+            ->withSum('requestItems as requested_qty', 'quantity')
             // Hanya tampilkan order milik akun yang login (penanggung jawab order).
             ->where('user_id', auth()->id())
             // Kecualikan batch PRODUKSI CSSD (internal, tanpa ruangan) — itu bukan
@@ -76,7 +87,88 @@ class OrderController extends Controller
             ->latest()
             ->paginate(20);
 
+        $this->attachItemCount($data->getCollection());
+
         return $this->success('Data peminjaman berhasil diambil.', $data);
+    }
+
+    /**
+     * Isi `item_count` tiap order — angka kolom "Instrumen" pada daftar Order Instrumen.
+     *
+     * ATURAN HITUNG: PAKET dihitung per SET, SATUAN per unit fisik. Satu set berisi 10
+     * instrumen tetap bernilai 1, bukan 10 — yang dipinjam orang adalah "satu set", dan
+     * jumlah isinya bukan informasi yang dicari di kolom itu.
+     *
+     * Sumbernya BARIS PERMINTAAN (`order_request_item.quantity`, sudah dijumlahkan
+     * sebagai `requested_qty`): angkanya ada sejak order baru diajukan, jauh sebelum
+     * CSSD mengalokasikan unit fisik. Dulu kolom ini membaca `order_item` sehingga order
+     * yang masih pengajuan selalu tampil 0 padahal instrumennya sudah jelas diminta.
+     *
+     * Order hasil PINJAM-ALIH tidak punya baris permintaan (unitnya dioper dari order
+     * lain, tanpa order ulang ke CSSD). Untuk itu angkanya dihitung dari unit fisiknya:
+     * satuan per unit, paket per nomor label kemasan — satu label = satu bungkus = satu
+     * set. Cukup dua query untuk seluruh halaman, bukan per order.
+     *
+     * @param  Collection<int,Order>  $orders
+     */
+    private function attachItemCount(Collection $orders): void
+    {
+        $fallbackIds = $orders->filter(fn (Order $o) => ! $o->getAttribute('requested_qty'))
+            ->pluck('id');
+
+        $countByOrder = [];
+
+        if ($fallbackIds->isNotEmpty()) {
+            $items = OrderItem::whereIn('order_id', $fallbackIds)
+                ->get(['order_id', 'instrument_stock_id', 'source', 'package_name']);
+
+            $barcodeByStock = PackagingItem::whereIn(
+                'instrument_stock_id',
+                $items->pluck('instrument_stock_id')->filter()->unique()
+            )
+                ->where('disabled', false)
+                ->whereNotNull('barcode_no')
+                ->orderByDesc('id')
+                ->get(['instrument_stock_id', 'barcode_no'])
+                ->groupBy('instrument_stock_id')
+                // orderByDesc → baris pertama tiap unit adalah labelnya yang terbaru.
+                ->map(fn ($g) => $g->first()->barcode_no)
+                ->all();
+
+            foreach ($items->groupBy('order_id') as $orderId => $rows) {
+                $units = 0;
+                $labels = [];
+
+                foreach ($rows as $row) {
+                    if ($row->source !== 'paket') {
+                        $units++;
+
+                        continue;
+                    }
+
+                    $name = $row->package_name ?? 'Paket';
+                    $labels[$name] ??= [];
+                    if ($barcode = $barcodeByStock[(int) $row->instrument_stock_id] ?? null) {
+                        $labels[$name][$barcode] = true;
+                    }
+                }
+
+                // Paket tanpa nomor label (data lama) dihitung 1 set — jangan pernah
+                // jatuh ke jumlah unit, itu justru angka yang mau dihindari.
+                $sets = 0;
+                foreach ($labels as $barcodes) {
+                    $sets += count($barcodes) > 0 ? count($barcodes) : 1;
+                }
+
+                $countByOrder[(int) $orderId] = $sets + $units;
+            }
+        }
+
+        foreach ($orders as $order) {
+            $order->setAttribute('item_count', (int) (
+                $order->getAttribute('requested_qty') ?: ($countByOrder[$order->id] ?? 0)
+            ));
+        }
     }
 
     public function store(Request $request): JsonResponse
@@ -1500,15 +1592,27 @@ class OrderController extends Controller
     }
 
     /**
-     * Kandidat unit steril di gudang untuk satu baris permintaan order. Syaratnya:
-     * `instrument_storages.order_id` NULL (masih pool bebas, belum diklaim order mana
-     * pun) dan `expiry_date >= hari ini` (wajib bertanggal & belum lewat). Bentuk
+     * Kandidat unit steril di gudang untuk satu baris permintaan order. Bentuk
      * simpannya harus cocok — satuan hanya dari unit yang disimpan satuan, paket hanya
      * dari unit yang disimpan sebagai paket bernama sama. Urut FEFO.
      *
-     * `instrument_storages.status` TIDAK menyaring, disamakan dengan daftar inventaris
-     * Gudang Steril & hitungan ketersediaan di halaman order. Unit fisiknya sendiri
-     * tetap wajib `tersedia` (tidak sedang dipinjam).
+     * Penyaring dasarnya memakai scope BERSAMA `InstrumentStorage::sterilePool()`
+     * (belum dihapus, masih `tersimpan` di rak, belum diklaim order) — scope yang sama
+     * dipakai daftar & ringkasan Inventaris Gudang Steril, supaya apa yang terlihat di
+     * layar dan apa yang bisa didistribusikan tidak bisa lagi berbeda diam-diam.
+     *
+     * Di atas scope itu ada syarat khusus distribusi:
+     *  - `expiry_date` wajib ada DAN belum lewat hari ini;
+     *  - seluruh isi satu BUNGKUS ikut gugur bila ada satu barisnya kedaluwarsa atau
+     *    tanpa tanggal (lihat expiredPackagingBarcodes) — sterilitas melekat pada
+     *    bungkusnya, bukan pada unit, jadi set tidak boleh dirakit dari sisa isi
+     *    bungkus yang sudah tidak layak;
+     *  - unit tidak sedang dipegang order yang masih berjalan.
+     *
+     * Syarat terakhir dibaca dari JEJAK (`order_item.is_returned` pada order yang belum
+     * batal/hapus), bukan dari `instrument_stocks.status`. Kolom status itu ditulis
+     * ulang di banyak titik sepanjang alur CSSD dan bisa tertinggal — dulu itulah yang
+     * membuat unit yang jelas-jelas ada di rak ditolak dengan keterangan stok kosong.
      *
      * `$lock` = kunci baris kandidatnya (SELECT ... FOR UPDATE). WAJIB true bila hasilnya
      * dipakai untuk MERESERVASI unit (allocateFefo/reallocateDistribution), supaya dua
@@ -1520,22 +1624,40 @@ class OrderController extends Controller
     private function distributionCandidates(array $req, bool $lock = false)
     {
         $today = now()->toDateString();
+        $blockedBarcodes = $this->expiredPackagingBarcodes();
 
         return InstrumentStorage::withoutGlobalScopes()
+            ->sterilePool()
             // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->whereNull('instrument_storages.deleted_by')
+            // Nomor label kemasan unit ini — dasar penolakan per bungkus di bawah.
+            ->leftJoin('sterilization_items', function ($join) {
+                $join->on('sterilization_items.sterilization_id', '=', 'instrument_storages.sterilization_id')
+                    ->on('sterilization_items.instrument_stock_id', '=', 'instrument_storages.instrument_stock_id')
+                    ->whereNull('sterilization_items.deleted_by');
+            })
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
             // Wajib punya tanggal kedaluwarsa DAN belum lewat. Baris tanpa tanggal
             // (expiry_date null) tidak boleh ikut didistribusikan.
             ->whereDate('instrument_storages.expiry_date', '>=', $today)
-            // Hanya pool bebas. Menerima order tidak lagi mereservasi apa pun, jadi
-            // sampai tombol Distribusikan ditekan seluruh kandidat pasti `order_id` null.
-            ->whereNull('instrument_storages.order_id')
+            // Satu baris kedaluwarsa/tanpa tanggal menggugurkan SELURUH isi bungkusnya.
+            ->when(! empty($blockedBarcodes), fn ($q) => $q->where(
+                fn ($w) => $w->whereNull('sterilization_items.packaging_barcode')
+                    ->orWhereNotIn('sterilization_items.packaging_barcode', $blockedBarcodes)
+            ))
+            // Unit tidak sedang dipegang order yang masih berjalan (pengganti berbasis
+            // jejak untuk `instrument_stocks.status`).
+            ->whereNotExists(fn ($q) => $q->selectRaw('1')
+                ->from('order_item')
+                ->join('order', 'order.id', '=', 'order_item.order_id')
+                ->whereColumn('order_item.instrument_stock_id', 'instrument_stocks.id')
+                ->where('order_item.is_returned', false)
+                ->whereNull('order_item.deleted_by')
+                ->whereNull('order.deleted_by')
+                ->whereNull('order.canceled_at'))
             ->where('instrument_stocks.instrument_id', $req['instrument_id'])
-            ->where('instrument_stocks.status', InstrumentStock::STATUS_TERSEDIA)
             ->where('production_item.source', $req['source'])
             ->when(
                 $req['source'] === 'paket',
@@ -1555,6 +1677,141 @@ class OrderController extends Controller
             // Satu unit fisik bisa punya >1 baris gudang; ambil baris FEFO paling awal.
             ->unique('stock_id')
             ->values();
+    }
+
+    /**
+     * Keterangan SEBAB untuk pesan "stok steril tidak cukup": dari seluruh baris gudang
+     * instrumen ini, berapa yang gugur karena apa.
+     *
+     * Tanpa ini pesannya cuma "butuh 2, tersedia 0" — petugas melihat barangnya jelas
+     * ada di rak lalu melaporkannya sebagai stok kosong, padahal penyebabnya bisa
+     * tanggal kedaluwarsa, bungkus yang tidak layak, atau reservasi order lain yang
+     * nyangkut. Hanya dijalankan saat alokasi GAGAL, jadi biayanya tidak menempel pada
+     * jalur normal.
+     */
+    private function shortageReason(array $req): string
+    {
+        $today = now()->toDateString();
+        $blocked = $this->expiredPackagingBarcodes();
+
+        $rows = InstrumentStorage::withoutGlobalScopes()
+            ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
+            ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
+            ->leftJoin('sterilization_items', function ($join) {
+                $join->on('sterilization_items.sterilization_id', '=', 'instrument_storages.sterilization_id')
+                    ->on('sterilization_items.instrument_stock_id', '=', 'instrument_storages.instrument_stock_id')
+                    ->whereNull('sterilization_items.deleted_by');
+            })
+            ->whereNull('instrument_storages.deleted_by')
+            ->whereNull('production_item.deleted_by')
+            ->whereNull('instrument_stocks.deleted_by')
+            ->where('instrument_stocks.instrument_id', $req['instrument_id'])
+            ->where('production_item.source', $req['source'])
+            ->when(
+                $req['source'] === 'paket',
+                fn ($q) => $q->where('production_item.package_name', $req['package_name'])
+            )
+            ->get([
+                'instrument_storages.id as storage_id',
+                'instrument_storages.instrument_stock_id as stock_id',
+                'instrument_storages.status as storage_status',
+                'instrument_storages.order_id as order_id',
+                'instrument_storages.expiry_date as expiry_date',
+                'sterilization_items.packaging_barcode as barcode_no',
+            ]);
+
+        if ($rows->isEmpty()) {
+            return 'Tidak ada satu pun unit instrumen ini di gudang steril.';
+        }
+
+        // Unit yang masih dipegang order berjalan — dibaca dari jejak, sama seperti
+        // syarat di distributionCandidates().
+        // Global scope `active` dilepas: kolom `deleted_by`-nya tidak berkualifikasi
+        // tabel, jadi bentrok dengan kolom bernama sama di `order` setelah join.
+        // Syaratnya ditulis eksplisit di bawah.
+        $held = OrderItem::withoutGlobalScopes()
+            ->join('order', 'order.id', '=', 'order_item.order_id')
+            ->whereIn('order_item.instrument_stock_id', $rows->pluck('stock_id')->unique())
+            ->where('order_item.is_returned', false)
+            ->whereNull('order_item.deleted_by')
+            ->whereNull('order.deleted_by')
+            ->whereNull('order.canceled_at')
+            ->pluck('order_item.instrument_stock_id')
+            ->map(fn ($id) => (int) $id)
+            ->unique();
+
+        $sebab = [];
+        $bump = function (string $key) use (&$sebab) {
+            $sebab[$key] = ($sebab[$key] ?? 0) + 1;
+        };
+        $reservedOrderIds = [];
+
+        foreach ($rows as $r) {
+            if ($r->storage_status !== InstrumentStorage::STATUS_TERSIMPAN) {
+                $bump('sudah keluar dari rak');
+            } elseif ($r->order_id) {
+                $bump('direservasi order lain');
+                $reservedOrderIds[] = (int) $r->order_id;
+            } elseif ($r->expiry_date === null) {
+                $bump('tanpa tanggal kedaluwarsa');
+            } elseif (substr((string) $r->expiry_date, 0, 10) < $today) {
+                $bump('kedaluwarsa');
+            } elseif ($r->barcode_no !== null && in_array($r->barcode_no, $blocked, true)) {
+                $bump('bungkusnya berisi unit kedaluwarsa');
+            } elseif ($held->contains((int) $r->stock_id)) {
+                $bump('unitnya sedang dipinjam');
+            }
+        }
+
+        if (empty($sebab)) {
+            return 'Sisa unit di gudang steril memang belum mencukupi jumlah yang diminta.';
+        }
+
+        $rincian = collect($sebab)->map(fn ($n, $key) => "{$n} {$key}")->values()->implode(', ');
+
+        // Kode order yang menahan reservasi ikut disebut supaya bisa langsung ditelusuri.
+        if (! empty($reservedOrderIds)) {
+            $codes = Order::whereIn('id', array_unique($reservedOrderIds))->pluck('code')->implode(', ');
+            if ($codes !== '') {
+                $rincian .= " ({$codes})";
+            }
+        }
+
+        return "Dari {$rows->count()} baris gudang instrumen ini: {$rincian}.";
+    }
+
+    /**
+     * Kembalikan baris gudang yang masih DIRESERVASI order ini ke pool steril.
+     *
+     * Reservasi ditulis saat unit dialokasikan (allocateFefo / reallocateDistribution)
+     * dan seharusnya berakhir saat unit benar-benar keluar rak (status `keluar`). Bila
+     * ordernya batal atau dihapus sebelum itu, `order_id` tidak pernah dilepas dan
+     * unitnya hilang dari pool selamanya — barangnya ada di rak, tapi tidak pernah
+     * lagi jadi kandidat distribusi.
+     *
+     * Hanya baris yang MASIH `tersimpan` yang dilepas: baris berstatus `keluar` adalah
+     * riwayat pengeluaran, `order_id`-nya justru harus tetap menunjuk ordernya.
+     */
+    private function releaseStorageReservations(Order $order): void
+    {
+        InstrumentStorage::withoutGlobalScopes()
+            ->whereNull('deleted_by')
+            ->where('order_id', $order->id)
+            ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
+            ->update(['order_id' => null, 'updated_by' => auth()->user()?->name]);
+    }
+
+    /**
+     * Label kemasan yang seluruh isinya ditolak — aturannya tinggal di model supaya
+     * sama persis dengan penanda kelayakan di daftar Inventaris Gudang Steril. Di sini
+     * hasilnya cukup di-cache: distributionCandidates() dipanggil sekali per baris
+     * permintaan order, sedangkan daftarnya sama untuk semuanya.
+     *
+     * @return array<int,string>
+     */
+    private function expiredPackagingBarcodes(): array
+    {
+        return $this->expiredBarcodes ??= InstrumentStorage::blockedPackagingBarcodes();
     }
 
     /** Kode batch produksi (PRD-...) terakhir tiap unit, dipakai sebagai label bungkus steril. */
@@ -1630,7 +1887,9 @@ class OrderController extends Controller
                     ? " (paket \"{$req['package_name']}\")"
                     : ' (satuan)';
                 throw new \RuntimeException(
-                    "Stok steril \"{$req['instrument']['name']}\"{$bentuk} tidak cukup: butuh {$req['needed_qty']}, tersedia ".$rows->count().'.'
+                    "Stok steril \"{$req['instrument']['name']}\"{$bentuk} tidak cukup: "
+                    ."butuh {$req['needed_qty']}, tersedia ".$rows->count().'. '
+                    .$this->shortageReason($req)
                 );
             }
 
@@ -2638,6 +2897,11 @@ class OrderController extends Controller
                     );
                 }
 
+                // Baris gudang yang masih direservasi order ini dikembalikan ke pool —
+                // kalau tidak, unitnya ikut terhapus dari peredaran padahal fisiknya
+                // masih di rak.
+                $this->releaseStorageReservations($order);
+
                 $order->delete();
             });
 
@@ -2697,6 +2961,11 @@ class OrderController extends Controller
             case Order::STATUS_DIBATALKAN:
                 // Kembalikan unit yang sempat dipinjam ke status tersedia.
                 InstrumentStock::transitionMany($stockIds, InstrumentStock::STATUS_TERSEDIA, $meta);
+                // Lepas juga baris gudang yang sempat direservasi order ini. Tanpa ini
+                // `instrument_storages.order_id` tetap menempel selamanya dan unitnya
+                // hilang dari pool steril — stok yang jelas ada di rak tapi tidak pernah
+                // bisa didistribusikan lagi.
+                $this->releaseStorageReservations($order);
                 // Rekam jejak pembatalan — terpisah dari hapus (deleted_at/by).
                 // Order dibatalkan tetap tersimpan & tampil sebagai riwayat.
                 $order->canceled_at ??= now();

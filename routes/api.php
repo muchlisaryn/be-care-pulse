@@ -26,6 +26,7 @@ use App\Http\Controllers\Transaction\CleaningController;
 use App\Http\Controllers\Transaction\DistributionController;
 use App\Http\Controllers\Transaction\MonitoringController;
 use App\Http\Controllers\Transaction\OrderController;
+use App\Http\Controllers\Transaction\OrderTrackingController;
 use App\Http\Controllers\Transaction\OrderTransferController;
 use App\Http\Controllers\Transaction\PackagingController;
 use App\Http\Controllers\Transaction\ProductionController;
@@ -34,6 +35,7 @@ use App\Http\Controllers\Transaction\SterileExpiryController;
 use App\Http\Controllers\Transaction\SterilizationController;
 use App\Http\Controllers\Transaction\SterilizationPipelineController;
 use App\Http\Controllers\Transaction\StorageController;
+use App\Http\Controllers\Transaction\TrackingCountController;
 use App\Http\Controllers\Transaction\TransactionReportController;
 use Illuminate\Support\Facades\Route;
 
@@ -130,6 +132,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('monitoring/borrowed-summary', [MonitoringController::class, 'borrowedSummary']);
         // Angka badge tab Tracking Order — count() murni, tanpa memuat daftarnya
         Route::get('monitoring/counts', [MonitoringController::class, 'counts']);
+        // Badge tab "Distribution & Tracking" — endpoint TERPISAH dari
+        // monitoring/counts di atas: aturan hitungnya dari jejak waktu
+        // (processed_at / distributed_at / is_returned), bukan kolom status
+        Route::get('tracking-order/counts', [TrackingCountController::class, 'counts']);
         // Kartu "Distribusi per Ruangan": angka per ruangan, tanpa daftar instrumennya
         Route::get('monitoring/rooms-summary', [MonitoringController::class, 'roomsSummary']);
         // Papan monitor (display TV): daftar order aktif untuk dipajang
@@ -138,8 +144,12 @@ Route::middleware('auth:sanctum')->group(function () {
         // Peminjaman instrumen (F5 PRD): order header + item unit
         // Scan kode order (ORD-NNN) untuk tracking seluruh unit dalam satu order
         Route::post('orders/scan', [OrderController::class, 'scan']);
-        // Tracking order (lazy-load, dipanggil saat bagian Tracking ditampilkan).
+        // Tracking order LENGKAP (termasuk pipeline CSSD tiap unit) — hanya ditarik
+        // saat tombol "Tampilkan semua tracking" ditekan.
         Route::get('orders/{order}/timeline', [OrderController::class, 'timeline']);
+        // Aktivitas TERAKHIR saja — endpoint TERPISAH & ringan, dipakai bagian
+        // Tracking pada modal Pengembalian Instrumen saat pertama dibuka
+        Route::get('order-tracking/{order}/latest', [OrderTrackingController::class, 'latest']);
         // Daftar order milik pihak lain yang sedang dipinjam (untuk Pinjam Instrumen)
         Route::get('orders/borrowable', [OrderController::class, 'borrowable']);
         // Terima order: data alokasi unit + proses penerimaan (alokasi + kurangi stok)

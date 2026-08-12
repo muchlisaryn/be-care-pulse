@@ -48,6 +48,8 @@
         "items_count": 2,
         "paket_items_count": 1,
         "satuan_items_count": 1,
+        "requested_qty": "3",
+        "item_count": 3,
         "created_by": "Administrator",
         "updated_by": "Administrator",
         "deleted_at": null,
@@ -64,3 +66,22 @@
   }
 }
 ```
+
+### Angka jumlah instrumen
+
+| Field | Isi |
+|---|---|
+| `item_count` | **Angka yang dipajang kolom "Instruments"**. PAKET dihitung per **SET**, SATUAN per unit — satu set berisi 10 instrumen tetap bernilai 1 |
+| `requested_qty` | Jumlah `order_request_item.quantity` — sumber `item_count` |
+| `items_count` | Jumlah **unit fisik** (`order_item`). Baru terisi setelah CSSD menerima order & mengalokasikan unit |
+| `paket_items_count` / `satuan_items_count` | Jumlah unit fisik per asal — penanda jenis order di frontend |
+
+`item_count` sengaja dibaca dari **baris permintaan**, bukan dari unit fisik: angkanya
+sudah ada sejak order baru **diajukan**, jauh sebelum unit dialokasikan. Dulu kolom itu
+membaca `items_count` sehingga order yang masih pengajuan selalu tampil `0` padahal
+instrumennya jelas sudah diminta.
+
+Order hasil **pinjam-alih** tidak punya baris permintaan (unitnya dioper dari order
+lain tanpa order ulang ke CSSD). Untuk order seperti itu `item_count` dihitung dari unit
+fisiknya: satuan per unit, paket per nomor label kemasan (satu label = satu bungkus =
+satu set); paket tanpa label dihitung 1 set. Cukup dua query untuk seluruh halaman.

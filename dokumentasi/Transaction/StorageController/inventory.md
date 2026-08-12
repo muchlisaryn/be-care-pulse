@@ -10,15 +10,34 @@ status kedaluwarsa. **Early-warning**: `alert = true` (merah) bila masa berlaku
 steril ≤ ambang hari atau sudah lewat. Diurutkan dari yang paling cepat
 kedaluwarsa.
 
-**Filter baris:** satu-satunya penyaring adalah `instrument_storages.order_id` yang
-harus **NULL** — stok steril pool produksi yang belum direservasi order manapun.
-Begitu order diterima, `OrderController@acceptDistribution` memindahkan kepemilikan
-baris gudang ke order tersebut (`order_id` terisi) dan barisnya keluar dari daftar ini.
+**Filter baris:** memakai scope BERSAMA `InstrumentStorage::sterilePool()` — scope yang
+sama dipakai `@summary` dan penyusun kandidat distribusi
+(`OrderController::distributionCandidates`), supaya ketiganya mustahil menyimpang:
 
-Status baris gudang (`tersimpan` / `keluar`) dan kondisi unitnya (`tersedia` /
-`dipinjam` / `sterilisasi`) **tidak** ikut menyaring. Konsekuensinya field `order`
-pada setiap baris selalu `null`, dan filter `search` per kode order tidak pernah
-menghasilkan baris.
+| Syarat | Keterangan |
+|---|---|
+| `deleted_by IS NULL` | baris gudang belum dihapus |
+| `status = 'tersimpan'` | fisiknya masih di rak. Baris yang unitnya sudah **ditarik kembali ke produksi** (`status = keluar`, `order_id` tetap NULL) dulu ikut terpajang di sini sebagai stok — sekarang tidak lagi |
+| `order_id IS NULL` | pool bebas, belum direservasi order manapun |
+
+Konsekuensinya field `order` pada setiap baris selalu `null`, dan filter `search` per
+kode order tidak pernah menghasilkan baris.
+
+Kondisi unit (`instrument_stocks.status`) tetap **tidak** ikut menyaring — di mana pun,
+termasuk saat distribusi.
+
+**Penanda kelayakan distribusi:** tiap baris membawa `can_distribute` dan
+`blocked_reason`. Baris yang tidak layak tetap **ditampilkan** (petugas perlu tahu
+barangnya ada tapi harus diproses ulang), hanya diberi keterangan:
+
+| `blocked_reason` | Kapan |
+|---|---|
+| `Tanpa tanggal kedaluwarsa` | `expiry_date` NULL — tidak bisa dijamin steril |
+| `Kedaluwarsa` | `expiry_date` sudah lewat hari ini |
+| `Sebungkus dengan unit kedaluwarsa` | ada unit lain di label kemasan yang sama yang kedaluwarsa/tanpa tanggal — sterilitas melekat pada bungkus, jadi seluruh isinya ikut gugur |
+
+Aturannya sama persis dengan yang dipakai saat distribusi, jadi penanda di layar tidak
+bisa berbeda dari kenyataan ketika tombol Distribusikan ditekan.
 
 **Sumber nama instrumen:** `unit.code`, `unit.instrument`, `source`, dan `package_name`
 diambil dari tabel `production_item` (snapshot batch produksi unit tersebut) lewat FK

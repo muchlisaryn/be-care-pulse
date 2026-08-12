@@ -12,11 +12,12 @@ Dibuat terpisah dari `inventory` karena daftar inventaris dimuat **bertahap**
 (lazy load per halaman) — angka ringkasan tetap harus mencerminkan seluruh data,
 bukan hanya baris yang sudah dimuat di layar.
 
-**Basis perhitungan HARUS sama persis dengan `inventory`:** satu-satunya penyaring
-adalah `instrument_storages.order_id` NULL (pool steril yang belum direservasi order).
-Status baris gudang (`tersimpan`/`keluar`) dan kondisi unitnya **tidak** ikut
-menyaring — jangan tambahkan `where('status', ...)` di sini. Dulu penyaring itu ada
-dan membuat kartu statistik menghitung baris yang berbeda dari daftar yang tampil.
+**Basis perhitungan HARUS sama persis dengan `inventory`:** keduanya memakai scope
+`InstrumentStorage::sterilePool()` (`deleted_by` NULL + `status = 'tersimpan'` +
+`order_id` NULL). Jangan menambah atau mengurangi syarat di salah satu tempat saja —
+begitu keduanya berangkat dari baris berbeda, kartu statistik langsung tidak cocok
+dengan daftar yang tampil (itu pernah terjadi). Kondisi unit
+(`instrument_stocks.status`) tetap tidak ikut menyaring.
 
 **Aturan hitung:** baris `paket` dihitung **per SET** — dikelompokkan per nomor
 label kemasan (`sterilization_item.packaging_barcode`) pada batch steril yang sama,

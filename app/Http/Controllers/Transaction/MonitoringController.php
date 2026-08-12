@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Models\OrderEvent;
 use App\Models\OrderItem;
 use App\Models\OrderRequestItem;
 use App\Models\PackagingItem;
@@ -853,11 +854,22 @@ class MonitoringController extends Controller
     /**
      * Papan monitor (display TV): daftar order aktif yang dipajang di layar gudang.
      * Item dikelompokkan per (order, instrumen) lalu dihitung jumlah unitnya (QTY).
+     *
+     * `?room_id=` menyaring ke satu ruangan — dipakai papan per-ruangan
+     * (`/monitor/{ruangan_id}`) yang menyegarkan diri tiap 20 detik. Tanpa itu papan
+     * satu ruangan menarik seluruh order aktif rumah sakit lalu membuang hampir
+     * semuanya di browser.
      */
-    public function board(): JsonResponse
+    public function board(Request $request): JsonResponse
     {
-        // Seluruh tahap pipeline aktif (selain dikembalikan / dibatalkan) agar papan
-        // TV menampilkan setiap order beserta "lagi proses apa" (status tahapnya).
+        $request->validate([
+            'room_id' => 'nullable|integer',
+        ]);
+        $roomId = $request->input('room_id');
+
+        // Urutan tahap pipeline — HANYA untuk mengurutkan baris di layar & memilih
+        // sumber angka QTY, bukan untuk memilih order mana yang tampil (lihat query
+        // di bawah: penyaringnya jejak waktu, bukan status).
         $statuses = [
             Order::STATUS_DIAJUKAN,
             Order::STATUS_PENCUCIAN,
@@ -870,24 +882,41 @@ class MonitoringController extends Controller
         ];
         $stageOrder = array_flip($statuses);
 
-        // Tahap dengan unit fisik sudah final → baca dari items; sebelum itu → requestItems.
-        $packedStatuses = [
-            Order::STATUS_SELESAI,
-            Order::STATUS_STERILISASI,
-            Order::STATUS_STERIL,
-            Order::STATUS_DIGUDANG,
-            Order::STATUS_DIPINJAM,
-        ];
-
+        // Papan hanya memajang PEKERJAAN YANG MASIH BERJALAN. Penyaringnya dibaca
+        // dari kolom audit/jejak waktu, BUKAN dari kolom `status`: status ditulis
+        // ulang di banyak titik sepanjang alur CSSD dan bisa tertinggal, sedangkan
+        // jejak di bawah hanya ditulis sekali tepat saat kejadiannya.
+        //
+        //  - dibatalkan  → `canceled_at` terisi (juga `deleted_by` lewat global scope
+        //                  `active` dari HasAuditColumns untuk order yang dihapus);
+        //  - belum diproses CSSD (`processed_at` kosong) → unitnya memang belum
+        //                  dialokasikan; itu justru pekerjaan paling awal, tetap tampil;
+        //  - sudah diproses → wajib masih memegang unit yang belum kembali. Ini
+        //                  sekaligus menutup order sumber PINJAM-ALIH yang seluruh
+        //                  unitnya sudah berpindah ke order peminjam baru (unitnya
+        //                  dipindah, bukan ditandai kembali) — papan tidak boleh lagi
+        //                  memajangnya sebagai pekerjaan berjalan.
+        //
+        // "Sudah kembali" dibaca per unit (`order_item.is_returned`), bukan dari
+        // `return_actual_date` di header, karena pengembalian boleh dicicil.
         $orders = Order::query()
-            ->whereIn('status', $statuses)
+            ->whereNull('canceled_at')
+            ->when($roomId, fn ($q, $v) => $q->where('room_id', $v))
+            ->where(fn ($q) => $q->whereNull('processed_at')
+                ->orWhereHas('items', fn ($i) => $i->where('is_returned', false)))
             ->with([
-                'room',
-                'items.instrumentStock.instrument',
-                'requestItems.instrument',
-                'requestItems.catalog',
+                // Kolom dibatasi seperlunya — papan ini disegarkan tiap 20 detik di
+                // layar TV, jadi tiap kolom yang tidak dipakai ikut jadi beban tetap.
+                'room:id,name',
+                'items:id,order_id,instrument_stock_id,source,package_name,is_returned',
+                'items.instrumentStock:id,instrument_id',
+                'items.instrumentStock.instrument:id,name',
+                'requestItems:id,order_id,type,instrument_id,instrument_catalog_id,package_name,quantity',
+                'requestItems.instrument:id,name',
+                'requestItems.catalog:id,name',
             ])
-            ->get()
+            // Hanya kolom yang benar-benar dipajang/dipakai mengurutkan.
+            ->get(['id', 'code', 'code_transaction', 'borrowed_by', 'created_by', 'order_date', 'created_at', 'room_id', 'status'])
             ->sortBy(fn (Order $o) => sprintf('%02d-%s-%06d', $stageOrder[$o->status] ?? 99, (string) $o->order_date, $o->id))
             ->values();
 
@@ -899,7 +928,21 @@ class MonitoringController extends Controller
                 ->filter()->unique()->values()->all()
         );
 
-        $rows = $orders->map(function (Order $order) use ($packedStatuses, $setKeyByStock) {
+        // Nama peminjam TERAKHIR tiap order — satu query untuk seluruh papan (bukan
+        // per baris). Pinjam-alih memindahkan unit ke ORDER BARU milik peminjam baru
+        // dan mencatat event `dipindah` di sana, jadi nama yang benar untuk tiap baris
+        // adalah nama pada event TERBARU milik order itu sendiri; nama peminjam awal
+        // tetap tinggal di order sumbernya.
+        //
+        // Diurut menaik lalu di-pluck: baris belakangan menimpa yang lebih lama, jadi
+        // yang tersisa per order adalah event terbarunya.
+        $latestBorrowerByOrder = OrderEvent::whereIn('order_id', $orders->pluck('id'))
+            ->whereNotNull('borrowed_by')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->pluck('borrowed_by', 'order_id');
+
+        $rows = $orders->map(function (Order $order) use ($setKeyByStock, $latestBorrowerByOrder) {
             $lines = [];
 
             // QTY papan monitor: PAKET dihitung per SET, SATUAN per unit fisik.
@@ -914,7 +957,10 @@ class MonitoringController extends Controller
                 $setsByPackage[$name] = ($setsByPackage[$name] ?? 0) + (int) $line->quantity;
             }
 
-            if (in_array($order->status, $packedStatuses, true) && $order->items->isNotEmpty()) {
+            // Sumber angka QTY juga tidak lagi ditentukan status: begitu unit fisiknya
+            // dialokasikan (ada `order_item` yang belum kembali), itulah yang dihitung;
+            // sebelum itu papan memakai baris permintaan.
+            if ($order->items->where('is_returned', false)->isNotEmpty()) {
                 $paket = [];
                 $paketSetKeys = [];
                 $satuan = [];
@@ -966,7 +1012,10 @@ class MonitoringController extends Controller
             return [
                 'order_code' => $order->code,
                 'no_transaction' => $order->code_transaction,
-                'borrowed_by' => $order->borrowed_by,
+                // Peminjam terakhir; kolom order dipakai bila order belum punya event
+                // (mis. data lama), `created_by` sebagai jalan terakhir agar kolomnya
+                // tidak pernah kosong di layar.
+                'borrowed_by' => $latestBorrowerByOrder[$order->id] ?? $order->borrowed_by ?? $order->created_by,
                 'order_date' => optional($order->order_date)->toDateString(),
                 'order_time' => optional($order->created_at)->format('H:i'),
                 'room_id' => $order->room?->id,

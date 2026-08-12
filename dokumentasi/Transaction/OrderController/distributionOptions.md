@@ -22,17 +22,37 @@ isi katalognya, dan seluruh isi berasal dari satu batch produksi (tidak tercampu
 Bila satu batch memproduksi beberapa set dengan nama paket sama, tiap set jadi opsi terpisah
 (`set_index` = Set 1, Set 2, …).
 
-Kandidat diambil dari `instrument_storages` dengan dua syarat:
+## Syarat kandidat
 
-- `order_id IS NULL` — baris gudang yang masih pool bebas, belum diklaim order mana pun.
-  Menerima order tidak lagi mereservasi apa pun, jadi seluruh kandidat pasti `null`.
-- `expiry_date >= hari ini` — wajib bertanggal kedaluwarsa dan belum lewat. Baris tanpa
-  tanggal (`expiry_date` null) **tidak** ditawarkan.
+Kandidat berangkat dari scope BERSAMA `InstrumentStorage::sterilePool()` — scope yang
+sama dipakai daftar & ringkasan Inventaris Gudang Steril, jadi apa yang terlihat di
+layar dan apa yang bisa didistribusikan tidak bisa lagi berbeda diam-diam:
 
-Ditambah: unit fisiknya harus berstatus `tersedia`, dan bentuk simpannya cocok (satuan
-hanya dari unit yang disimpan satuan, paket hanya dari unit yang disimpan sebagai paket
-bernama sama). Urut FEFO. `instrument_storages.status` tidak ikut menyaring — sama dengan
-daftar inventaris Gudang Steril.
+| Syarat | Alasan |
+|---|---|
+| `instrument_storages.deleted_by IS NULL` | baris gudang belum dihapus |
+| `instrument_storages.status = 'tersimpan'` | fisiknya masih di rak. Status BARIS GUDANG ini ditulis sekali saat unit keluar rak — didistribusikan **atau** ditarik kembali ke produksi (`ProductionController::closeStorageForReprocessed`) |
+| `instrument_storages.order_id IS NULL` | masih pool bebas, belum diklaim order mana pun |
+
+Ditambah syarat khusus distribusi:
+
+- `expiry_date` **wajib ada** dan `>= hari ini`. Baris tanpa tanggal (`expiry_date`
+  NULL) ditolak — bungkus tanpa tanggal kedaluwarsa tidak bisa dijamin steril.
+- **Penolakan per bungkus:** bila satu baris dalam satu label kemasan
+  (`sterilization_items.packaging_barcode`) kedaluwarsa atau tanpa tanggal, SELURUH isi
+  label itu gugur (lihat `InstrumentStorage::blockedPackagingBarcodes()`). Sterilitas
+  melekat pada bungkus, bukan pada unit — tanpa aturan ini, set masih bisa dirakit dari
+  sisa isi bungkus yang fisiknya sudah tidak layak.
+- Unit **tidak sedang dipegang order berjalan**: tidak ada `order_item` miliknya dengan
+  `is_returned = false` pada order yang belum dibatalkan/dihapus.
+- Bentuk simpannya cocok: satuan hanya dari unit yang disimpan satuan, paket hanya dari
+  unit yang disimpan sebagai paket bernama sama. Urut FEFO.
+
+**`instrument_stocks.status` TIDAK lagi menyaring.** Kolom itu ditulis ulang di banyak
+titik sepanjang alur CSSD dan bisa tertinggal; dulu itulah yang membuat unit yang
+jelas-jelas ada di rak ditolak dengan keterangan stok kosong. Penggantinya syarat
+"tidak sedang dipegang order berjalan" di atas, yang dibaca dari jejak
+`order_item.is_returned`.
 
 ### Path Parameter
 | Parameter | Type | Keterangan |

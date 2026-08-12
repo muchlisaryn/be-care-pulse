@@ -179,7 +179,13 @@ class StorageController extends Controller
             'order',
             'sterilization',
         ])
-            ->whereNull('order_id')
+            // Scope BERSAMA dengan penyusun kandidat distribusi
+            // (OrderController::distributionCandidates) — daftar ini dan yang bisa
+            // didistribusikan wajib berangkat dari baris yang sama. Termasuk
+            // `status = tersimpan`: baris unit yang sudah ditarik kembali ke produksi
+            // dulu tetap terpajang di sini sebagai stok, padahal fisiknya bukan lagi
+            // isi rak.
+            ->sterilePool()
             ->when(
                 $request->search,
                 fn ($q, $s) => $q->where(fn ($w) => $w->where('rack_code', 'like', "%{$s}%")
@@ -202,8 +208,14 @@ class StorageController extends Controller
             ->paginate(20);
 
         $barcodes = $this->packagingBarcodeMap($rows->getCollection());
+        // Label yang seluruh isinya tidak layak distribusi — aturan yang sama persis
+        // dipakai penyusun kandidat distribusi, jadi penandanya di layar tidak bisa
+        // berbeda dari kenyataan saat tombol Distribusikan ditekan.
+        $blocked = InstrumentStorage::blockedPackagingBarcodes();
 
-        $rows->getCollection()->transform(fn (InstrumentStorage $s) => $this->inventoryRow($s, $days, $barcodes));
+        $rows->getCollection()->transform(
+            fn (InstrumentStorage $s) => $this->inventoryRow($s, $days, $barcodes, $blocked)
+        );
 
         return $this->success('Inventaris gudang steril berhasil diambil.', $rows);
     }
@@ -220,17 +232,17 @@ class StorageController extends Controller
      *
      * Angka di sini WAJIB sama dengan penjumlahan kepala grup rak di halaman
      * Inventaris Gudang. Karena itu baris yang dihitung memakai penyaring yang sama
-     * persis dengan inventory() — `order_id` NULL, tanpa menyaring status baris gudang
-     * maupun status unit. Jangan tambahkan `where('status', ...)` di sini; dulu ada,
-     * dan membuat kartu statistik memuat baris yang berbeda dari daftarnya.
+     * persis dengan inventory(): scope `sterilePool()`. Jangan tambahkan syarat
+     * apa pun di salah satu tempat saja — begitu keduanya berangkat dari baris yang
+     * berbeda, kartu statistik dan daftarnya langsung tidak cocok lagi.
      */
     public function summary(Request $request): JsonResponse
     {
         $days = max(0, (int) $request->input('days', self::EXPIRY_ALERT_DAYS));
         $today = now()->startOfDay();
 
-        // Basis identik dengan inventory(): pool steril yang belum direservasi order.
-        $rows = InstrumentStorage::whereNull('order_id')
+        // Basis identik dengan inventory(): scope sterilePool() yang sama.
+        $rows = InstrumentStorage::sterilePool()
             ->with('productionItem:id,source,package_name')
             ->get([
                 'id', 'instrument_stock_id', 'sterilization_id', 'production_item_id',
@@ -578,7 +590,7 @@ class StorageController extends Controller
      * dibaca dari relasi `productionItem` (baris batch produksi asal unit);
      * `$barcodes` = peta nomor label kemasan dari packagingBarcodeMap().
      */
-    private function inventoryRow(InstrumentStorage $s, int $days, array $barcodes = []): array
+    private function inventoryRow(InstrumentStorage $s, int $days, array $barcodes = [], array $blocked = []): array
     {
         $prod = $s->productionItem;
         $barcode = $barcodes['pairs'][$s->sterilization_id.'|'.$s->instrument_stock_id]
@@ -595,7 +607,21 @@ class StorageController extends Controller
             $alert = $daysToExpiry <= $days; // termasuk yang sudah lewat
         }
 
+        // Kelayakan distribusi ditampilkan APA ADANYA di daftar — dulu baris seperti ini
+        // terlihat sebagai stok biasa lalu ditolak diam-diam saat distribusi dengan
+        // keterangan stok kosong. Urutan pemeriksaannya sama dengan urutan syarat di
+        // OrderController::distributionCandidates().
+        $blockedReason = match (true) {
+            $s->expiry_date === null => 'Tanpa tanggal kedaluwarsa',
+            $expired => 'Kedaluwarsa',
+            $barcode !== null && in_array($barcode, $blocked, true) => 'Sebungkus dengan unit kedaluwarsa',
+            default => null,
+        };
+
         return [
+            // Bisa didistribusikan atau tidak, beserta alasannya bila tidak.
+            'can_distribute' => $blockedReason === null,
+            'blocked_reason' => $blockedReason,
             'id' => $s->id,
             'rack_code' => $s->rack_code,
             'stored_at' => $s->stored_at,
