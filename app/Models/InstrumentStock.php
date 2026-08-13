@@ -42,9 +42,9 @@ class InstrumentStock extends Model
         'pengemasan' => 'Pengemasan',
         'sterilisasi' => 'Sterilisasi',
         'disimpan' => 'Disimpan di Rak',
+        'kedaluwarsa' => 'Kedaluwarsa',
         'dipinjam' => 'Dipinjam',
         'dikembalikan' => 'Dikembalikan',
-        'proses' => 'Dalam Proses CSSD',
     ];
 
     protected $fillable = [
@@ -110,14 +110,20 @@ class InstrumentStock extends Model
             return [];
         }
 
-        $stocks = static::withoutGlobalScopes()->whereIn('id', $ids)->get(['id', 'status']);
+        $stocks = static::withoutGlobalScopes()->whereIn('id', $ids)->get(['id']);
 
         $result = [];
         foreach ($stocks as $s) {
             $result[$s->id] = ['stage' => null, 'label' => null];
         }
 
-        $active = $stocks->filter(fn ($s) => $s->status !== self::STATUS_TERSEDIA);
+        // Yang perlu dicari tahapnya = unit yang TIDAK terhitung sisa stok. Dasarnya
+        // scope availableStock (jejak relasi + kolom audit), bukan `status !== tersedia`:
+        // kalau kolom status tertinggal, unit yang jelas-jelas sedang di pipeline akan
+        // dilewati di sini lalu tampil ber-badge "Tersedia" — bertentangan dengan angka
+        // "Dipakai/Proses" di layar yang sama.
+        $availableIds = static::whereIn('id', $ids)->availableStock()->pluck('id')->flip();
+        $active = $stocks->filter(fn ($s) => ! $availableIds->has($s->id));
         if ($active->isEmpty()) {
             return $result;
         }
@@ -129,12 +135,27 @@ class InstrumentStock extends Model
             ->where('is_returned', false)
             ->pluck('instrument_stock_id')->unique()->flip();
 
-        // Penyimpanan TERBARU tiap unit yang masih `tersimpan`.
+        // Baris gudang TERBARU tiap unit. Keadaannya dibaca dari kolom relasi & tanggal,
+        // bukan dari `instrument_storages.status`:
+        //  - `order_id` NULL  → masih di rak (belum diklaim order mana pun);
+        //  - `expiry_date`    → masih layak atau sudah kedaluwarsa;
+        //  - `order_id` terisi → sudah keluar rak untuk sebuah order.
         $storageIds = InstrumentStorage::selectRaw('MAX(id) as id')
             ->whereIn('instrument_stock_id', $activeIds)->groupBy('instrument_stock_id')->pluck('id');
-        $stored = InstrumentStorage::whereIn('id', $storageIds)
-            ->where('status', InstrumentStorage::STATUS_TERSIMPAN)
-            ->pluck('instrument_stock_id')->flip();
+        $latestStorage = InstrumentStorage::whereIn('id', $storageIds)
+            ->get(['instrument_stock_id', 'order_id', 'removed_at', 'expiry_date'])
+            ->keyBy('instrument_stock_id');
+
+        $today = now()->toDateString();
+        // Kedaluwarsa dinilai dari tanggalnya saja — di rak maupun sudah keluar. Ini
+        // sebab yang paling perlu diketahui petugas (barangnya harus disterilkan ulang),
+        // jadi disebut langsung alih-alih disamarkan jadi keterangan umum.
+        $expired = $latestStorage->filter(fn ($st) => $st->expiry_date === null
+            || $st->expiry_date->toDateString() < $today);
+        // Masih di rak & tanggalnya berlaku.
+        $stored = $latestStorage->filter(fn ($st) => $st->order_id === null
+            && $st->removed_at === null
+            && ! $expired->has($st->instrument_stock_id));
 
         // Sterilisasi aktif (batch steril terbaru berstatus `diproses`).
         $sterItemIds = SterilizationItem::selectRaw('MAX(id) as id')
@@ -173,14 +194,18 @@ class InstrumentStock extends Model
             $sid = $s->id;
             $prodCode = $prodCodeByStock[$sid] ?? null;
 
+            // Urutannya = dari keadaan paling menentukan ke paling umum. Tidak ada satu
+            // pun cabang yang membaca `instrument_stocks.status`.
             $stage = match (true) {
-                $s->status === self::STATUS_DIPINJAM || $borrowed->has($sid) => 'dipinjam',
-                $stored->has($sid) => 'disimpan',
+                $borrowed->has($sid) => 'dipinjam',
                 $sterActive->has($sid) => 'sterilisasi',
                 $prodCode && ($packActiveProd->has($prodCode) || $packPendingProd->has($prodCode)) => 'pengemasan',
                 $prodCode && $washActiveProd->has($prodCode) => 'pencucian',
-                $s->status === self::STATUS_DIKEMBALIKAN => 'dikembalikan',
-                default => 'proses',
+                $expired->has($sid) => 'kedaluwarsa',
+                $stored->has($sid) => 'disimpan',
+                // Sisanya: sudah keluar rak & tidak sedang di batch mana pun — barangnya
+                // menunggu diproses ulang.
+                default => 'dikembalikan',
             };
 
             $result[$sid] = ['stage' => $stage, 'label' => self::STAGE_LABELS[$stage] ?? null];
@@ -245,6 +270,86 @@ class InstrumentStock extends Model
         }
 
         return $prefix.'-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Unit yang TIDAK sedang dipegang order berjalan — dibaca dari JEJAK, bukan dari
+     * kolom `status`.
+     *
+     * Kolom `instrument_stocks.status` ditulis ulang di banyak titik sepanjang alur
+     * CSSD dan bisa tertinggal bila satu langkah lupa memperbaruinya; begitu itu
+     * terjadi, angka "sisa stok" ikut salah tanpa ada yang tahu. Jejak di bawah hanya
+     * ditulis sekali tepat saat kejadiannya:
+     *  - `order_item.is_returned` = false → unitnya masih di tangan peminjam. Dibaca
+     *    per unit, bukan dari header order, karena pengembalian boleh dicicil;
+     *  - `order.canceled_at` / `deleted_by` terisi → ordernya batal, unitnya bebas.
+     *
+     * Aturan ini WAJIB sama dengan syarat "tidak sedang dipegang order berjalan" pada
+     * OrderController::distributionCandidates() — begitu keduanya berbeda, halaman
+     * katalog menjanjikan stok yang ditolak sendiri saat mau didistribusikan.
+     */
+    public function scopeNotHeldByActiveOrder($query)
+    {
+        return $query->whereNotExists(fn ($q) => $q->selectRaw('1')
+            ->from('order_item')
+            ->join('order', 'order.id', '=', 'order_item.order_id')
+            ->whereColumn('order_item.instrument_stock_id', 'instrument_stocks.id')
+            ->where('order_item.is_returned', false)
+            ->whereNull('order_item.deleted_by')
+            ->whereNull('order.deleted_by')
+            ->whereNull('order.canceled_at'));
+    }
+
+    /**
+     * SISA STOK: unit yang benar-benar masih bisa dipakai.
+     *
+     * Tidak satu pun kolom `status` dibaca di sini — semuanya ditentukan dari ada/
+     * tidaknya baris relasi, kolom FK yang null/tidak, dan kolom audit:
+     *
+     *  1. tidak dipegang order berjalan       → scopeNotHeldByActiveOrder (is_returned
+     *     + order.canceled_at/deleted_by);
+     *  2. DAN salah satu dari:
+     *     a. belum pernah masuk produksi CSSD → tidak ada baris `production_item`
+     *        (unit perawan, masih di stok awal); ATAU
+     *     b. sudah kembali ke rak gudang steril dalam keadaan bebas → baris
+     *        `instrument_storages` TERBARU-nya punya `order_id` NULL (belum diklaim
+     *        order mana pun) dan `expiry_date` masih berlaku.
+     *
+     * Unit yang sudah masuk produksi lalu keluar lagi (dipinjam / kedaluwarsa / masih
+     * di tengah pipeline) TIDAK dihitung: barangnya memang tidak bisa langsung dipakai
+     * sampai diproses ulang. Inilah sebabnya angka ini lebih kecil dari sekadar jumlah
+     * unit fisik yang dimiliki.
+     */
+    public function scopeAvailableStock($query)
+    {
+        $today = now()->toDateString();
+
+        return $query->notHeldByActiveOrder()->where(fn ($q) => $q
+            // (a) belum pernah tersentuh produksi.
+            ->whereNotExists(fn ($p) => $p->selectRaw('1')
+                ->from('production_item')
+                ->whereColumn('production_item.instrument_stock_id', 'instrument_stocks.id')
+                ->whereNull('production_item.deleted_by'))
+            // (b) baris gudang TERBARU-nya bebas & belum kedaluwarsa. Dibatasi ke baris
+            // terbaru karena satu unit menumpuk riwayat tiap kali diproses ulang —
+            // tanpa itu, baris lama yang dulu sempat bebas akan terus meloloskannya.
+            ->orWhereExists(fn ($st) => $st->selectRaw('1')
+                ->from('instrument_storages')
+                ->whereColumn('instrument_storages.instrument_stock_id', 'instrument_stocks.id')
+                ->whereNull('instrument_storages.deleted_by')
+                ->whereNull('instrument_storages.order_id')
+                // Dua penanda "sudah tidak di rak", keduanya harus bersih: `order_id`
+                // (diklaim order) dan `removed_at` (ditarik kembali ke produksi). Yang
+                // kedua tidak selalu berpasangan dgn yang pertama — unit yang diproses
+                // ulang keluar rak tanpa order mana pun.
+                ->whereNull('instrument_storages.removed_at')
+                ->whereNotNull('instrument_storages.expiry_date')
+                ->whereDate('instrument_storages.expiry_date', '>=', $today)
+                ->whereRaw('instrument_storages.id = (
+                    select max(st2.id) from instrument_storages st2
+                    where st2.instrument_stock_id = instrument_stocks.id
+                      and st2.deleted_by is null
+                )')));
     }
 
     public function instrument()

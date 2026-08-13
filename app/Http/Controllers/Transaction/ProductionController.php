@@ -299,6 +299,11 @@ class ProductionController extends Controller
             ->whereIn('instrument_stock_id', $stockIds)
             ->update([
                 'status' => InstrumentStorage::STATUS_KELUAR,
+                // WAJIB ikut diisi — inilah jejak "baris ini sudah tidak di rak" yang
+                // dipakai perhitungan sisa stok. Tanpa ini barisnya cuma ditandai lewat
+                // `status`, dan unit yang ditarik ke produksi tetap terhitung ada di rak
+                // (jalur order di OrderController sudah mengisinya sejak awal).
+                'removed_at' => now(),
                 'updated_by' => auth()->user()?->name,
             ]);
     }

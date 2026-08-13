@@ -35,9 +35,19 @@ class InstrumentStockController extends Controller
         // disimpan/dipinjam). Kolom `stage` dipersist & di-maintain saat transisi;
         // di sini dihitung ulang agar tampilan dijamin mutakhir.
         $stages = InstrumentStock::computeStages($data->getCollection()->pluck('id'));
-        $data->getCollection()->each(function ($s) use ($stages) {
+
+        // `is_available` — satu penanda untuk tiga hal sekaligus, semuanya dari jejak
+        // relasi + kolom audit (bukan `status`): badge Status, hitungan Tersedia/Dipakai
+        // di modal, dan penguncian tombol Edit/Hapus. Dasarnya SAMA dengan kolom
+        // "Sisa Stok" di baris induk, jadi apa yang terlihat, yang dihitung, dan yang
+        // boleh diubah tidak bisa lagi berbeda satu sama lain.
+        $ids = $data->getCollection()->pluck('id');
+        $available = InstrumentStock::whereIn('id', $ids)->availableStock()->pluck('id')->flip();
+
+        $data->getCollection()->each(function ($s) use ($stages, $available) {
             $s->stage = $stages[$s->id]['stage'] ?? null;
             $s->stage_label = $stages[$s->id]['label'] ?? null;
+            $s->is_available = $available->has($s->id);
         });
 
         return $this->success('Data stok instrumen berhasil diambil.', $data);
@@ -98,26 +108,36 @@ class InstrumentStockController extends Controller
     }
 
     /**
-     * Unit yang SEDANG DIPINJAM tidak boleh diubah maupun dihapus: barangnya ada di
-     * tangan peminjam dan masih tertaut order aktif, jadi mengubah kondisinya atau
-     * menghapus barisnya akan membuat data order menggantung. Ditegakkan di server —
-     * bukan sekadar tombol yang dinonaktifkan di UI.
+     * Hanya unit yang benar-benar TERSEDIA yang boleh diubah atau dihapus. Begitu unit
+     * masuk alur CSSD — dipinjam, di tengah pipeline, menunggu proses ulang, atau sudah
+     * kedaluwarsa di rak — barisnya sudah tertaut jejak produksi/order, sehingga
+     * mengubah kondisinya atau menghapusnya membuat data di hulu menggantung.
+     * Ditegakkan di server, bukan sekadar tombol yang dinonaktifkan di UI.
+     *
+     * Ketersediaan dibaca lewat scope `availableStock` (jejak relasi + kolom audit),
+     * bukan dari kolom `status`: kalau status tertinggal karena satu langkah alur lupa
+     * memperbaruinya, penjaga ini ikut lengah dan unit yang masih terpakai bisa hilang.
+     * Alasan penolakan diambil dari tahap aktual unit supaya pesannya menyebut keadaan
+     * sebenarnya, bukan sekadar "tidak tersedia".
      */
-    private function assertNotBorrowed(InstrumentStock $stock): ?JsonResponse
+    private function assertAvailable(InstrumentStock $stock): ?JsonResponse
     {
-        if ($stock->status === InstrumentStock::STATUS_DIPINJAM) {
-            return $this->error(
-                "Unit {$stock->code} sedang dipinjam — tidak bisa diubah atau dihapus sampai dikembalikan.",
-                422
-            );
+        if (InstrumentStock::whereKey($stock->id)->availableStock()->exists()) {
+            return null;
         }
 
-        return null;
+        $stage = InstrumentStock::computeStages([$stock->id])[$stock->id]['label'] ?? null;
+        $sebab = $stage ? " (saat ini: {$stage})" : '';
+
+        return $this->error(
+            "Unit {$stock->code} sedang tidak tersedia{$sebab} — hanya unit tersedia yang bisa diubah atau dihapus.",
+            422
+        );
     }
 
     public function update(Request $request, InstrumentStock $instrumentStock): JsonResponse
     {
-        if ($blocked = $this->assertNotBorrowed($instrumentStock)) {
+        if ($blocked = $this->assertAvailable($instrumentStock)) {
             return $blocked;
         }
 
@@ -139,7 +159,7 @@ class InstrumentStockController extends Controller
 
     public function destroy(InstrumentStock $instrumentStock): JsonResponse
     {
-        if ($blocked = $this->assertNotBorrowed($instrumentStock)) {
+        if ($blocked = $this->assertAvailable($instrumentStock)) {
             return $blocked;
         }
 

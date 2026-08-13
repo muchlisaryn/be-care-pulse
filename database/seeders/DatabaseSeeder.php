@@ -23,7 +23,6 @@ class DatabaseSeeder extends Seeder
             PengaturanMenuSeeder::class,
             LaporanTransaksiInstrumenMenuSeeder::class,
             PrinterSeeder::class,
-            AdminUserSeeder::class,
             RoomSeeder::class,
             ConditionSeeder::class,
             InstrumentCatalogSeeder::class,

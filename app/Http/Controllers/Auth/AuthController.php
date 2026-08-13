@@ -49,7 +49,15 @@ class AuthController extends Controller
             'device_name' => 'nullable|string|max:100',
         ]);
 
-        $user = User::where('username', $validated['username'])->first();
+        // Kolom `username` pada request boleh diisi username ATAU email — pesan
+        // error di bawah memang menjanjikan keduanya. Kurung wajib: global scope
+        // `active` menambah `deleted_by IS NULL`, dan tanpa pengelompokan ini
+        // `orWhere` akan lolos dari filter itu (AND ... OR ...), sehingga user
+        // yang sudah di-soft-delete bisa ikut login lewat email.
+        $user = User::where(function ($query) use ($validated) {
+            $query->where('username', $validated['username'])
+                ->orWhere('email', $validated['username']);
+        })->first();
 
         if (! $user || ! Hash::check($validated['password'], $user->password)) {
             return $this->error('Email/username atau password salah.', 401);

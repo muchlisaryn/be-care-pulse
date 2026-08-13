@@ -53,8 +53,8 @@ class OrderController extends Controller
     public function index(Request $request): JsonResponse
     {
         $data = Order::with(['room', 'user'])
+            ->withDerivedStatusCounts()
             ->withCount([
-                'items',
                 // Jumlah unit per asal — dipakai frontend untuk menandai jenis order
                 // (paket / satuan / campuran) di halaman daftar order masuk.
                 'items as paket_items_count' => fn ($q) => $q->where('source', 'paket'),
@@ -69,7 +69,8 @@ class OrderController extends Controller
             // Kecualikan batch PRODUKSI CSSD (internal, tanpa ruangan) — itu bukan
             // order peminjaman; tempatnya di pipeline Cleaning, bukan daftar ini.
             ->whereNotNull('room_id')
-            ->when($request->status, fn ($q, $s) => $q->where('status', $s))
+            // Saring pakai status TURUNAN, sama dengan yang nanti ditampilkan.
+            ->when($request->status, fn ($q, $s) => $q->whereDerivedStatus($s))
             ->when(
                 $request->search,
                 // Bungkus dalam grup agar OR tidak membocorkan order milik akun lain.
@@ -88,6 +89,9 @@ class OrderController extends Controller
             ->paginate(20);
 
         $this->attachItemCount($data->getCollection());
+        // Kirim status TURUNAN pada field `status` supaya seluruh tampilan (badge,
+        // tracker, aturan boleh-hapus) langsung ikut benar tanpa perlu tahu soal ini.
+        $data->getCollection()->each(fn (Order $o) => $o->status = $o->deriveStatus());
 
         return $this->success('Data peminjaman berhasil diambil.', $data);
     }
@@ -540,6 +544,13 @@ class OrderController extends Controller
     public function show(Order $order): JsonResponse
     {
         $order->load(self::DETAIL_RELATIONS);
+        // Status turunan, sama seperti di daftar — detail dan baris yang mengantar ke
+        // sini tidak boleh menampilkan status berbeda.
+        $order->loadCount([
+            'items',
+            'items as unreturned_items_count' => fn ($q) => $q->where('is_returned', false),
+        ]);
+        $order->status = $order->deriveStatus();
         // Nomor label kemasan tiap unit — dipakai modal Detail Order untuk
         // MENGELOMPOKKAN instrumen per bungkus fisik (satu label = satu set),
         // sama seperti modal Pengembalian.

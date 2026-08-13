@@ -189,11 +189,26 @@ class OrderTransferController extends Controller
                     'order_date' => now()->toDateString(),
                     'return_plan_date' => $fromOrder->return_plan_date,
                     'status' => Order::STATUS_DIPINJAM,
+                    // Jejak WAJIB: unitnya langsung berpindah ke tangan peminjam baru,
+                    // tanpa melewati alur terima→distribusi CSSD. Tanpa `distributed_at`
+                    // order ini tidak punya bukti pernah keluar, sehingga status
+                    // turunannya jatuh kembali ke "diajukan".
+                    'distributed_at' => now(),
+                    'distributed_to' => $orderTransfer->borrowed_by,
                     'note' => 'Pinjam-alih dari order '.$fromOrder->code,
                 ]);
 
                 // Pindahkan unit ke order baru (status stok tetap dipinjam).
                 OrderItem::whereIn('id', $orderItems->pluck('id'))->update(['order_id' => $newOrder->id]);
+
+                // Order sumber yang unitnya habis dioper sudah tidak memegang apa pun.
+                // Kolom `status`-nya dirapikan supaya data lama ikut benar; yang jadi
+                // pegangan tampilan tetap Order::deriveStatus() (0 unit + pernah
+                // terdistribusi → dikembalikan), jadi tidak ada lagi order sumber yang
+                // nyangkut di "Distributed" selamanya.
+                if (! OrderItem::where('order_id', $fromOrder->id)->where('is_returned', false)->exists()) {
+                    $fromOrder->update(['status' => Order::STATUS_DIKEMBALIKAN]);
+                }
 
                 // Timeline: catat perpindahan pada code_transaction yang sama.
                 $fromRoom = $fromOrder->room?->name ?? '—';

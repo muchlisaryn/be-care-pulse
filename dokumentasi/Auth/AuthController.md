@@ -114,7 +114,7 @@
 
 | Parameter   | Type   | Required | Keterangan                                                  |
 | ----------- | ------ | -------- | ----------------------------------------------------------- |
-| username    | string | Ya       | Username akun                                               |
+| username    | string | Ya       | Username **atau** email akun — keduanya diterima            |
 | password    | string | Ya       | Password akun                                               |
 | device_name | string | Tidak    | Label perangkat, misal "HP Android" (default: `auth_token`) |
 

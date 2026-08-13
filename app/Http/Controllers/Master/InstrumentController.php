@@ -18,7 +18,9 @@ class InstrumentController extends Controller
         return $this->success('Statistik instrumen berhasil diambil.', [
             'total_instruments' => Instrument::count(),
             'total_units' => InstrumentStock::count(),
-            'available_units' => InstrumentStock::where('status', InstrumentStock::STATUS_TERSEDIA)->count(),
+            // Sama persis dengan kolom "Sisa Stok" di daftar — dua angka ini tampil
+            // berdampingan di layar yang sama, jadi dasarnya tidak boleh berbeda.
+            'available_units' => InstrumentStock::availableStock()->count(),
         ]);
     }
 
@@ -26,11 +28,11 @@ class InstrumentController extends Controller
     {
         $data = Instrument::withCount([
             'stocks',
-            // Jumlah unit yang berstatus `tersedia` — harus PERSIS sama dgn jumlah unit
-            // ber-badge "Tersedia" pada detail stok. Berkurang otomatis saat unit dipinjam
-            // (status → dipinjam). Unit yang masih di gudang steril tetap `tersedia` (masih
-            // bisa dipinjam) sehingga tetap ikut terhitung — jangan dikecualikan.
-            'stocks as available_stocks_count' => fn ($q) => $q->where('status', InstrumentStock::STATUS_TERSEDIA),
+            // Sisa unit yang benar-benar masih bisa dipakai — lihat scope availableStock:
+            // ditentukan dari ada/tidaknya baris relasi + kolom FK/audit, TANPA membaca
+            // kolom `status` mana pun. Unit yang sudah masuk produksi CSSD dan belum
+            // kembali ke rak dalam keadaan bebas otomatis tidak lagi terhitung.
+            'stocks as available_stocks_count' => fn ($q) => $q->availableStock(),
         ])
             ->when(
                 $request->search,

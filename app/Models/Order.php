@@ -89,6 +89,95 @@ class Order extends Model
         'distributed_at' => 'datetime',
     ];
 
+    /**
+     * Status order PEMINJAMAN yang diturunkan dari JEJAK, bukan dibaca dari kolom
+     * `status`. Kolom itu ditulis ulang di banyak titik dan ada jalur yang melewatinya
+     * sama sekali — pinjam-alih memindahkan `order_item` ke order baru tanpa menyentuh
+     * status order sumber, sehingga order yang sudah tidak memegang apa pun tetap
+     * tampil "Distributed" selamanya.
+     *
+     * Urutannya dari yang paling menentukan:
+     *  1. `canceled_at` terisi                → dibatalkan;
+     *  2. `return_actual_date` terisi         → dikembalikan;
+     *  3. punya unit & tidak ada yang belum kembali (`order_item.is_returned`)
+     *                                         → dikembalikan;
+     *  4. sudah pernah keluar (`distributed_at`) tapi kini TIDAK memegang unit satu pun
+     *     → dikembalikan. Ini kasus order sumber pinjam-alih: unitnya dioper, bukan
+     *       ditandai kembali, jadi barisnya habis tanpa meninggalkan jejak lain;
+     *  5. `distributed_at` terisi             → dipinjam;
+     *  6. `processed_at` terisi               → digudang (diterima CSSD, siap distribusi);
+     *  7. selain itu                          → diajukan.
+     *
+     * Butuh `items_count` & `unreturned_items_count` sudah termuat — pakai
+     * `withDerivedStatusCounts()` supaya tidak jadi query per baris.
+     */
+    public function deriveStatus(): string
+    {
+        if ($this->canceled_at !== null) {
+            return self::STATUS_DIBATALKAN;
+        }
+
+        $total = (int) ($this->items_count ?? 0);
+        $belumKembali = (int) ($this->unreturned_items_count ?? 0);
+
+        if ($this->return_actual_date !== null
+            || ($total > 0 && $belumKembali === 0)
+            || ($total === 0 && $this->distributed_at !== null)) {
+            return self::STATUS_DIKEMBALIKAN;
+        }
+
+        if ($this->distributed_at !== null) {
+            return self::STATUS_DIPINJAM;
+        }
+
+        if ($this->processed_at !== null) {
+            return self::STATUS_DIGUDANG;
+        }
+
+        return self::STATUS_DIAJUKAN;
+    }
+
+    /** Muat dua angka yang dibutuhkan deriveStatus() dalam satu query. */
+    public function scopeWithDerivedStatusCounts($query)
+    {
+        return $query->withCount([
+            'items',
+            'items as unreturned_items_count' => fn ($q) => $q->where('is_returned', false),
+        ]);
+    }
+
+    /**
+     * Saring berdasarkan status TURUNAN — aturannya wajib cerminan deriveStatus(),
+     * kalau tidak filter di layar akan menyaring dengan dasar berbeda dari label yang
+     * ditampilkannya sendiri. Status di luar alur peminjaman (pipeline produksi) tidak
+     * punya turunan, jadi tetap jatuh ke kolom `status`.
+     */
+    public function scopeWhereDerivedStatus($query, string $status)
+    {
+        $total = '(select count(*) from order_item oi where oi.order_id = `order`.id and oi.deleted_by is null)';
+        $belum = '(select count(*) from order_item oi where oi.order_id = `order`.id and oi.deleted_by is null and oi.is_returned = 0)';
+
+        $sudahKembali = fn ($q) => $q->where(fn ($w) => $w
+            ->whereNotNull('return_actual_date')
+            ->orWhereRaw("({$total} > 0 and {$belum} = 0)")
+            // Order sumber pinjam-alih: unitnya habis dioper, bukan ditandai kembali.
+            ->orWhereRaw("({$total} = 0 and distributed_at is not null)"));
+
+        $belumBatal = fn ($q) => $q->whereNull('canceled_at');
+
+        return match ($status) {
+            self::STATUS_DIBATALKAN => $query->whereNotNull('canceled_at'),
+            self::STATUS_DIKEMBALIKAN => $query->where($belumBatal)->where($sudahKembali),
+            self::STATUS_DIPINJAM => $query->where($belumBatal)->whereNot($sudahKembali)
+                ->whereNotNull('distributed_at'),
+            self::STATUS_DIGUDANG => $query->where($belumBatal)->whereNot($sudahKembali)
+                ->whereNull('distributed_at')->whereNotNull('processed_at'),
+            self::STATUS_DIAJUKAN => $query->where($belumBatal)->whereNot($sudahKembali)
+                ->whereNull('distributed_at')->whereNull('processed_at'),
+            default => $query->where('status', $status),
+        };
+    }
+
     /** Awalan kode order yang sudah dihapus — sengaja tidak cocok dengan pola `ORD-%`. */
     private const VOID_CODE_PREFIX = 'VOID-';
 
