@@ -54,20 +54,23 @@ class InstrumentStorage extends Model
      * terjadi lagi — yang boleh berbeda hanyalah perlakuan terhadap baris
      * kedaluwarsa (daftar menampilkannya dengan penanda, distribusi menolaknya).
      *
-     * Syaratnya jejak, bukan status unit:
+     * Syaratnya relasi & kolom audit — TIDAK ada kolom `status` yang dibaca:
      *  - `deleted_by` NULL — baris gudang belum dihapus;
-     *  - `status` = `tersimpan` — status BARIS GUDANG, ditulis sekali saat unit keluar
-     *    dari rak (didistribusikan ATAU ditarik kembali ke produksi untuk diproses
-     *    ulang, lihat ProductionController::closeStorageForReprocessed). Ini BUKAN
-     *    `instrument_stocks.status` yang ditulis ulang di banyak titik sepanjang alur
-     *    CSSD dan bisa tertinggal;
-     *  - `order_id` NULL — belum diklaim / belum didistribusikan ke order mana pun.
+     *  - `order_id` NULL — belum diklaim / didistribusikan ke order mana pun;
+     *  - `removed_at` NULL — belum diangkat dari rak (baik untuk diantar ke order maupun
+     *    ditarik kembali ke produksi, lihat ProductionController::closeStorageForReprocessed).
+     *
+     * Dulu syarat ketiga ditulis sebagai `status = tersimpan`. Itu bisa menyimpang:
+     * penarikan unit ke produksi sempat hanya menulis `status` tanpa `removed_at`, jadi
+     * kedua penanda saling bertentangan pada baris yang sama. Kolom audit dipakai karena
+     * ditulis sekali tepat saat kejadiannya. Baris warisan sudah dirapikan oleh migration
+     * `2026_08_13_000001_backfill_removed_at_on_released_storages`.
      */
     public function scopeSterilePool($query)
     {
         return $query->whereNull($query->qualifyColumn('deleted_by'))
-            ->where($query->qualifyColumn('status'), self::STATUS_TERSIMPAN)
-            ->whereNull($query->qualifyColumn('order_id'));
+            ->whereNull($query->qualifyColumn('order_id'))
+            ->whereNull($query->qualifyColumn('removed_at'));
     }
 
     /**

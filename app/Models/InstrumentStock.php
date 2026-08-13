@@ -306,50 +306,35 @@ class InstrumentStock extends Model
      * Tidak satu pun kolom `status` dibaca di sini — semuanya ditentukan dari ada/
      * tidaknya baris relasi, kolom FK yang null/tidak, dan kolom audit:
      *
-     *  1. tidak dipegang order berjalan       → scopeNotHeldByActiveOrder (is_returned
-     *     + order.canceled_at/deleted_by);
-     *  2. DAN salah satu dari:
-     *     a. belum pernah masuk produksi CSSD → tidak ada baris `production_item`
-     *        (unit perawan, masih di stok awal); ATAU
-     *     b. sudah kembali ke rak gudang steril dalam keadaan bebas → baris
-     *        `instrument_storages` TERBARU-nya punya `order_id` NULL (belum diklaim
-     *        order mana pun) dan `expiry_date` masih berlaku.
+     *  1. tidak dipegang order berjalan — scopeNotHeldByActiveOrder (`order_item.is_returned`
+     *     + `order.canceled_at`/`deleted_by`);
+     *  2. tidak tercatat di GUDANG STERIL — tidak ada baris `instrument_storages` yang
+     *     masuk `sterilePool()` (belum dihapus, `order_id` NULL, `removed_at` NULL).
+     *     Unit yang ada di rak sedang disimpan, bukan stok bebas: ia sudah punya tempat
+     *     sendiri di tab Inventaris Gudang Steril dan tidak boleh diubah/dihapus dari
+     *     master. Syaratnya sengaja dibaca dari baris yang SAMA dengan yang menyusun tab
+     *     itu — begitu keduanya berbeda, satu unit bisa muncul di dua tempat sekaligus;
+     *  3. belum pernah masuk produksi CSSD — tidak ada baris `production_item`. Unit yang
+     *     sudah pernah diproses tapi kini tidak di rak berarti sedang di tengah pipeline
+     *     atau menunggu diproses ulang; barangnya belum bisa dipakai begitu saja.
      *
-     * Unit yang sudah masuk produksi lalu keluar lagi (dipinjam / kedaluwarsa / masih
-     * di tengah pipeline) TIDAK dihitung: barangnya memang tidak bisa langsung dipakai
-     * sampai diproses ulang. Inilah sebabnya angka ini lebih kecil dari sekadar jumlah
-     * unit fisik yang dimiliki.
+     * Ketiganya syarat DAN, dan tidak satu pun membaca kolom `status`.
      */
     public function scopeAvailableStock($query)
     {
-        $today = now()->toDateString();
-
-        return $query->notHeldByActiveOrder()->where(fn ($q) => $q
-            // (a) belum pernah tersentuh produksi.
-            ->whereNotExists(fn ($p) => $p->selectRaw('1')
-                ->from('production_item')
-                ->whereColumn('production_item.instrument_stock_id', 'instrument_stocks.id')
-                ->whereNull('production_item.deleted_by'))
-            // (b) baris gudang TERBARU-nya bebas & belum kedaluwarsa. Dibatasi ke baris
-            // terbaru karena satu unit menumpuk riwayat tiap kali diproses ulang —
-            // tanpa itu, baris lama yang dulu sempat bebas akan terus meloloskannya.
-            ->orWhereExists(fn ($st) => $st->selectRaw('1')
+        return $query->notHeldByActiveOrder()
+            // Tidak sedang tersimpan di rak gudang steril.
+            ->whereNotExists(fn ($st) => $st->selectRaw('1')
                 ->from('instrument_storages')
                 ->whereColumn('instrument_storages.instrument_stock_id', 'instrument_stocks.id')
                 ->whereNull('instrument_storages.deleted_by')
                 ->whereNull('instrument_storages.order_id')
-                // Dua penanda "sudah tidak di rak", keduanya harus bersih: `order_id`
-                // (diklaim order) dan `removed_at` (ditarik kembali ke produksi). Yang
-                // kedua tidak selalu berpasangan dgn yang pertama — unit yang diproses
-                // ulang keluar rak tanpa order mana pun.
-                ->whereNull('instrument_storages.removed_at')
-                ->whereNotNull('instrument_storages.expiry_date')
-                ->whereDate('instrument_storages.expiry_date', '>=', $today)
-                ->whereRaw('instrument_storages.id = (
-                    select max(st2.id) from instrument_storages st2
-                    where st2.instrument_stock_id = instrument_stocks.id
-                      and st2.deleted_by is null
-                )')));
+                ->whereNull('instrument_storages.removed_at'))
+            // Belum pernah tersentuh produksi CSSD.
+            ->whereNotExists(fn ($p) => $p->selectRaw('1')
+                ->from('production_item')
+                ->whereColumn('production_item.instrument_stock_id', 'instrument_stocks.id')
+                ->whereNull('production_item.deleted_by'));
     }
 
     public function instrument()
