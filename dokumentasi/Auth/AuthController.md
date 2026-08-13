@@ -4,7 +4,7 @@
 
 > **Default credentials (seeder):**
 >
-> - Username: `administrator` | Password: `Admin@12345` → akses semua menu
+> - No Pegawai (field `username`): `000001` | Password: `Admin@12345` → akses semua menu
 > - Operator dibuat tanpa user default — buat via endpoint register/user
 
 > **Multi-session:** Satu akun dapat login dari beberapa perangkat secara bersamaan. Setiap login menghasilkan token berbeda yang independen.
