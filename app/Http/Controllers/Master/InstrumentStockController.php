@@ -254,9 +254,17 @@ class InstrumentStockController extends Controller
             ->first()?->sterilization
             ?? $packaging?->sterilization;
 
-        $storage = InstrumentStorage::where('instrument_stock_id', $instrumentStock->id)
-            ->latest('id')
-            ->first();
+        // Baris gudang SIKLUS INI saja — dikunci ke batch produksi yang sedang berjalan.
+        // Tanpa penyaring itu, baris dari siklus SEBELUMNYA (unit yang sudah pernah
+        // masuk lalu keluar rak) ikut terpajang di perjalanan siklus berjalan: unit yang
+        // justru sedang mengantre ditaruh di rak terlihat sudah pernah disimpan dan
+        // "Keluar", bertentangan dengan tahap saat ini yang ditampilkan di atasnya.
+        $storage = $productionItem
+            ? InstrumentStorage::where('instrument_stock_id', $instrumentStock->id)
+                ->where('production_item_id', $productionItem->id)
+                ->latest('id')
+                ->first()
+            : null;
 
         // Peminjaman aktif (belum dikembalikan).
         $orderItem = OrderItem::with('order.room')
@@ -284,11 +292,21 @@ class InstrumentStockController extends Controller
             $stages[] = $this->stage('sterilisasi', 'Sterilisasi', $sterilization->code, $sterilization->status, $sterilization->completed_at ?? $sterilization->sterilized_at ?? $sterilization->created_at);
         }
         if ($storage) {
+            // Tahap ini cukup menyebut LOKASI RAK-nya saja. No. invoice sengaja tidak
+            // ikut di sini — tempatnya di tahap "Dipinjam" di bawah, yang memang tahap
+            // milik order tersebut.
             $stages[] = $this->stage('disimpan', 'Disimpan di Rak', $storage->rack_code, $storage->status, $storage->stored_at ?? $storage->created_at);
         }
         // Peminjaman: tampil bila unit sedang/pernah dipinjam pada siklus ini.
         if ($order) {
-            $stages[] = $this->stage('dipinjam', 'Dipinjam', $order->code, $order->status, $order->order_date ?? $order->created_at);
+            $stages[] = $this->stage(
+                'dipinjam',
+                'Dipinjam',
+                $order->code,
+                $order->status,
+                $order->order_date ?? $order->created_at,
+                $order->code_transaction,
+            );
         }
 
         // Tahap saat ini dari perhitungan tahap aktual (akurat), lalu dicocokkan ke
@@ -348,8 +366,12 @@ class InstrumentStockController extends Controller
         ]);
     }
 
-    /** Bentuk satu entri tahap pipeline. */
-    private function stage(string $key, string $label, ?string $code, ?string $status, $at): array
+    /**
+     * Bentuk satu entri tahap pipeline. `$invoice` = no. invoice order yang terkait
+     * dengan tahap itu (baru ada pada tahap yang menyangkut order: keluar gudang &
+     * dipinjam); null pada tahap produksi yang belum menyentuh order mana pun.
+     */
+    private function stage(string $key, string $label, ?string $code, ?string $status, $at, ?string $invoice = null): array
     {
         return [
             'key' => $key,
@@ -357,6 +379,7 @@ class InstrumentStockController extends Controller
             'code' => $code,
             'status' => $status,
             'at' => $at,
+            'invoice' => $invoice,
         ];
     }
 

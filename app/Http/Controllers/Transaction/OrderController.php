@@ -505,21 +505,37 @@ class OrderController extends Controller
             return [];
         }
 
+        $blocked = InstrumentStorage::blockedPackagingBarcodes();
+
         // Ambil baris (bukan agregat) supaya `lockForUpdate` benar-benar mengunci
         // tiap baris gudang yang ikut dihitung, lalu dijumlahkan di PHP.
         $rows = InstrumentStorage::withoutGlobalScopes()
+            // Scope BERSAMA dengan penyusun kandidat distribusi & angka "Tersedia" di
+            // form order: belum dihapus, `order_id` null, `removed_at` null. Dulu di sini
+            // hanya `order_id` yang dicek, sehingga unit yang sudah diangkat dari rak
+            // (removed_at terisi) masih ikut terhitung sebagai stok siap-order.
+            ->sterilePool()
             // Asal (satuan/paket) & nama paket ada di production_item, bukan di gudang.
             ->join('production_item', 'production_item.id', '=', 'instrument_storages.production_item_id')
             ->join('instrument_stocks', 'instrument_stocks.id', '=', 'instrument_storages.instrument_stock_id')
-            ->whereNull('instrument_storages.deleted_by')
+            ->leftJoin('sterilization_items', function ($join) {
+                $join->on('sterilization_items.sterilization_id', '=', 'instrument_storages.sterilization_id')
+                    ->on('sterilization_items.instrument_stock_id', '=', 'instrument_storages.instrument_stock_id')
+                    ->whereNull('sterilization_items.deleted_by');
+            })
             ->whereNull('production_item.deleted_by')
             ->whereNull('instrument_stocks.deleted_by')
-            // Pool produksi: baris gudang yang belum direservasi order manapun.
-            ->whereNull('instrument_storages.order_id')
             ->whereIn('instrument_stocks.instrument_id', $instrumentIds)
             ->where('production_item.source', $source)
-            ->where(fn ($w) => $w->whereNull('instrument_storages.expiry_date')
-                ->orWhereDate('instrument_storages.expiry_date', '>=', now()->toDateString()))
+            // Wajib bertanggal & belum lewat — syarat yang sama dengan
+            // distributionCandidates(). Baris tanpa tanggal dulu ikut terhitung di sini,
+            // padahal saat distribusi ditolak: ordernya lolos dibuat lalu mentok di gudang.
+            ->whereDate('instrument_storages.expiry_date', '>=', now()->toDateString())
+            // Satu unit kedaluwarsa menggugurkan SELURUH isi bungkusnya.
+            ->when(! empty($blocked), fn ($q) => $q->where(
+                fn ($w) => $w->whereNull('sterilization_items.packaging_barcode')
+                    ->orWhereNotIn('sterilization_items.packaging_barcode', $blocked)
+            ))
             ->lockForUpdate()
             ->get([
                 'instrument_storages.id as storage_id',
@@ -528,7 +544,9 @@ class OrderController extends Controller
             ]);
 
         $counts = [];
-        foreach ($rows as $row) {
+        // `unique` per baris gudang: leftJoin ke label kemasan bisa menggandakan baris
+        // yang sama, dan satu baris gudang tetap satu unit.
+        foreach ($rows->unique('storage_id') as $row) {
             $instrumentId = (int) $row->instrument_id;
             if ($source === 'paket') {
                 $key = $row->package_name ?? 'Paket';

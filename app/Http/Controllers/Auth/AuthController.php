@@ -281,15 +281,28 @@ class AuthController extends Controller
 
     public function changePassword(Request $request): JsonResponse
     {
+        // Pesan ditulis eksplisit dalam bahasa Indonesia & menyebut syaratnya. Bawaan
+        // Laravel berbahasa Inggris dan hanya menyebut nama field mentah ("password"),
+        // sehingga di layar muncul sebagai keluhan yang tidak bisa ditindaklanjuti.
         $request->validate([
             'current_password' => 'required|string',
-            'password' => 'required|string|min:8|confirmed',
+            'password' => ['required', 'string', 'min:8', 'confirmed', 'different:current_password'],
+        ], [
+            'current_password.required' => 'Kata sandi saat ini wajib diisi.',
+            'password.required' => 'Kata sandi baru wajib diisi.',
+            'password.min' => 'Kata sandi baru minimal 8 karakter.',
+            'password.confirmed' => 'Konfirmasi kata sandi tidak sama dengan kata sandi baru.',
+            'password.different' => 'Kata sandi baru harus berbeda dari kata sandi saat ini.',
         ]);
 
         $user = $request->user();
 
         if (! Hash::check($request->current_password, $user->password)) {
-            return $this->error('Password saat ini tidak sesuai.', 422);
+            // Dikembalikan dalam bentuk `errors` per field (bukan sekadar `message`)
+            // supaya frontend bisa menempelkannya tepat di bawah kolom yang salah.
+            return $this->error('Kata sandi saat ini salah.', 422, [
+                'current_password' => ['Kata sandi saat ini salah.'],
+            ]);
         }
 
         try {

@@ -38,12 +38,17 @@ class InstrumentStock extends Model
      * dihitung ulang). Null = unit tersedia / tidak sedang di pipeline.
      */
     public const STAGE_LABELS = [
+        'produksi' => 'Dalam Produksi',
         'pencucian' => 'Pencucian',
         'pengemasan' => 'Pengemasan',
         'sterilisasi' => 'Sterilisasi',
+        'menunggu_disimpan' => 'Menunggu Disimpan di Rak',
         'disimpan' => 'Disimpan di Rak',
         'kedaluwarsa' => 'Kedaluwarsa',
         'dipinjam' => 'Dipinjam',
+        // Nilai warisan: sejak unit yang sudah dikembalikan kembali terhitung sebagai
+        // stok tersedia, tahap ini tidak dihasilkan lagi — tetap dipetakan agar baris
+        // lama yang kolom `stage`-nya masih berisi ini tetap punya label.
         'dikembalikan' => 'Dikembalikan',
     ];
 
@@ -157,12 +162,29 @@ class InstrumentStock extends Model
             && $st->removed_at === null
             && ! $expired->has($st->instrument_stock_id));
 
-        // Sterilisasi aktif (batch steril terbaru berstatus `diproses`).
+        // Batch steril TERBARU tiap unit.
         $sterItemIds = SterilizationItem::selectRaw('MAX(id) as id')
             ->whereIn('instrument_stock_id', $activeIds)->groupBy('instrument_stock_id')->pluck('id');
-        $sterActive = SterilizationItem::with('sterilization')
-            ->whereIn('id', $sterItemIds)->get()
+        $sterLatest = SterilizationItem::with('sterilization')->whereIn('id', $sterItemIds)->get();
+
+        // Sterilisasi aktif (batch steril terbaru berstatus `diproses`).
+        $sterActive = $sterLatest
             ->filter(fn ($it) => $it->sterilization && $it->sterilization->status === Sterilization::STATUS_DIPROSES)
+            ->pluck('instrument_stock_id')->flip();
+
+        // Batch steril terbaru sudah `selesai` tapi unitnya belum dibuatkan baris gudang:
+        // barangnya steril dan sedang mengantre ditaruh di rak (tab "Perlu Disimpan").
+        // Tanpa tahap ini unit tsb jatuh ke cabang terakhir dan salah berlabel.
+        $sterDone = $sterLatest
+            ->filter(fn ($it) => $it->sterilization && $it->sterilization->status === Sterilization::STATUS_SELESAI);
+        $storedPairs = $sterDone->isEmpty()
+            ? collect()
+            : InstrumentStorage::whereIn('instrument_stock_id', $sterDone->pluck('instrument_stock_id'))
+                ->get(['instrument_stock_id', 'sterilization_id'])
+                ->map(fn ($r) => $r->sterilization_id.'|'.$r->instrument_stock_id)
+                ->flip();
+        $awaitingStorage = $sterDone
+            ->reject(fn ($it) => $storedPairs->has($it->sterilization_id.'|'.$it->instrument_stock_id))
             ->pluck('instrument_stock_id')->flip();
 
         // Kode produksi TERBARU tiap unit → cek washing/packaging aktif.
@@ -199,13 +221,16 @@ class InstrumentStock extends Model
             $stage = match (true) {
                 $borrowed->has($sid) => 'dipinjam',
                 $sterActive->has($sid) => 'sterilisasi',
+                $awaitingStorage->has($sid) => 'menunggu_disimpan',
                 $prodCode && ($packActiveProd->has($prodCode) || $packPendingProd->has($prodCode)) => 'pengemasan',
                 $prodCode && $washActiveProd->has($prodCode) => 'pencucian',
                 $expired->has($sid) => 'kedaluwarsa',
                 $stored->has($sid) => 'disimpan',
-                // Sisanya: sudah keluar rak & tidak sedang di batch mana pun — barangnya
-                // menunggu diproses ulang.
-                default => 'dikembalikan',
+                // Sisanya: sudah masuk batch produksi tapi belum sampai ke tahap mana pun
+                // yang punya penanda sendiri. Unit yang sudah dikembalikan TIDAK jatuh ke
+                // sini — siklusnya sudah tuntas sehingga ia terhitung tersedia (lihat
+                // scopeAvailableStock) dan tidak pernah ikut dihitung tahapnya.
+                default => 'produksi',
             };
 
             $result[$sid] = ['stage' => $stage, 'label' => self::STAGE_LABELS[$stage] ?? null];
@@ -314,9 +339,15 @@ class InstrumentStock extends Model
      *     sendiri di tab Inventaris Gudang Steril dan tidak boleh diubah/dihapus dari
      *     master. Syaratnya sengaja dibaca dari baris yang SAMA dengan yang menyusun tab
      *     itu — begitu keduanya berbeda, satu unit bisa muncul di dua tempat sekaligus;
-     *  3. belum pernah masuk produksi CSSD — tidak ada baris `production_item`. Unit yang
-     *     sudah pernah diproses tapi kini tidak di rak berarti sedang di tengah pipeline
-     *     atau menunggu diproses ulang; barangnya belum bisa dipakai begitu saja.
+     *  3. tidak sedang di TENGAH siklus produksi CSSD. Siklus dianggap masih berjalan
+     *     selama baris `production_item` TERAKHIR unit belum menghasilkan baris gudang —
+     *     mencakup pencucian, pengemasan, sterilisasi, dan batch steril yang sudah selesai
+     *     tapi unitnya masih mengantre ditaruh di rak (tab "Perlu Disimpan"). Begitu baris
+     *     gudangnya ada, siklus itu tuntas: unitnya entah masih di rak (tersaring syarat 2),
+     *     sedang dipinjam (syarat 1), atau SUDAH DIKEMBALIKAN — dan yang terakhir memang
+     *     kembali jadi stok bebas. Dulu syarat ini berbunyi "belum pernah tersentuh
+     *     produksi", sehingga unit yang sudah dikembalikan peminjam tidak pernah terhitung
+     *     tersedia lagi seumur hidupnya.
      *
      * Ketiganya syarat DAN, dan tidak satu pun membaca kolom `status`.
      */
@@ -330,11 +361,19 @@ class InstrumentStock extends Model
                 ->whereNull('instrument_storages.deleted_by')
                 ->whereNull('instrument_storages.order_id')
                 ->whereNull('instrument_storages.removed_at'))
-            // Belum pernah tersentuh produksi CSSD.
+            // Siklus produksi TERAKHIR unit belum tuntas (belum ada baris gudangnya).
             ->whereNotExists(fn ($p) => $p->selectRaw('1')
                 ->from('production_item')
                 ->whereColumn('production_item.instrument_stock_id', 'instrument_stocks.id')
-                ->whereNull('production_item.deleted_by'));
+                ->whereNull('production_item.deleted_by')
+                // Hanya siklus TERAKHIR yang menentukan; siklus lama sudah lewat.
+                ->whereRaw('production_item.id = (select max(pi_last.id) from production_item pi_last'
+                    .' where pi_last.instrument_stock_id = instrument_stocks.id'
+                    .' and pi_last.deleted_by is null)')
+                ->whereNotExists(fn ($g) => $g->selectRaw('1')
+                    ->from('instrument_storages')
+                    ->whereColumn('instrument_storages.production_item_id', 'production_item.id')
+                    ->whereNull('instrument_storages.deleted_by')));
     }
 
     public function instrument()

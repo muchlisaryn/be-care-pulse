@@ -17,8 +17,13 @@ use Illuminate\Support\Collection;
 
 class MonitoringController extends Controller
 {
-    /** Baris per halaman default tab "Distribution & Tracking" (lihat [tracking()]). */
-    private const TRACKING_PER_PAGE = 30;
+    /**
+     * Baris per halaman default tab "Distribution & Tracking" (lihat [tracking()]).
+     * HARUS sama dengan konstanta `TRACKING_PER_PAGE` di monitoringSlice frontend —
+     * nilainya memang dikirim eksplisit sebagai `per_page`, tapi kalau keduanya
+     * berbeda, permintaan tanpa `per_page` akan memotong halaman dengan ukuran lain.
+     */
+    private const TRACKING_PER_PAGE = 10;
 
     /**
      * Monitoring per ruangan: daftar unit instrumen yang sedang dipinjam
@@ -428,7 +433,7 @@ class MonitoringController extends Controller
      *
      * Filter: ?search (kode order/transaksi, peminjam, ruangan, nama/kode instrumen,
      * kode unit, nomor label kemasan), ?from & ?to (tanggal aktivitas), ?per_page
-     * (default 30). Rentang tanggalnya sengaja dibandingkan dengan tanggal AKTIVITAS
+     * (default 10). Rentang tanggalnya sengaja dibandingkan dengan tanggal AKTIVITAS
      * TERAKHIR tiap baris — sama seperti [counts()] — supaya order lama yang baru
      * dikembalikan tetap muncul pada rentang "7 hari terakhir".
      */

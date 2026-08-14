@@ -492,11 +492,20 @@ class StorageController extends Controller
             'packagings.washing.production.items',
         ]);
 
-        $production = $batch->packagings->first()?->washing?->production;
+        // Satu batch steril bisa memuat unit dari BEBERAPA batch produksi sekaligus —
+        // tiap bungkus punya jalur produksi/pencucian/pengemasannya sendiri dan baru
+        // bertemu di mesin sterilisator. Karena itu peta asal unit dirangkai dari
+        // SELURUH packaging batch ini, sama seperti storeProduction().
+        //
+        // Dulu hanya packaging PERTAMA yang dibaca, sehingga unit dari produksi lain
+        // tidak ketemu asalnya lalu jatuh ke nilai bawaan `satuan` tanpa nama paket:
+        // satu SET utuh tampil sebagai instrumen satuan lepas di daftar "Perlu Disimpan".
+        $productions = $batch->packagings->map(fn ($p) => $p->washing?->production)->filter();
+        $production = $productions->first();
 
         // Asal unit (satuan/paket) diambil dari production_item (via stock id).
-        $originByStock = ($production?->items ?? collect())
-            ->keyBy('instrument_stock_id');
+        $originItems = $productions->flatMap(fn ($p) => $p->items ?? collect());
+        $originByStock = $originItems->keyBy('instrument_stock_id');
 
         // Baris gudang unit batch ini, TERMASUK yang berstatus `keluar` (sudah diambil /
         // didistribusikan). Unit yang pernah masuk gudang tidak boleh muncul lagi sebagai
@@ -508,7 +517,7 @@ class StorageController extends Controller
 
         // Gambar SET (katalog paket) per nama paket, untuk thumbnail grup paket.
         $packageImages = $this->packageImages(
-            ($production?->items ?? collect())->where('source', 'paket')->pluck('package_name')
+            $originItems->where('source', 'paket')->pluck('package_name')
         );
 
         // Hanya unit BERHASIL steril yang jadi isi batch gudang (unit gagal → re-proses,
