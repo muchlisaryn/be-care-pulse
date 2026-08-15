@@ -605,27 +605,45 @@ class SterilizationPipelineController extends Controller
     /** Item "menunggu validasi" dari satu batch STR (gabungan PKG). */
     private function batchPayload(Sterilization $batch): array
     {
-        $batch->loadMissing(['packagings.washing.production.items.instrumentStock.instrument', 'items.instrumentStock.instrument']);
+        $batch->loadMissing(['items.instrumentStock.instrument']);
+        $batchItems = $batch->items->where('disabled', false);
+
+        // Nomor label (barcode_no) tiap unit dibaca dari `sterilization_items.packaging_barcode`
+        // — dicatat saat batch dibuat, jadi tetap benar meski PKG-nya kemudian ikut
+        // batch lain. `packaging.sterilization_id` TIDAK dipakai sebagai acuan: kolom
+        // itu hanya menyimpan batch TERAKHIR, sehingga label satu PKG yang dipecah ke
+        // beberapa batch akan hilang dari batch yang lebih lama (paket jadi tampak
+        // satuan & tak lagi ter-grouping).
+        $barcodeByStock = $batchItems
+            ->filter(fn ($i) => $i->instrument_stock_id !== null && $i->packaging_barcode !== null)
+            ->mapWithKeys(fn ($i) => [$i->instrument_stock_id => $i->packaging_barcode]);
+
+        // PKG asal batch ini: ditelusuri dari label di atas. Batch lama yang itemnya
+        // belum menyimpan `packaging_barcode` jatuh ke relasi `sterilization_id`.
+        $packagings = $this->batchPackagings($batch, $barcodeByStock->values());
 
         // Unit produksi dari PKG anggota (punya source/package_name) — untuk gambar &
         // memperkaya info tiap unit. Unit re-proses lepas tidak punya PKG.
-        $prodUnits = $batch->packagings
+        $prodUnits = $packagings
             ->flatMap(fn (Packaging $p) => $p->washing?->production?->items ?? collect())
             ->values();
         $prodByStock = $prodUnits->keyBy('instrument_stock_id');
 
-        // Nomor label (barcode_no) tiap unit, dibaca dari packaging_item PKG anggota
-        // — dipakai frontend untuk mengelompokkan baris per label fisik.
-        $barcodeByStock = $batch->packagings
-            ->flatMap(fn (Packaging $p) => $p->items->where('disabled', false))
-            ->filter(fn ($i) => $i->instrument_stock_id !== null)
-            ->mapWithKeys(fn ($i) => [$i->instrument_stock_id => $i->barcode_no]);
+        // Lengkapi label unit yang belum punya `packaging_barcode` (batch lama) dari
+        // packaging_item PKG anggota. `union` (bukan `merge`) supaya kunci
+        // instrument_stock_id yang berupa angka tidak dinomori ulang oleh array_merge.
+        $barcodeByStock = $barcodeByStock->union(
+            $packagings
+                ->flatMap(fn (Packaging $p) => $p->items->where('disabled', false))
+                ->filter(fn ($i) => $i->instrument_stock_id !== null && $i->barcode_no !== null)
+                ->mapWithKeys(fn ($i) => [$i->instrument_stock_id => $i->barcode_no])
+        );
 
         // Daftar unit = sterilization_items batch (sumber kebenaran: termasuk unit
         // re-proses lepas yang tidak berasal dari PKG). Item yang di-void (`disabled`,
         // yaitu unit gagal steril yang sudah dikembalikan ke tahap packaging) tidak
         // ikut ditampilkan — jejaknya ada di batch RPK penggantinya.
-        $units = $batch->items->where('disabled', false)->values()
+        $units = $batchItems->values()
             ->map(function ($item) use ($prodByStock, $barcodeByStock) {
                 $prod = $prodByStock->get($item->instrument_stock_id);
 
@@ -660,7 +678,7 @@ class SterilizationPipelineController extends Controller
             'id' => $batch->id,          // id STR → dipakai saat validasi
             'kind' => 'batch',
             'code' => $batch->code,      // STR-NNN
-            'code_transaction' => $batch->packagings->map(fn ($p) => $p->washing?->production?->code)->filter()->unique()->implode(', '),
+            'code_transaction' => $packagings->map(fn ($p) => $p->washing?->production?->code)->filter()->unique()->implode(', '),
             'status' => 'sterilisasi',
             'borrowed_by' => $names ?: 'Produksi CSSD',
             'image_url' => $this->batchImage($prodUnits),
@@ -689,6 +707,41 @@ class SterilizationPipelineController extends Controller
                 'validated_at' => $batch->completed_at,
             ],
         ];
+    }
+
+    /**
+     * PKG asal sebuah batch STR, ditelusuri dari NOMOR LABEL unitnya
+     * (`sterilization_items.packaging_barcode`) — bukan dari `packaging.sterilization_id`.
+     *
+     * `packaging.sterilization_id` hanya menyimpan SATU batch (yang terakhir), padahal
+     * label satu PKG bisa dipecah ke beberapa batch steril. Menelusuri lewat label
+     * membuat snapshot produksi (source/package_name/foto) tetap terbaca oleh batch
+     * yang lebih lama, sehingga baris paket tidak jatuh jadi "satuan".
+     *
+     * @param  Collection<int,string>  $barcodes
+     * @return Collection<int,Packaging>
+     */
+    private function batchPackagings(Sterilization $batch, Collection $barcodes): Collection
+    {
+        $barcodes = $barcodes->filter()->unique()->values();
+
+        if ($barcodes->isNotEmpty()) {
+            $ids = PackagingItem::whereIn('barcode_no', $barcodes->all())
+                ->pluck('packaging_id')
+                ->filter()
+                ->unique();
+
+            if ($ids->isNotEmpty()) {
+                return Packaging::with([...self::CHAIN, 'items'])
+                    ->whereIn('id', $ids->all())
+                    ->get();
+            }
+        }
+
+        // Batch lama: itemnya belum menyimpan `packaging_barcode`.
+        $batch->loadMissing(['packagings.washing.production.items.instrumentStock.instrument', 'packagings.items']);
+
+        return $batch->packagings;
     }
 
     /** Baris unit (production_item) untuk daftar. */
