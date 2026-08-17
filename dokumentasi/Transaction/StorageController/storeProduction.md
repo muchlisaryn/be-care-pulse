@@ -20,6 +20,14 @@ sumber `name`, `source` & `package_name`) sekaligus `instrument_stock_id` (unit
 fisik, diisi otomatis dari production_item). Unit yang belum punya baris
 `production_item` **ditolak 422**.
 
+Baris `production_item` asal unit ditelusuri lewat NOMOR LABEL kemasannya
+(`sterilization_items.packaging_barcode` → `packaging_item` → PKG → washing →
+produksi), **bukan** lewat `packaging.sterilization_id`: kolom itu hanya menyimpan
+batch TERAKHIR yang memuat PKG tersebut, padahal satu PKG bisa dipecah ke beberapa
+batch steril. Unit yang tetap tak terjangkau rantai itu (unit re-proses lepas tanpa
+PKG, atau rantai washing/produksinya terputus) jatuh ke `production_item` terakhir
+unit tsb — sumber yang sama dipakai jalur order di `store`.
+
 Unit tetap berstatus `tersedia` (invarian gudang) namun terkecuali dari pool
 produksi karena baris gudang berstatus `tersimpan`. Unit yang sudah tersimpan
 diabaikan (idempoten).
@@ -64,6 +72,11 @@ diabaikan (idempoten).
 #### Error (422) — bukan batch produksi steril
 ```json
 { "status": false, "message": "Batch ini bukan batch produksi yang steril / siap disimpan." }
+```
+
+#### Error (422) — unit tanpa baris batch produksi
+```json
+{ "status": false, "message": "Unit #132 belum punya baris batch produksi, tidak bisa disimpan ke gudang steril." }
 ```
 
 #### Error (500)

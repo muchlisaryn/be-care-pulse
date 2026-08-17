@@ -8,12 +8,15 @@ use App\Models\InstrumentStock;
 use App\Models\InstrumentStorage;
 use App\Models\Order;
 use App\Models\OrderEvent;
+use App\Models\Packaging;
+use App\Models\PackagingItem;
 use App\Models\PipelineEvent;
 use App\Models\ProductionItem;
 use App\Models\Sterilization;
 use App\Traits\CountsSterileItems;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -401,10 +404,10 @@ class StorageController extends Controller
 
         // Baris batch produksi tiap unit — jadi identitas baris gudang (nama, asal &
         // nama paket dibaca dari sini, tidak lagi disalin ke kolom gudang).
-        $sterilization->loadMissing('packagings.washing.production.items');
-        $originByStock = $sterilization->packagings
-            ->flatMap(fn ($p) => $p->washing?->production?->items ?? collect())
-            ->keyBy('instrument_stock_id');
+        $originByStock = $this->productionOriginMap(
+            $sterilization,
+            $this->batchPackagings($sterilization)
+        );
 
         // Unit yang sudah pernah disimpan (hindari duplikat). Termasuk baris `keluar`:
         // unit yang sudah didistribusikan tidak boleh dibuatkan baris gudang baru.
@@ -432,7 +435,7 @@ class StorageController extends Controller
                         continue;
                     }
 
-                    $origin = $originByStock->get($stockId);
+                    $origin = $originByStock[$stockId] ?? null;
                     if (! $origin) {
                         throw new \RuntimeException(
                             "Unit #{$stockId} belum punya baris batch produksi, tidak bisa disimpan ke gudang steril."
@@ -487,10 +490,7 @@ class StorageController extends Controller
     /** Ringkasan batch produksi siap-simpan (bentuk sama dgn incomingPayload order). */
     private function productionIncomingPayload(Sterilization $batch): array
     {
-        $batch->loadMissing([
-            'items.instrumentStock.instrument',
-            'packagings.washing.production.items',
-        ]);
+        $batch->loadMissing(['items.instrumentStock.instrument']);
 
         // Satu batch steril bisa memuat unit dari BEBERAPA batch produksi sekaligus —
         // tiap bungkus punya jalur produksi/pencucian/pengemasannya sendiri dan baru
@@ -500,12 +500,12 @@ class StorageController extends Controller
         // Dulu hanya packaging PERTAMA yang dibaca, sehingga unit dari produksi lain
         // tidak ketemu asalnya lalu jatuh ke nilai bawaan `satuan` tanpa nama paket:
         // satu SET utuh tampil sebagai instrumen satuan lepas di daftar "Perlu Disimpan".
-        $productions = $batch->packagings->map(fn ($p) => $p->washing?->production)->filter();
-        $production = $productions->first();
+        $packagings = $this->batchPackagings($batch);
+        $production = $packagings->map(fn ($p) => $p->washing?->production)->filter()->first();
 
         // Asal unit (satuan/paket) diambil dari production_item (via stock id).
-        $originItems = $productions->flatMap(fn ($p) => $p->items ?? collect());
-        $originByStock = $originItems->keyBy('instrument_stock_id');
+        $originByStock = $this->productionOriginMap($batch, $packagings);
+        $originItems = collect($originByStock);
 
         // Baris gudang unit batch ini, TERMASUK yang berstatus `keluar` (sudah diambil /
         // didistribusikan). Unit yang pernah masuk gudang tidak boleh muncul lagi sebagai
@@ -526,7 +526,7 @@ class StorageController extends Controller
             ->filter(fn ($it) => $it->result !== Sterilization::RESULT_GAGAL)
             ->map(function ($it) use ($stored, $originByStock, $packageImages) {
                 $row = $stored->get($it->instrument_stock_id);
-                $origin = $originByStock->get($it->instrument_stock_id);
+                $origin = $originByStock[(int) $it->instrument_stock_id] ?? null;
                 $stock = $it->instrumentStock;
 
                 // Nama, kode & foto unit diambil dari production_item (snapshot batch);
@@ -568,6 +568,85 @@ class StorageController extends Controller
             'stored_count' => $unitRows->where('stored', true)->count(),
             'units' => $unitRows,
         ];
+    }
+
+    /**
+     * PKG asal sebuah batch STR, ditelusuri dari NOMOR LABEL unitnya
+     * (`sterilization_items.packaging_barcode`) — **bukan** dari relasi
+     * `packaging.sterilization_id`.
+     *
+     * Satuan pemilihan di tahap sterilisasi adalah LABEL, bukan PKG, jadi satu PKG
+     * bisa dipecah ke beberapa batch steril. Kolom `packaging.sterilization_id`
+     * hanya menyimpan SATU batch — yang TERAKHIR menimpanya — sehingga batch yang
+     * lebih lama mendapati `packagings`-nya kosong, seluruh unitnya kehilangan asal
+     * produksi, dan penyimpanan ke gudang gagal dengan "belum punya baris batch
+     * produksi" padahal batch produksinya ada.
+     *
+     * Cara telusur yang sama dipakai SterilizationPipelineController::batchPackagings();
+     * jangan kembalikan salah satunya ke `packaging.sterilization_id`.
+     *
+     * @return Collection<int,Packaging>
+     */
+    private function batchPackagings(Sterilization $batch): Collection
+    {
+        $batch->loadMissing('items');
+
+        $barcodes = $batch->items->pluck('packaging_barcode')->filter()->unique();
+
+        if ($barcodes->isNotEmpty()) {
+            $ids = PackagingItem::whereIn('barcode_no', $barcodes->all())
+                ->pluck('packaging_id')
+                ->filter()
+                ->unique();
+
+            if ($ids->isNotEmpty()) {
+                return Packaging::with('washing.production.items')
+                    ->whereIn('id', $ids->all())
+                    ->get();
+            }
+        }
+
+        // Batch lama: itemnya belum menyimpan `packaging_barcode`.
+        $batch->loadMissing('packagings.washing.production.items');
+
+        return $batch->packagings;
+    }
+
+    /**
+     * Baris `production_item` asal tiap unit sebuah batch STR, dikunci per
+     * instrument_stock_id — identitas baris gudang (nama, kode, asal & nama paket
+     * dibaca dari sini).
+     *
+     * Sumber utamanya rantai PKG → washing → produksi milik batch ini, supaya yang
+     * terbaca adalah SNAPSHOT batch produksi yang benar-benar dilewati unitnya.
+     * Unit yang tak terjangkau rantai itu — unit re-proses lepas yang masuk batch
+     * tanpa PKG, atau rantai washing/produksinya terputus — jatuh ke
+     * `production_item` TERAKHIR unit tersebut, sumber yang sama persis dipakai
+     * jalur order di store(). Tanpa cadangan ini satu unit yang tak terpetakan
+     * menggagalkan penyimpanan SELURUH batch.
+     *
+     * @param  Collection<int,Packaging>  $packagings
+     * @return array<int,ProductionItem>
+     */
+    private function productionOriginMap(Sterilization $batch, Collection $packagings): array
+    {
+        $origin = [];
+        foreach ($packagings as $pkg) {
+            foreach ($pkg->washing?->production?->items ?? [] as $item) {
+                $origin[(int) $item->instrument_stock_id] = $item;
+            }
+        }
+
+        $batch->loadMissing('items');
+        $missing = $batch->items
+            ->pluck('instrument_stock_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->reject(fn ($id) => isset($origin[$id]))
+            ->all();
+
+        return $missing ? $origin + $this->productionItemMap($missing) : $origin;
     }
 
     /**
