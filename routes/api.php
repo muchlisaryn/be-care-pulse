@@ -22,6 +22,15 @@ use App\Http\Controllers\Master\SterilizerMachineController;
 use App\Http\Controllers\Master\TitleMenuController;
 use App\Http\Controllers\Master\UserController;
 use App\Http\Controllers\Master\WasherMachineController;
+use App\Http\Controllers\Nafsul\AnggotaController;
+use App\Http\Controllers\Nafsul\KetuaKelompokController;
+use App\Http\Controllers\Nafsul\KotaController;
+use App\Http\Controllers\Nafsul\PekerjaanController;
+use App\Http\Controllers\Nafsul\PendidikanController;
+use App\Http\Controllers\Nafsul\StatusAnggotaController;
+use App\Http\Controllers\Nafsul\StatusNikahController;
+use App\Http\Controllers\Nafsul\TarifController;
+use App\Http\Controllers\Nafsul\WilayahController;
 use App\Http\Controllers\Transaction\CleaningController;
 use App\Http\Controllers\Transaction\DistributionController;
 use App\Http\Controllers\Transaction\MonitoringController;
@@ -299,5 +308,46 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::apiResource('asesmen', AsesmenClinicalPathwayController::class)
             ->parameters(['asesmen' => 'asesmen']);
+    });
+
+    // Nafsul Muthmainah — master keanggotaan.
+    //
+    // Di-prefix `nafsul` agar tidak bentrok dengan route CSSD; login memakai
+    // token Sanctum yang sama (satu sesi untuk seluruh aplikasi), sehingga
+    // AuthController & UserController milik modul Nafsul lama tidak diikutkan.
+    //
+    // Sebatas master: transaksi, pelayanan jenazah, dashboard, dan laporan
+    // belum ada di repo ini (tabelnya pun tidak dibuat, lihat migrasi
+    // create_nafsul_tables) — daftarkan lagi saat modulnya menyusul.
+    //
+    // Seluruh `->parameters()` di bawah WAJIB ditulis eksplisit: Laravel
+    // mensingularkan nama resource Inggris (mis. `kota` → `kotum`), sedangkan
+    // controller mem-binding `Kota $kota`.
+    Route::prefix('nafsul')->group(function () {
+        // `anggota/import` didaftarkan sebelum apiResource agar tidak tertangkap
+        // sebagai `anggota/{anggota}`.
+        Route::post('anggota/import', [AnggotaController::class, 'import']);
+        Route::get('anggota/statistik', [AnggotaController::class, 'statistik']);
+        Route::apiResource('anggota', AnggotaController::class)
+            ->parameters(['anggota' => 'member']);
+
+        // Master Nafsul
+        Route::post('ketua-kelompok/import', [KetuaKelompokController::class, 'import']);
+        Route::apiResource('ketua-kelompok', KetuaKelompokController::class)
+            ->parameters(['ketua-kelompok' => 'groupLeader']);
+        Route::apiResource('wilayah', WilayahController::class)
+            ->parameters(['wilayah' => 'region']);
+        Route::apiResource('kota', KotaController::class)
+            ->parameters(['kota' => 'city']);
+        Route::apiResource('tarif', TarifController::class)
+            ->parameters(['tarif' => 'rate']);
+        Route::apiResource('status-anggota', StatusAnggotaController::class)
+            ->parameters(['status-anggota' => 'memberStatus']);
+        Route::apiResource('pendidikan', PendidikanController::class)
+            ->parameters(['pendidikan' => 'education']);
+        Route::apiResource('pekerjaan', PekerjaanController::class)
+            ->parameters(['pekerjaan' => 'occupation']);
+        Route::apiResource('status-nikah', StatusNikahController::class)
+            ->parameters(['status-nikah' => 'maritalStatus']);
     });
 });

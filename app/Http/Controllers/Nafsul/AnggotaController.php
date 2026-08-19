@@ -1,0 +1,499 @@
+<?php
+
+namespace App\Http\Controllers\Nafsul;
+
+use App\Http\Controllers\Controller;
+use App\Models\City;
+use App\Models\Education;
+use App\Models\GroupLeader;
+use App\Models\Member;
+use App\Models\MemberFamily;
+use App\Models\MemberStatus;
+use App\Models\Occupation;
+use App\Models\Region;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
+
+/**
+ * Anggota Nafsul Muthmainah.
+ *
+ * Tabel & kolom database berbahasa Inggris (`members`, `region_id`, …),
+ * sedangkan kontrak API tetap memakai nama lama (`nama`, `kode_wilayah`,
+ * `noketua`, …). Penerjemahan dua arah ditangani model Member lewat trait
+ * HasLegacyAttributes — di dalam controller, kolom selalu ditulis dengan nama
+ * barunya.
+ */
+class AnggotaController extends Controller
+{
+    private const RELATIONS = [
+        'region', 'groupLeader', 'birthCity', 'memberStatus', 'education', 'occupation', 'families',
+    ];
+
+    public function index(Request $request)
+    {
+        $query = Member::query()
+            ->with(['region', 'groupLeader', 'birthCity', 'memberStatus', 'education', 'occupation']);
+
+        if ($search = $request->query('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                    ->orWhere('member_number', 'like', "%{$search}%")
+                    ->orWhere('id_card_number', 'like', "%{$search}%")
+                    ->orWhere('family_card_number', 'like', "%{$search}%");
+            });
+        }
+
+        // Parameter filter tetap dikirim frontend sebagai kode master, jadi
+        // pencocokannya lewat relasi, bukan langsung ke kolom id.
+        if ($status = $request->query('kode_status')) {
+            $query->whereHas('memberStatus', fn ($q) => $q->where('code', $status));
+        }
+
+        if ($wilayah = $request->query('kode_wilayah')) {
+            $query->whereHas('region', fn ($q) => $q->where('code', $wilayah));
+        }
+
+        if ($ketua = $request->query('noketua')) {
+            $query->whereHas('groupLeader', fn ($q) => $q->where('code', $ketua));
+        }
+
+        $tipe = $request->query('tipe');
+        if (in_array($tipe, ['pribadi', 'kelompok'], true)) {
+            $this->filterTipe($query, $tipe);
+        }
+
+        // Filter bulan/tahun: masing-masing berdiri sendiri — tahun saja = setahun penuh,
+        // bulan saja = bulan itu di semua tahun.
+        if ($bulan = $request->integer('aktif_bulan')) {
+            $query->whereMonth('active_date', $bulan);
+        }
+        if ($tahun = $request->integer('aktif_tahun')) {
+            $query->whereYear('active_date', $tahun);
+        }
+
+        // Nama sort tetap memakai istilah API, lalu dipetakan ke kolom database.
+        $sort = $request->query('sort', 'nama');
+        $dir = $request->query('dir', 'asc') === 'desc' ? 'desc' : 'asc';
+        $allowedSorts = ['nama', 'no_anggota', 'tgl_aktif', 'created_at'];
+        if (! in_array($sort, $allowedSorts, true)) {
+            $sort = 'nama';
+        }
+        $query->orderBy(Member::kolomBaru($sort), $dir);
+
+        return response()->json($query->paginate($request->integer('per_page', 25)));
+    }
+
+    /**
+     * Jumlah anggota per tipe, dihitung dengan COUNT di database — bukan dengan
+     * menarik seluruh baris lalu menghitungnya di aplikasi.
+     */
+    public function statistik()
+    {
+        $pribadi = $this->filterTipe(Member::query(), 'pribadi')->count();
+        $kelompok = $this->filterTipe(Member::query(), 'kelompok')->count();
+
+        return response()->json([
+            'pribadi' => $pribadi,
+            'kelompok' => $kelompok,
+            'total' => $pribadi + $kelompok,
+        ]);
+    }
+
+    /**
+     * Saring anggota menurut tipe — dipakai bersama oleh daftar & statistik
+     * supaya definisinya tidak pernah berbeda di antara keduanya.
+     *
+     * Tipe ditentukan ketuanya: anggota perorangan ditampung ketua bernama
+     * "Pribadi", selain itu terhitung kelompok. Namanya dicocokkan **persis** —
+     * master ketua juga memuat nama orang yang kebetulan memuat kata itu
+     * (mis. "Filosa Idham Pribadi").
+     *
+     * Anggota lama yang belum punya ketua sama sekali ikut dihitung pribadi
+     * supaya tetap terjangkau filter maupun statistik.
+     */
+    private function filterTipe(Builder $query, string $tipe): Builder
+    {
+        if ($tipe === 'kelompok') {
+            return $query->whereHas('groupLeader', fn ($q) => $q->where('name', '!=', GroupLeader::NAMA_PRIBADI));
+        }
+
+        return $query->where(fn ($q) => $q
+            ->whereDoesntHave('groupLeader')
+            ->orWhereHas('groupLeader', fn ($k) => $k->where('name', GroupLeader::NAMA_PRIBADI)));
+    }
+
+    public function store(Request $request)
+    {
+        $data = $this->validateData($request);
+        $keluarga = $data['keluarga'] ?? null;
+        unset($data['keluarga']);
+
+        if (empty($data['no_anggota'])) {
+            $data['no_anggota'] = $this->generateNoAnggota($data['tgl_aktif'] ?? null);
+        }
+
+        $member = DB::transaction(function () use ($data, $keluarga) {
+            $member = Member::create(Member::fromLegacy($data));
+            if ($keluarga !== null) {
+                $member->families()->createMany(
+                    $this->numberKeluarga($member->member_number, $keluarga)
+                );
+            }
+
+            return $member;
+        });
+
+        return response()->json($member->load(self::RELATIONS), 201);
+    }
+
+    public function show(Member $member)
+    {
+        return response()->json($member->load(self::RELATIONS));
+    }
+
+    public function update(Request $request, Member $member)
+    {
+        $data = $this->validateData($request);
+        $keluarga = $data['keluarga'] ?? null;
+        unset($data['keluarga']);
+
+        DB::transaction(function () use ($member, $data, $keluarga) {
+            $member->update(Member::fromLegacy($data));
+            if ($keluarga !== null) {
+                $member->families()->delete();
+                $member->families()->createMany(
+                    $this->numberKeluarga($member->member_number, $keluarga)
+                );
+            }
+        });
+
+        return response()->json($member->load(self::RELATIONS));
+    }
+
+    public function destroy(Member $member)
+    {
+        $member->delete();
+
+        return response()->json(['message' => 'Anggota dihapus.']);
+    }
+
+    /**
+     * Impor anggota dari Excel, dikirim per batch oleh frontend.
+     *
+     * Frontend membaca file Excel-nya sendiri lalu mengirim maksimal 10 baris
+     * per permintaan supaya progres "x dari y" bisa ditampilkan dan file besar
+     * tidak diproses sekaligus.
+     *
+     * Tiap baris divalidasi & disimpan sendiri-sendiri: satu baris gagal tidak
+     * membatalkan baris lain dalam batch yang sama, dan hasilnya dikembalikan
+     * per baris agar bisa ditampilkan sebagai daftar kesalahan.
+     */
+    public function import(Request $request)
+    {
+        $payload = $request->validate([
+            'rows' => ['required', 'array', 'min:1', 'max:50'],
+            'rows.*' => ['array'],
+        ]);
+
+        $maps = $this->masterMaps();
+        $hasil = [];
+        $berhasil = 0;
+
+        foreach ($payload['rows'] as $i => $row) {
+            // `baris` = nomor baris di file Excel, dikirim FE supaya pesan
+            // kesalahan menunjuk ke baris yang benar di file aslinya.
+            $baris = (int) ($row['baris'] ?? $i + 1);
+            $nama = trim((string) ($row['nama'] ?? ''));
+
+            try {
+                $member = $this->importRow($row, $maps);
+                $berhasil++;
+                $hasil[] = [
+                    'baris' => $baris,
+                    'status' => 'ok',
+                    'id' => $member->id,
+                    'nama' => $member->name,
+                    'no_anggota' => $member->member_number,
+                ];
+            } catch (ValidationException $e) {
+                $hasil[] = [
+                    'baris' => $baris,
+                    'status' => 'gagal',
+                    'nama' => $nama,
+                    'pesan' => collect($e->errors())->flatten()->first() ?? $e->getMessage(),
+                ];
+            } catch (\Throwable $e) {
+                $hasil[] = [
+                    'baris' => $baris,
+                    'status' => 'gagal',
+                    'nama' => $nama,
+                    'pesan' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return response()->json([
+            'berhasil' => $berhasil,
+            'gagal' => count($hasil) - $berhasil,
+            'hasil' => $hasil,
+        ]);
+    }
+
+    /** Simpan satu baris impor. Melempar ValidationException bila baris tidak valid. */
+    private function importRow(array $row, array $maps): Member
+    {
+        // Kolom ID di template hanya rujukan ke data yang sudah ada. Impor tidak
+        // memperbarui anggota lama, jadi baris ber-ID ditolak daripada diam-diam
+        // membuat duplikat.
+        if (isset($row['id']) && trim((string) $row['id']) !== '') {
+            throw ValidationException::withMessages([
+                'id' => 'Kolom ID hanya rujukan data yang sudah ada — kosongkan untuk impor anggota baru.',
+            ]);
+        }
+
+        $data = $this->normalizeImportRow($row, $maps);
+
+        $validator = Validator::make(
+            $data,
+            $this->importRules(),
+            [
+                'required' => ':attribute wajib diisi.',
+                'exists' => ':attribute ":input" tidak ada di master.',
+                'in' => 'Isi :attribute ":input" tidak dikenali.',
+                'date' => ':attribute ":input" bukan tanggal yang sah.',
+                'max' => ':attribute terlalu panjang (maks :max karakter).',
+                'string' => ':attribute harus berupa teks.',
+                // Kolom ber-id: nilai yang bukan angka berarti namanya tidak
+                // ketemu di master saat baris dinormalkan.
+                'integer' => 'Isi :attribute ":input" tidak dikenali.',
+            ],
+            [
+                'nama' => 'Nama Lengkap',
+                'no_anggota' => 'No. Anggota',
+                'kode_wilayah' => 'Wilayah',
+                'noketua' => 'Ketua Kelompok',
+                'kode_kota_lahir' => 'Kota Lahir',
+                'kode_status' => 'Status Anggota',
+                'pendidikan_id' => 'Pendidikan',
+                'pekerjaan_id' => 'Pekerjaan',
+                'nokk' => 'No. KK',
+                'noktp' => 'No. KTP',
+                'tgl_lahir' => 'Tanggal Lahir',
+                'jenis_kelamin' => 'Jenis Kelamin',
+                'status_nikah' => 'Status Nikah',
+                'tgl_aktif' => 'Tanggal Aktif',
+                'tgl_nonaktif' => 'Tanggal Nonaktif',
+                'nama_keluarga' => 'Nama Keluarga',
+                'telepon_keluarga' => 'Telepon Keluarga',
+                'alamat_keluarga' => 'Alamat Keluarga',
+            ]
+        );
+        $validator->stopOnFirstFailure();
+
+        $data = $validator->validate();
+
+        // Nomor anggota diambil dari file Excel bila diisi; bila kosong dibuat
+        // otomatis mengikuti nomor terakhir, sama seperti pendaftaran manual.
+        if (empty($data['no_anggota'])) {
+            $data['no_anggota'] = $this->generateNoAnggota($data['tgl_aktif'] ?? null);
+        } elseif (Member::withTrashed()->where('member_number', $data['no_anggota'])->exists()) {
+            throw ValidationException::withMessages([
+                'no_anggota' => "No. Anggota {$data['no_anggota']} sudah dipakai anggota lain.",
+            ]);
+        }
+
+        return Member::create(Member::fromLegacy($data));
+    }
+
+    /**
+     * Samakan bentuk data baris Excel dengan kolom tabel anggota.
+     *
+     * Kolom master boleh diisi kuncinya ATAU namanya — kode untuk wilayah, kota,
+     * status, dan ketua; id untuk pendidikan & pekerjaan. Nama dicocokkan tanpa
+     * memperhatikan huruf besar/kecil. Nilai yang tidak dikenali dibiarkan apa
+     * adanya supaya ditolak validasi dengan pesan yang menunjuk kolomnya.
+     */
+    private function normalizeImportRow(array $row, array $maps): array
+    {
+        $data = [];
+
+        foreach (array_keys($this->importRules()) as $field) {
+            $value = $row[$field] ?? null;
+            $value = is_string($value) ? trim($value) : $value;
+            $data[$field] = ($value === '' || $value === null) ? null : $value;
+        }
+
+        // "Laki-laki" / "Perempuan" / "L" / "P" → satu huruf. Nilai lain
+        // dibiarkan agar ditolak aturan `in:L,P`.
+        if ($data['jenis_kelamin'] !== null) {
+            $data['jenis_kelamin'] = mb_strtoupper(mb_substr((string) $data['jenis_kelamin'], 0, 1));
+        }
+
+        foreach ($maps as $field => $map) {
+            if ($data[$field] === null) {
+                continue;
+            }
+            $value = (string) $data[$field];
+            if (! in_array($value, $map['kode'], true)) {
+                $data[$field] = $map['nama'][mb_strtolower($value)] ?? $value;
+            }
+        }
+
+        // Default disamakan dengan form pendaftaran manual: aktif sejak hari
+        // impor dan berstatus aktif, supaya anggota langsung terhitung di Laporan.
+        $data['tgl_aktif'] ??= now()->toDateString();
+        if ($data['kode_status'] === null && in_array('STS1', $maps['kode_status']['kode'], true)) {
+            $data['kode_status'] = 'STS1';
+        }
+
+        return $data;
+    }
+
+    /**
+     * Aturan validasi impor — sama dengan store, tanpa data keluarga.
+     *
+     * Kuncinya memakai nama field API; nilai kolom master berupa kunci masternya,
+     * jadi `exists` diarahkan ke kolom `code` (atau `id`) tabel masternya.
+     */
+    private function importRules(): array
+    {
+        return [
+            'nama' => ['required', 'string', 'max:255'],
+            'no_anggota' => ['nullable', 'string', 'max:50'],
+            'kode_wilayah' => ['nullable', 'string', 'exists:regions,code'],
+            'noketua' => ['nullable', 'string', 'exists:group_leaders,code'],
+            'kode_kota_lahir' => ['nullable', 'string', 'exists:cities,code'],
+            'kode_status' => ['nullable', 'string', 'exists:member_statuses,code'],
+            'nokk' => ['nullable', 'string', 'max:50'],
+            'noktp' => ['nullable', 'string', 'max:50'],
+            'tgl_lahir' => ['nullable', 'date'],
+            'jenis_kelamin' => ['nullable', 'in:L,P'],
+            'pendidikan_id' => ['nullable', 'integer', 'exists:educations,id'],
+            'pekerjaan_id' => ['nullable', 'integer', 'exists:occupations,id'],
+            'status_nikah' => ['nullable', 'string', 'max:50'],
+            'alamat' => ['nullable', 'string'],
+            'telepon' => ['nullable', 'string', 'max:50'],
+            'tgl_aktif' => ['nullable', 'date'],
+            'tgl_nonaktif' => ['nullable', 'date'],
+            'keterangan' => ['nullable', 'string', 'max:255'],
+            'nama_keluarga' => ['nullable', 'string', 'max:255'],
+            'hubungan' => ['nullable', 'string', 'max:100'],
+            'alamat_keluarga' => ['nullable', 'string'],
+            'telepon_keluarga' => ['nullable', 'string', 'max:50'],
+        ];
+    }
+
+    /**
+     * Daftar kunci & peta nama→kunci tiap master, dibangun sekali per permintaan.
+     *
+     * Kuncinya tidak seragam: wilayah, kota, status, dan ketua dirujuk lewat
+     * `code`, sedangkan pendidikan & pekerjaan lewat `id` karena masternya
+     * memang tidak punya kolom kode.
+     */
+    private function masterMaps(): array
+    {
+        $build = function ($rows, string $kunci = 'code') {
+            return [
+                'kode' => $rows->pluck($kunci)->map(fn ($k) => (string) $k)->all(),
+                'nama' => $rows
+                    ->mapWithKeys(fn ($r) => [mb_strtolower((string) $r->name) => (string) $r->{$kunci}])
+                    ->all(),
+            ];
+        };
+
+        return [
+            'kode_wilayah' => $build(Region::all(['code', 'name'])),
+            'kode_kota_lahir' => $build(City::all(['code', 'name'])),
+            'kode_status' => $build(MemberStatus::all(['code', 'name'])),
+            'noketua' => $build(GroupLeader::all(['code', 'name'])),
+            'pendidikan_id' => $build(Education::all(['id', 'name']), 'id'),
+            'pekerjaan_id' => $build(Occupation::all(['id', 'name']), 'id'),
+        ];
+    }
+
+    /**
+     * Nomor anggota = 2 digit tahun + 2 digit bulan (dari tgl_aktif / sekarang)
+     * + 3 digit urut yang dihitung ulang tiap bulan.
+     * Contoh: Agustus 2026 anggota ke-1 → "2608001".
+     */
+    private function generateNoAnggota(?string $tglAktif): string
+    {
+        $prefix = ($tglAktif ? Carbon::parse($tglAktif) : now())->format('ym');
+
+        // Nomor terbesar di bulan yang sama. `withTrashed()` agar nomor yang
+        // sudah dipakai record terhapus tidak dipakai ulang anggota baru.
+        //
+        // Urut per panjang dulu, baru per nilai: kalau satu bulan pernah tembus
+        // 999 anggota, "26081000" harus dianggap lebih besar dari "2608999" —
+        // perbandingan teks saja akan membalik keduanya.
+        $max = Member::withTrashed()
+            ->where('member_number', 'like', $prefix.'%')
+            ->orderByRaw('LENGTH(member_number) DESC')
+            ->orderBy('member_number', 'desc')
+            ->value('member_number');
+
+        $seq = $max ? ((int) substr($max, 4)) + 1 : 1;
+
+        return $prefix.str_pad((string) $seq, 3, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Beri no_anggota otomatis ke tiap anggota keluarga, mengikuti nomor
+     * anggota utama + urutan. Contoh utama "2608001" → "2608001-01", "2608001-02".
+     *
+     * Baris dikirim dengan nama field API, jadi diterjemahkan ke kolom database
+     * sebelum disimpan.
+     */
+    private function numberKeluarga(?string $baseNo, array $keluarga): array
+    {
+        return array_map(function ($row, $i) use ($baseNo) {
+            $row['no_anggota'] = $baseNo
+                ? $baseNo.'-'.str_pad((string) ($i + 1), 2, '0', STR_PAD_LEFT)
+                : null;
+
+            return MemberFamily::fromLegacy($row);
+        }, $keluarga, array_keys($keluarga));
+    }
+
+    private function validateData(Request $request): array
+    {
+        return $request->validate([
+            'kode_wilayah' => ['nullable', 'string', 'exists:regions,code'],
+            'noketua' => ['nullable', 'string', 'exists:group_leaders,code'],
+            'nokk' => ['nullable', 'string', 'max:50'],
+            'no_anggota' => ['nullable', 'string', 'max:50'],
+            'nama' => ['required', 'string', 'max:255'],
+            'tgl_lahir' => ['nullable', 'date'],
+            'kode_kota_lahir' => ['nullable', 'string', 'exists:cities,code'],
+            'jenis_kelamin' => ['nullable', 'in:L,P'],
+            'pendidikan_id' => ['nullable', 'integer', 'exists:educations,id'],
+            'pekerjaan_id' => ['nullable', 'integer', 'exists:occupations,id'],
+            'status_nikah' => ['nullable', 'string', 'max:50'],
+            'noktp' => ['nullable', 'string', 'max:50'],
+            'alamat' => ['nullable', 'string'],
+            'telepon' => ['nullable', 'string', 'max:50'],
+            'tgl_aktif' => ['nullable', 'date'],
+            'tgl_nonaktif' => ['nullable', 'date'],
+            'kode_status' => ['nullable', 'string', 'exists:member_statuses,code'],
+            'keterangan' => ['nullable', 'string', 'max:255'],
+            'nama_keluarga' => ['nullable', 'string', 'max:255'],
+            'hubungan' => ['nullable', 'string', 'max:100'],
+            'alamat_keluarga' => ['nullable', 'string'],
+            'telepon_keluarga' => ['nullable', 'string', 'max:50'],
+            'kode_pengguna' => ['nullable', 'string', 'max:50'],
+            'kunjungan' => ['nullable', 'string', 'max:50'],
+            'tgl_update' => ['nullable', 'date'],
+            'keluarga' => ['nullable', 'array'],
+            'keluarga.*.nama_ketua' => ['nullable', 'string', 'max:255'],
+            'keluarga.*.no_anggota' => ['nullable', 'string', 'max:50'],
+            'keluarga.*.nama_anggota' => ['required', 'string', 'max:255'],
+            'keluarga.*.tgl_lahir' => ['nullable', 'date'],
+            'keluarga.*.jenis_kelamin' => ['nullable', 'in:L,P'],
+            'keluarga.*.pendidikan' => ['nullable', 'string', 'max:100'],
+        ]);
+    }
+}

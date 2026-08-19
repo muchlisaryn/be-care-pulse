@@ -17,6 +17,9 @@ class DatabaseSeeder extends Seeder
         $this->call([
             TitleMenuSeeder::class,
             MenuSeeder::class,
+            // Menu Nafsul harus dibuat SEBELUM AuthoritySeeder agar authority
+            // "Administrator" (yang meng-attach seluruh menu) ikut mendapatkannya.
+            NafsulMenuSeeder::class,
             AuthoritySeeder::class,
             // Menu tambahan pasca-rilis (idempotent) — aman untuk DB lama & baru.
             RakMenuSeeder::class,
@@ -35,6 +38,10 @@ class DatabaseSeeder extends Seeder
             WasherMachineSeeder::class,
             SterilizerMachineSeeder::class,
             CategoriClinicalPathwaySeeder::class,
+            // Master data Nafsul (dipakai form anggota) — semuanya firstOrCreate.
+            PendidikanSeeder::class,
+            PekerjaanSeeder::class,
+            StatusNikahSeeder::class,
         ]);
     }
 }
