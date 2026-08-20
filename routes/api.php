@@ -337,6 +337,9 @@ Route::middleware('auth:sanctum')->group(function () {
             ->parameters(['ketua-kelompok' => 'groupLeader']);
         Route::apiResource('wilayah', WilayahController::class)
             ->parameters(['wilayah' => 'region']);
+        // `kota/import` didaftarkan sebelum apiResource agar tidak tertangkap
+        // sebagai `kota/{city}`.
+        Route::post('kota/import', [KotaController::class, 'import']);
         Route::apiResource('kota', KotaController::class)
             ->parameters(['kota' => 'city']);
         Route::apiResource('tarif', TarifController::class)
