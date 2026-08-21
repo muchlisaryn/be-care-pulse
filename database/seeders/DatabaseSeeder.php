@@ -38,10 +38,25 @@ class DatabaseSeeder extends Seeder
             WasherMachineSeeder::class,
             SterilizerMachineSeeder::class,
             CategoriClinicalPathwaySeeder::class,
-            // Master data Nafsul (dipakai form anggota) — semuanya firstOrCreate.
+            // Master data Nafsul (dipakai form anggota & transaksi) —
+            // semuanya firstOrCreate, jadi aman dijalankan berulang dan tidak
+            // menimpa data yang sudah disunting petugas.
             PendidikanSeeder::class,
             PekerjaanSeeder::class,
             StatusNikahSeeder::class,
+            WilayahSeeder::class,
+            KotaSeeder::class,
+            // StatusAnggotaSeeder membuat STS1 "Aktif" — status bawaan form
+            // pendaftaran anggota. Tanpa itu setiap pendaftaran gagal validasi.
+            StatusAnggotaSeeder::class,
+            // KetuaKelompokSeeder membuat baris "Pribadi" yang menampung
+            // anggota perorangan; dipakai pemisahan pribadi/kelompok.
+            KetuaKelompokSeeder::class,
+            TarifSeeder::class,
+            // Anggota CONTOH — bukan master. Dijalankan paling akhir karena
+            // merujuk seluruh master di atas. Hapus lewat halaman Data Anggota
+            // begitu data yang sebenarnya masuk.
+            AnggotaSeeder::class,
         ]);
     }
 }

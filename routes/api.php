@@ -29,6 +29,8 @@ use App\Http\Controllers\Nafsul\PekerjaanController;
 use App\Http\Controllers\Nafsul\PendidikanController;
 use App\Http\Controllers\Nafsul\StatusAnggotaController;
 use App\Http\Controllers\Nafsul\StatusNikahController;
+use App\Http\Controllers\Nafsul\TransaksiController;
+use App\Http\Controllers\Nafsul\TransaksiHeaderController;
 use App\Http\Controllers\Nafsul\TarifController;
 use App\Http\Controllers\Nafsul\WilayahController;
 use App\Http\Controllers\Transaction\CleaningController;
@@ -335,6 +337,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('ketua-kelompok/import', [KetuaKelompokController::class, 'import']);
         Route::apiResource('ketua-kelompok', KetuaKelompokController::class)
             ->parameters(['ketua-kelompok' => 'groupLeader']);
+        // `*/import` selalu didaftarkan sebelum apiResource-nya, kalau tidak
+        // tertangkap sebagai parameter show (mis. `wilayah/{region}`).
+        Route::post('wilayah/import', [WilayahController::class, 'import']);
         Route::apiResource('wilayah', WilayahController::class)
             ->parameters(['wilayah' => 'region']);
         // `kota/import` didaftarkan sebelum apiResource agar tidak tertangkap
@@ -346,11 +351,29 @@ Route::middleware('auth:sanctum')->group(function () {
             ->parameters(['tarif' => 'rate']);
         Route::apiResource('status-anggota', StatusAnggotaController::class)
             ->parameters(['status-anggota' => 'memberStatus']);
+        Route::post('pendidikan/import', [PendidikanController::class, 'import']);
         Route::apiResource('pendidikan', PendidikanController::class)
             ->parameters(['pendidikan' => 'education']);
+        Route::post('pekerjaan/import', [PekerjaanController::class, 'import']);
         Route::apiResource('pekerjaan', PekerjaanController::class)
             ->parameters(['pekerjaan' => 'occupation']);
         Route::apiResource('status-nikah', StatusNikahController::class)
             ->parameters(['status-nikah' => 'maritalStatus']);
+
+        // Transaksi iuran anggota. `->parameters()` ditulis eksplisit: tanpa
+        // itu Laravel mensingularkan `transaksi` jadi `transaksus`, sedangkan
+        // controller mem-binding `Transaction $transaksi`.
+        // Header didaftarkan lebih dulu: `transaksi/header` harus dikenali
+        // sebagai rute tersendiri, bukan tertangkap `transaksi/{transaksi}`.
+        Route::apiResource('transaksi/header', TransaksiHeaderController::class)
+            ->parameters(['header' => 'transaksiHeader'])
+            ->names('transaksi-header');
+
+        // Sama seperti `transaksi/header`: harus sebelum apiResource, kalau
+        // tidak tertangkap sebagai `transaksi/{transaksi}`.
+        Route::get('transaksi/rencana', [TransaksiController::class, 'rencana']);
+
+        Route::apiResource('transaksi', TransaksiController::class)
+            ->parameters(['transaksi' => 'transaksi']);
     });
 });
