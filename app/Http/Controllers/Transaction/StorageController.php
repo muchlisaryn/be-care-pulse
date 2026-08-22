@@ -14,6 +14,7 @@ use App\Models\PipelineEvent;
 use App\Models\ProductionItem;
 use App\Models\Sterilization;
 use App\Traits\CountsSterileItems;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -152,6 +153,17 @@ class StorageController extends Controller
         } catch (\RuntimeException $e) {
             // Unit tanpa asal produksi — validasi bisnis, bukan error server.
             return $this->error($e->getMessage(), 422);
+        } catch (UniqueConstraintViolationException $e) {
+            // Index `instrument_storages_active_stock_unique` menyala: unit itu
+            // sudah punya baris rak aktif. Terjadi bila dua petugas menyimpan
+            // batch yang sama bersamaan — pemeriksaan status di atas lolos
+            // berdua, dan database yang menahan yang kedua. Diterjemahkan ke
+            // pesan yang bisa ditindaklanjuti daripada galat SQL mentah.
+            return $this->error(
+                'Sebagian unit sudah tersimpan di gudang steril oleh proses lain. '
+                .'Muat ulang halaman untuk melihat keadaan terbaru.',
+                422
+            );
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
@@ -469,6 +481,17 @@ class StorageController extends Controller
         } catch (\RuntimeException $e) {
             // Unit tanpa asal produksi — validasi bisnis, bukan error server.
             return $this->error($e->getMessage(), 422);
+        } catch (UniqueConstraintViolationException $e) {
+            // Index `instrument_storages_active_stock_unique` menyala: unit itu
+            // sudah punya baris rak aktif. Terjadi bila dua petugas menyimpan
+            // batch yang sama bersamaan — pemeriksaan status di atas lolos
+            // berdua, dan database yang menahan yang kedua. Diterjemahkan ke
+            // pesan yang bisa ditindaklanjuti daripada galat SQL mentah.
+            return $this->error(
+                'Sebagian unit sudah tersimpan di gudang steril oleh proses lain. '
+                .'Muat ulang halaman untuk melihat keadaan terbaru.',
+                422
+            );
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }

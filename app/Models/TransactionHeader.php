@@ -27,11 +27,16 @@ class TransactionHeader extends Model
     /** Jenis kuitansi yang diterima. */
     public const TRANSACTION_TYPES = ['kelompok', 'pribadi'];
 
+    /** Cara mengisi potongan anggota: rupiah atau persen dari total rincian. */
+    public const DEDUCTION_TYPES = ['amount', 'percent'];
+
     protected $fillable = [
         'transaction_number',
         'transaction_type',
         'total',
         'member_deduction',
+        'member_deduction_type',
+        'member_deduction_input',
         'group_leader_deduction',
         'group_leader_fee_percent',
         'group_leader_fee',
@@ -42,6 +47,7 @@ class TransactionHeader extends Model
     protected $casts = [
         'total' => 'decimal:2',
         'member_deduction' => 'decimal:2',
+        'member_deduction_input' => 'decimal:4',
         'group_leader_deduction' => 'decimal:2',
         'group_leader_fee' => 'decimal:2',
         'group_leader_fee_percent' => 'decimal:2',
@@ -119,10 +125,16 @@ class TransactionHeader extends Model
      */
     public function getBalanceAttribute(): string
     {
+        // `group_leader_fee` TIDAK ikut dijumlahkan. Komisi ketua kelompok
+        // ditahan dari uang yang ia setorkan, jadi mengurangi setoran — dulu
+        // nominal yang sama ikut ditambahkan kembali sehingga keduanya saling
+        // menghapus dan komisinya tidak berpengaruh sama sekali.
+        //
+        // Kolom `group_leader_fee` tetap diisi sebagai catatan HAK ketua
+        // (dipakai laporan/pembayaran komisi), bukan sebagai penambah setoran.
         $seharusnya = (float) $this->total
             - (float) $this->member_deduction
-            - (float) $this->group_leader_deduction
-            + (float) $this->group_leader_fee;
+            - (float) $this->group_leader_deduction;
 
         return number_format($seharusnya - (float) $this->payment, 2, '.', '');
     }

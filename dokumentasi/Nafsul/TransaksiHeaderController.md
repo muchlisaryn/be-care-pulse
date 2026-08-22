@@ -25,7 +25,9 @@ nama kolom database dan nama field API sama-sama Inggris. Responsnya JSON polos
 | `transaction_number`     | `transaction_number`     | Nomor kuitansi, unik                |
 | `transaction_type`       | `transaction_type`       | `kelompok` atau `pribadi`           |
 | `total`                  | `total`                  | decimal(15,2)                       |
-| `member_deduction`       | `member_deduction`       | Potongan anggota                    |
+| `member_deduction`       | `member_deduction`       | Potongan anggota, **selalu rupiah** |
+| `member_deduction_type`  | `member_deduction_type`  | `amount` atau `percent`             |
+| `member_deduction_input` | `member_deduction_input` | Angka yang diketik petugas          |
 | `group_leader_fee_percent` | `group_leader_fee_percent` | **Persentase** komisi ketua kelompok, mis. `10.00` |
 | `group_leader_deduction` | `group_leader_deduction` | Potongan ketua kelompok (rupiah, **dihitung**) |
 | `group_leader_fee`       | `group_leader_fee`       | Jasa ketua kelompok (rupiah, **dihitung**) |
@@ -124,6 +126,56 @@ bertahan saat halaman dimuat ulang.
 
 ---
 
+## Potongan anggota: rupiah atau persen
+
+Petugas boleh mengisinya sebagai **rupiah** atau **persen dari total rincian**,
+lewat satu isian dengan pilihan satuan `Rp | %` di sebelahnya.
+
+Yang dikirim klien adalah **nilai ketik + satuan**, bukan rupiah jadi:
+
+| Field                    | Contoh "Rp 25.000" | Contoh "10%" |
+| ------------------------ | ------------------ | ------------ |
+| `member_deduction_type`  | `amount`           | `percent`    |
+| `member_deduction_input` | `25000`            | `10`         |
+
+`member_deduction` dihitung server di `terapkanPotonganAnggota()` dari `total`
+final. Nominal yang dikirim klien **diabaikan** — sama seperti jasa ketua
+kelompok, supaya angka di layar tidak bisa berselisih dengan yang tersimpan.
+
+### Kenapa dua-duanya disimpan
+
+**Rupiahnya** yang mengikat. Kalau hanya persennya yang disimpan, potongan ikut
+bergeser begitu rincian kuitansi diedit — kuitansi yang sudah tercetak jadi
+tidak cocok lagi dengan yang tersimpan.
+
+**Persennya** ikut disimpan, bukan dihitung mundur `rupiah ÷ total`: hasilnya
+bisa meleset karena pembulatan, dan tidak bisa dihitung sama sekali kalau
+totalnya nol. Alasan yang sama dengan `group_leader_fee_percent`.
+
+`member_deduction_input` memakai 4 desimal supaya persen pecahan (mis. 2,5%)
+tidak dibulatkan.
+
+### Validasi
+
+| Kasus                                   | Hasil                                                        |
+| --------------------------------------- | ------------------------------------------------------------ |
+| `percent` dengan nilai > 100            | 422 — "tidak boleh lebih dari 100%"                          |
+| `member_deduction_type` selain keduanya | 422 — "hanya boleh rupiah atau persen"                       |
+| Potongan + potongan ketua > total       | 422 — penjaga lama, berlaku setelah persen diubah jadi rupiah |
+
+Nilai > 100 pada satuan persen hampir selalu salah satuan (mengetik `25000` lalu
+memilih `%`), jadi ditolak daripada tersimpan sebagai potongan yang melebihi
+seluruh tagihan.
+
+### Impor Excel
+
+Kolom `potongan_anggota` di templat impor **selalu rupiah** — tidak ada kolom
+satuan. `TransaksiImportController` mengisi `member_deduction_type = 'amount'`
+dan menyalin nominalnya ke `member_deduction_input`, supaya kuitansi hasil impor
+menampilkan potongan yang benar saat dibuka di form.
+
+---
+
 ## `payment_method` bukan kolom ENUM
 
 Dipakai `string(20)` dengan validasi `Rule::in`, bukan kolom ENUM MySQL.
@@ -169,8 +221,17 @@ Pada kuitansi `pribadi` persentasenya dinolkan, sama seperti kolom ketua lainnya
 ## `balance` dihitung, tidak disimpan
 
 ```
-balance = (total - member_deduction - group_leader_deduction + group_leader_fee) - payment
+balance = (total - member_deduction - group_leader_deduction) - payment
 ```
+
+`group_leader_fee` **tidak** ikut dijumlahkan. Komisi ketua kelompok ditahan
+dari uang yang ia setorkan, jadi mengurangi setoran. Kolomnya tetap diisi
+nominal yang sama sebagai catatan **hak ketua** — dipakai laporan dan pembayaran
+komisi, bukan sebagai penambah setoran.
+
+> Sebelumnya nominal itu ikut ditambahkan kembali sehingga potongan dan jasa
+> saling menghapus, dan komisi ketua tidak berpengaruh sama sekali pada jumlah
+> yang harus dibayar. Diubah 22 Agustus 2026.
 
 Positif berarti masih kurang bayar, negatif berarti lebih bayar.
 

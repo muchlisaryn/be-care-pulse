@@ -27,6 +27,57 @@ mengalir lewat pipeline dan **kembali `tersedia`** saat sterilisasi selesai.
 Bila stok `tersedia` tidak mencukupi untuk salah satu instrumen, seluruh proses
 dibatalkan (rollback) dan mengembalikan **422** — tidak ada batch yang dibuat.
 
+### Stok steril di gudang dikecualikan
+
+Unit yang **sudah jadi stok steril siap pakai di rak** tidak ikut jadi kandidat
+produksi, walaupun statusnya di Master `tersedia`.
+
+Sebelumnya unit seperti itu ikut terambil. Karena petugas hanya memilih **jenis +
+jumlah** — bukan unit fisiknya — baris gudangnya ditutup diam-diam
+(`closeStorageForReprocessed`) dan stoknya **lenyap dari halaman Gudang Steril
+tanpa pernah dipinjam**: `order_id` tetap NULL, barisnya masih ada di database,
+tapi tersaring `sterilePool()` karena `removed_at` sudah terisi.
+
+Yang dikecualikan **hanya yang masih berlaku**. Unit yang sudah kedaluwarsa tetap
+boleh diproduksi ulang — justru itulah yang wajib diproses. Kalau ikut
+dilindungi, unitnya terjebak permanen: distribusi menolaknya lewat
+`blockedPackagingBarcodes()`, sedangkan halaman Kedaluwarsa hanya bisa memantau
+dan tidak punya aksi menarik unit dari rak.
+
+Daftarnya dihitung `InstrumentStorage::readyStockIds()`.
+
+### Jaminan database: satu unit, satu baris rak aktif
+
+Kolom turunan `instrument_storages.active_stock_id` + index unik
+`instrument_storages_active_stock_unique` menjamin satu unit fisik tidak pernah
+punya dua baris rak yang aktif sekaligus.
+
+```sql
+active_stock_id = CASE
+    WHEN deleted_by IS NULL AND removed_at IS NULL AND order_id IS NULL
+    THEN instrument_stock_id
+END
+```
+
+Baris riwayat (sudah dihapus / keluar rak / dipesan order) bernilai `NULL`, dan
+MySQL menganggap setiap NULL berbeda pada index unik — jadi riwayat tetap boleh
+menumpuk, yang dijaga hanya baris yang benar-benar sedang di rak.
+
+Definisinya **wajib sama** dengan `InstrumentStorage::sterilePool()`. Bila salah
+satunya diubah tanpa yang lain, index ini menjaga himpunan baris yang berbeda
+dari yang ditampilkan halaman Gudang Steril.
+
+Kolomnya VIRTUAL, bukan STORED: MySQL 8 menolak menambah kolom stored lewat
+ALTER in-place pada tabel ber-foreign-key (galat 1215).
+
+Gunanya sebagai lapis terakhir. Pemeriksaan di `StorageController` (unit harus
+berstatus `tersedia`) adalah baca-lalu-tulis — dua permintaan bersamaan bisa
+lolos berdua, lalu satu instrumen muncul dua kali sebagai stok steril, atau
+muncul di gudang padahal sedang dipinjam unit lain sehingga bisa terpesan dua
+kali. Saat index menyala, kedua jalur penyimpanan menerjemahkannya jadi **422**
+"Sebagian unit sudah tersimpan di gudang steril oleh proses lain", bukan galat
+SQL mentah.
+
 ### Headers
 | Key | Value | Required |
 |-----|-------|----------|
@@ -97,6 +148,17 @@ dibatalkan (rollback) dan mengembalikan **422** — tidak ada batch yang dibuat.
 {
   "status": false,
   "message": "Stok \"Gunting Bedah\" tidak cukup: butuh 5, tersedia 2."
+}
+```
+
+Bila selisihnya karena unit tertahan di gudang steril, pesannya menyebutkan itu —
+tanpa keterangan ini petugas melihat "tersedia 2" padahal Master menampilkan 5
+unit bertanda Tersedia:
+
+```json
+{
+  "status": false,
+  "message": "Stok \"Gunting Bedah\" tidak cukup: butuh 5, tersedia 2. 3 unit lain sudah jadi stok steril di gudang dan tidak bisa diproduksi ulang selama masih berlaku."
 }
 ```
 

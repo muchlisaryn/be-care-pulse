@@ -90,6 +90,7 @@ class TransaksiHeaderController extends Controller
 
             // Setelah total final: nominal jasa ketua diturunkan dari total itu,
             // bukan dari angka kiriman klien.
+            $data = $this->terapkanPotonganAnggota($data);
             $data = $this->terapkanJasaKetua($data);
 
             $this->periksaPotongan($data);
@@ -246,6 +247,7 @@ class TransaksiHeaderController extends Controller
         // Persentase atau totalnya bisa berubah, jadi nominal jasa ketua selalu
         // dihitung ulang — kalau tidak, nominalnya membeku di angka lama dan
         // tidak lagi cocok dengan persentase yang tercatat di kuitansi ini.
+        $data = $this->terapkanPotonganAnggota($data);
         $data = $this->terapkanJasaKetua($data);
 
         $this->periksaPotongan($data);
@@ -284,7 +286,12 @@ class TransaksiHeaderController extends Controller
             ],
             'transaction_type' => ['required', Rule::in(TransactionHeader::TRANSACTION_TYPES)],
             'total' => ['required', 'numeric', 'min:0', 'max:999999999999.99'],
-            'member_deduction' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
+            // Potongan anggota diterima sebagai NILAI KETIK + SATUAN, bukan
+            // rupiah jadi. Nominal rupiahnya dihitung di `terapkanPotonganAnggota()`
+            // supaya angka di layar dan yang tersimpan tidak pernah berbeda —
+            // sama seperti jasa ketua kelompok.
+            'member_deduction_type' => ['nullable', Rule::in(TransactionHeader::DEDUCTION_TYPES)],
+            'member_deduction_input' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
             // Persentase, bukan rupiah. Dua kolom rupiah di sebelahnya
             // (`group_leader_deduction` & `group_leader_fee`) TIDAK diterima
             // dari klien — keduanya dihitung dari persentase ini di
@@ -299,6 +306,8 @@ class TransaksiHeaderController extends Controller
             'transaction_type.in' => 'Jenis transaksi hanya boleh kelompok atau pribadi.',
             'total.required' => 'Total wajib diisi.',
             'total.numeric' => 'Total harus berupa angka.',
+            'member_deduction_type.in' => 'Satuan potongan anggota hanya boleh rupiah atau persen.',
+            'member_deduction_input.numeric' => 'Potongan anggota harus berupa angka.',
             'group_leader_fee_percent.numeric' => 'Potongan ketua kelompok harus berupa angka.',
             'group_leader_fee_percent.max' => 'Potongan ketua kelompok tidak boleh lebih dari 100%.',
             'payment.required' => 'Pembayaran wajib diisi.',
@@ -307,8 +316,17 @@ class TransaksiHeaderController extends Controller
             'payment_method.in' => 'Cara bayar hanya boleh transfer atau cash.',
         ]);
 
-        $data['member_deduction'] = $data['member_deduction'] ?? 0;
+        $data['member_deduction_type'] = $data['member_deduction_type'] ?? 'amount';
+        $data['member_deduction_input'] = $data['member_deduction_input'] ?? 0;
         $data['group_leader_fee_percent'] = $data['group_leader_fee_percent'] ?? 0;
+
+        // Persen di atas 100 berarti potongannya melebihi seluruh tagihan —
+        // hampir selalu salah satuan (mengetik 25000 lalu memilih "%").
+        if ($data['member_deduction_type'] === 'percent' && (float) $data['member_deduction_input'] > 100) {
+            throw ValidationException::withMessages([
+                'member_deduction_input' => 'Potongan anggota dalam persen tidak boleh lebih dari 100%.',
+            ]);
+        }
 
         // Potongan & jasa ketua kelompok hanya berlaku pada setoran kelompok.
         // Dinolkan di sini, bukan sekadar disembunyikan di form: form yang
@@ -322,12 +340,40 @@ class TransaksiHeaderController extends Controller
     }
 
     /**
+     * Turunkan nominal rupiah potongan anggota dari nilai ketik + satuannya.
+     *
+     * Dihitung di server dari `total` final — bukan diterima dari klien —
+     * supaya nominalnya tidak bisa berselisih dengan persentase yang tercatat
+     * di kuitansi yang sama.
+     *
+     * Hasilnya disimpan sebagai rupiah dan itulah yang mengikat: kalau yang
+     * disimpan cuma persennya, potongan ikut bergeser begitu rincian kuitansi
+     * diedit dan kuitansi yang sudah tercetak jadi tidak cocok lagi.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function terapkanPotonganAnggota(array $data): array
+    {
+        $nilai = (float) $data['member_deduction_input'];
+
+        $data['member_deduction'] = $data['member_deduction_type'] === 'percent'
+            ? round((float) $data['total'] * $nilai / 100, 2)
+            : round($nilai, 2);
+
+        return $data;
+    }
+
+    /**
      * Turunkan potongan & jasa ketua kelompok dari persentasenya.
      *
      * Ketua kelompok menahan komisinya dari uang yang ia kumpulkan, jadi satu
-     * angka yang sama muncul sebagai POTONGAN (mengurangi setoran) sekaligus
-     * sebagai JASA (hak ketua). Keduanya saling menghapus di `balance`, dan yang
-     * disetorkan tetap total dikurangi potongan anggota.
+     * angka yang sama dicatat dua kali dengan peran berbeda: `group_leader_deduction`
+     * MENGURANGI setoran, `group_leader_fee` merekam HAK ketua untuk keperluan
+     * laporan/pembayaran komisi.
+     *
+     * Hanya yang pertama masuk hitungan `balance` — lihat
+     * TransactionHeader::getBalanceAttribute().
      *
      * Dihitung di server dari `total` final — bukan diterima dari klien —
      * supaya nominalnya tidak bisa berselisih dengan persentase yang tercatat
@@ -378,6 +424,8 @@ class TransaksiHeaderController extends Controller
             'transaction_type' => $row->transaction_type,
             'total' => $row->total,
             'member_deduction' => $row->member_deduction,
+            'member_deduction_type' => $row->member_deduction_type,
+            'member_deduction_input' => $row->member_deduction_input,
             'group_leader_deduction' => $row->group_leader_deduction,
             // Persentasenya ikut dikirim supaya form yang membuka kuitansi lama
             // menampilkan angka yang diketik petugas (10), bukan hasil hitung

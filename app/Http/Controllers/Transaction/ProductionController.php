@@ -267,23 +267,57 @@ class ProductionController extends Controller
     {
         $instrumentIds = collect($requirements)->pluck('instrument_id')->unique()->values()->all();
 
-        // Ketersediaan produksi MENGIKUTI stok `tersedia` di Master (unit ber-badge
-        // "Tersedia"), termasuk unit yang masih tersimpan di gudang steril — bila unit
-        // gudang ikut dipilih, baris gudangnya ditutup saat batch dibuat (lihat
-        // closeStorageForReprocessed) agar tidak jadi stok steril ganda.
+        // Unit yang sudah jadi stok steril siap pakai di rak DIKELUARKAN dari
+        // kandidat produksi. Sebelumnya ikut terambil — dan karena petugas hanya
+        // memilih jenis + jumlah (bukan unit fisiknya), baris gudangnya ditutup
+        // diam-diam oleh closeStorageForReprocessed dan stoknya lenyap dari
+        // Gudang Steril tanpa pernah dipinjam.
+        //
+        // Yang dikecualikan hanya yang MASIH berlaku; unit kedaluwarsa tetap
+        // boleh diproduksi ulang — lihat InstrumentStorage::readyStockIds().
+        //
         // `instrument` ikut dimuat: namanya di-snapshot ke production_item.
         return InstrumentStock::with('instrument')
             ->whereIn('instrument_id', $instrumentIds)
             ->where('status', InstrumentStock::STATUS_TERSEDIA)
+            ->whereNotIn('id', InstrumentStorage::readyStockIds())
             ->orderBy('code')
             ->get()
             ->groupBy('instrument_id');
     }
 
     /**
+     * Berapa unit per instrumen yang tidak bisa dipakai karena sedang jadi stok
+     * steril siap pakai di rak. Hanya untuk memperjelas pesan kekurangan stok.
+     *
+     * @param  array<int,int>  $instrumentIds
+     * @return array<int,int> instrument_id => jumlah
+     */
+    private function heldInStorage(array $instrumentIds): array
+    {
+        $ids = InstrumentStorage::readyStockIds();
+
+        if ($ids === []) {
+            return [];
+        }
+
+        return InstrumentStock::whereIn('id', $ids)
+            ->whereIn('instrument_id', $instrumentIds)
+            ->selectRaw('instrument_id, COUNT(*) as jumlah')
+            ->groupBy('instrument_id')
+            ->pluck('jumlah', 'instrument_id')
+            ->map(fn ($n) => (int) $n)
+            ->all();
+    }
+
+    /**
      * Tutup baris gudang steril (status `tersimpan` → `keluar`) untuk unit yang
      * ditarik kembali ke produksi. Mencegah unit terhitung ganda sebagai stok steril
      * dan mencegah baris gudang ganda saat unit disimpan lagi di akhir siklus baru.
+     *
+     * Tetap diperlukan meski stok steril yang masih berlaku sudah dikeluarkan dari
+     * kandidat produksi: unit KEDALUWARSA masih boleh diproduksi ulang, dan baris
+     * raknya wajib ditutup saat itu terjadi.
      * Bila unit itu bagian sebuah paket, paket tsb otomatis jadi tak lengkap
      * (available_sterile_sets berkurang) — konsekuensi wajar menarik komponennya.
      *
@@ -320,12 +354,22 @@ class ProductionController extends Controller
         }
 
         $names = Instrument::whereIn('id', array_keys($neededByInstrument))->pluck('name', 'id');
+        // Tanpa keterangan ini, petugas melihat "tersedia 2" padahal Master
+        // menampilkan 5 unit bertanda Tersedia — selisihnya ada di rak.
+        $diRak = $this->heldInStorage(array_keys($neededByInstrument));
 
         foreach ($neededByInstrument as $instrumentId => $needed) {
             $available = $pools->get($instrumentId)?->count() ?? 0;
             if ($available < $needed) {
                 $name = $names[$instrumentId] ?? "#$instrumentId";
-                throw new \RuntimeException("Stok \"{$name}\" tidak cukup: butuh {$needed}, tersedia {$available}.");
+                $tertahan = $diRak[$instrumentId] ?? 0;
+                $keterangan = $tertahan > 0
+                    ? " {$tertahan} unit lain sudah jadi stok steril di gudang dan tidak bisa diproduksi ulang selama masih berlaku."
+                    : '';
+
+                throw new \RuntimeException(
+                    "Stok \"{$name}\" tidak cukup: butuh {$needed}, tersedia {$available}.".$keterangan
+                );
             }
         }
     }

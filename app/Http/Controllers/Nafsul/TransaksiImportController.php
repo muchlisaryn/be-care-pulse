@@ -194,8 +194,9 @@ class TransaksiImportController extends Controller
                 ));
 
                 // Ketua kelompok menahan komisinya dari uang yang ia kumpulkan:
-                // satu nominal yang sama jadi potongan sekaligus jasa, dihitung
-                // dari total rincian kuitansi ini.
+                // satu nominal yang sama dicatat sebagai potongan (mengurangi
+                // setoran) sekaligus jasa (hak ketua), dihitung dari total
+                // rincian kuitansi ini. Hanya potongannya yang masuk `balance`.
                 $nominalJasa = round($header['total'] * (float) $header['group_leader_fee_percent'] / 100, 2);
                 $header['group_leader_deduction'] = $nominalJasa;
                 $header['group_leader_fee'] = $nominalJasa;
@@ -316,6 +317,13 @@ class TransaksiImportController extends Controller
 
         $data['member_deduction'] = $data['member_deduction'] ?? 0;
         $data['group_leader_fee_percent'] = $data['group_leader_fee_percent'] ?? 0;
+
+        // Kolom Excel `potongan_anggota` selalu rupiah — tidak ada kolom satuan
+        // di templatnya. Nilai ketiknya ikut diisi supaya kuitansi hasil impor
+        // menampilkan potongan yang benar saat dibuka di form; tanpa ini
+        // isiannya tampil 0 padahal nominalnya tidak nol.
+        $data['member_deduction_type'] = 'amount';
+        $data['member_deduction_input'] = $data['member_deduction'];
 
         // Sama dengan jalur simpan biasa: potongan & jasa ketua kelompok hanya
         // berlaku pada setoran kelompok, jadi dinolkan pada kuitansi pribadi

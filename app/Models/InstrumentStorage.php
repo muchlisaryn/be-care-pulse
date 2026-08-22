@@ -74,6 +74,35 @@ class InstrumentStorage extends Model
     }
 
     /**
+     * Unit yang sedang tersimpan di rak DAN masih layak pakai.
+     *
+     * Dipakai ProductionController untuk mengeluarkan unit ini dari kandidat
+     * produksi: stok steril yang sudah jadi tidak boleh ditarik ulang ke
+     * produksi, karena baris gudangnya ikut ditutup dan stoknya lenyap dari
+     * Gudang Steril tanpa pernah dipinjam.
+     *
+     * "Masih layak" = punya tanggal kedaluwarsa dan belum lewat. Unit yang
+     * SUDAH kedaluwarsa (atau tersimpan tanpa tanggal) sengaja TIDAK ikut
+     * dilindungi — justru itulah yang wajib diproses ulang. Kalau ikut
+     * dikecualikan, unitnya terjebak permanen: distribusi menolaknya lewat
+     * blockedPackagingBarcodes(), dan halaman Kedaluwarsa hanya bisa memantau,
+     * tidak bisa menarik unit dari rak.
+     *
+     * @return array<int,int> instrument_stock_id
+     */
+    public static function readyStockIds(): array
+    {
+        return static::withoutGlobalScopes()
+            ->sterilePool()
+            ->whereNotNull('expiry_date')
+            ->whereDate('expiry_date', '>=', now()->toDateString())
+            ->distinct()
+            ->pluck('instrument_stock_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    /**
      * Nomor label kemasan (`sterilization_items.packaging_barcode`) yang SELURUH isinya
      * tidak layak didistribusikan: ada minimal satu unit di bungkus itu yang
      * kedaluwarsa atau tersimpan tanpa tanggal kedaluwarsa.
