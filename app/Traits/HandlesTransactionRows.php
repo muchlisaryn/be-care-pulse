@@ -2,8 +2,8 @@
 
 namespace App\Traits;
 
+use App\Models\Rate;
 use App\Models\Transaction;
-use Carbon\Carbon;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -18,13 +18,13 @@ use Illuminate\Validation\ValidationException;
 trait HandlesTransactionRows
 {
     /**
-     * "MM/YYYY" → tanggal 1 bulan itu.
+     * "MM/YYYY" → `['month' => 8, 'year' => 2026]`.
      *
-     * Periode disimpan sebagai DATE agar bisa diurutkan dan difilter sebagai
-     * rentang; harinya dipatok ke 1 supaya dua baris periode yang sama tidak
-     * lolos dari index unik hanya karena berbeda hari.
+     * Periode disimpan sebagai dua kolom integer, bukan satu DATE: tarif sekali
+     * bayar (`fee_type = one_time`) tidak punya periode sama sekali, dan dengan
+     * kolom DATE keadaan itu hanya bisa diwakili tanggal karangan.
      */
-    protected function awalBulan(string $periode, string $field): string
+    protected function pecahPeriode(string $periode, string $field): array
     {
         if (! preg_match('/^(0[1-9]|1[0-2])\/(\d{4})$/', trim($periode), $m)) {
             throw ValidationException::withMessages([
@@ -32,7 +32,44 @@ trait HandlesTransactionRows
             ]);
         }
 
-        return Carbon::createFromDate((int) $m[2], (int) $m[1], 1)->toDateString();
+        return ['month' => (int) $m[1], 'year' => (int) $m[2]];
+    }
+
+    /**
+     * Terjemahkan `payment_period` dari request menjadi kolom `month` & `year`,
+     * dengan aturan yang ditentukan `fee_type` tarifnya.
+     *
+     * | `fee_type` tarif      | `payment_period` | Hasil                  |
+     * | --------------------- | ---------------- | ---------------------- |
+     * | `one_time`            | harus kosong     | `month`/`year` = null  |
+     * | `recurring` atau NULL | wajib diisi      | `month`/`year` terisi  |
+     *
+     * `fee_type` yang masih NULL diperlakukan sebagai `recurring`: itu keadaan
+     * tarif lama yang belum diklasifikasi, dan sebelum kolom `fee_type` ada
+     * semua tarif memang berperiode. Menganggapnya sekali bayar akan diam-diam
+     * membuang periode pada data yang sudah berjalan.
+     */
+    protected function periodeUntukTarif(?string $periode, int $rateId, string $field): array
+    {
+        $sekaliBayar = Rate::whereKey($rateId)->value('fee_type') === Rate::FEE_TYPE_ONE_TIME;
+
+        if ($sekaliBayar) {
+            if (filled($periode)) {
+                throw ValidationException::withMessages([
+                    $field => 'Tarif sekali bayar tidak memakai periode.',
+                ]);
+            }
+
+            return ['month' => null, 'year' => null];
+        }
+
+        if (blank($periode)) {
+            throw ValidationException::withMessages([
+                $field => 'Periode pembayaran wajib diisi untuk tarif berulang.',
+            ]);
+        }
+
+        return $this->pecahPeriode($periode, $field);
     }
 
     /**
@@ -54,16 +91,26 @@ trait HandlesTransactionRows
      * Cakupannya `withTrashed()` supaya sama dengan index unik di database.
      * Kalau lebih sempit, baris lolos validasi lalu gagal dengan galat SQL
      * mentah yang tidak menyebut penyebabnya.
+     *
+     * Baris tanpa periode (tarif sekali bayar) dilewati: index unik di database
+     * pun tidak membatasinya karena NULL tidak pernah sama dengan NULL, jadi
+     * memeriksanya di sini justru melarang hal yang sengaja diizinkan —
+     * pungutan sekali bayar boleh dicatat berkali-kali.
      */
     protected function periksaDuplikatPeriode(
         array $baris,
         string $field,
         ?int $abaikanId = null
     ): void {
+        if ($baris['month'] === null || $baris['year'] === null) {
+            return;
+        }
+
         $bentrok = Transaction::withTrashed()
             ->where('member_id', $baris['member_id'])
             ->where('rate_id', $baris['rate_id'])
-            ->where('payment_period', $baris['payment_period'])
+            ->where('month', $baris['month'])
+            ->where('year', $baris['year'])
             ->when($abaikanId, fn ($q) => $q->where('id', '!=', $abaikanId))
             ->exists();
 

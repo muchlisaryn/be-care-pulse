@@ -22,7 +22,7 @@ beban tanpa manfaat.
 | `transaction_header_id` | `transaction_header_id` | FK `transaction_headers.id`, nullable |
 | `member_id`     | `member_id`      | FK `members.id`                       |
 | `rate_id`       | `rate_id`        | FK `rates.id`                         |
-| `payment_period`| `payment_period` | DATE di DB, **"MM/YYYY"** di API      |
+| `month` + `year`| `payment_period` | Dua kolom integer di DB, satu string **"MM/YYYY"** di API (`null` untuk tarif sekali bayar) |
 | `amount`        | `amount`         | decimal(15,2) — nominal               |
 | `discount`      | `discount`       | decimal(15,2), bawaan 0               |
 | —               | `total`          | Dihitung: `amount - discount`         |
@@ -45,21 +45,38 @@ Respons dikirim sebagai JSON polos (bukan pembungkus `success`/`error`), sama
 dengan controller Nafsul lainnya — helper frontend `lib/nafsul/api.ts` membaca
 body-nya langsung.
 
-### Periode disimpan sebagai DATE
+### Periode disimpan sebagai `month` + `year`
 
-`payment_period` adalah kolom DATE yang selalu dinormalkan ke **tanggal 1** di
-bulan tersebut, bukan sepasang kolom bulan + tahun.
+Di database periodenya dua kolom integer yang **boleh NULL**; di API tetap satu
+field `payment_period` berbentuk **"MM/YYYY"**. Model `Transaction` yang merakit
+dan memecahnya, jadi frontend tidak perlu tahu bentuk penyimpanannya.
 
-Dengan satu kolom tanggal, pengurutan kronologis dan filter rentang
-("Januari–Juni 2026") jadi perbandingan biasa yang bisa memakai index. Dengan dua
-kolom integer, keduanya butuh ekspresi gabungan yang tidak bisa.
+| `rates.fee_type` tarif | `payment_period` yang dikirim | `month` / `year` di DB |
+| ---------------------- | ----------------------------- | ---------------------- |
+| `recurring` atau NULL  | **wajib**, "MM/YYYY"          | terisi                 |
+| `one_time`             | **harus kosong**              | `NULL`                 |
 
-Harinya dipatok ke 1 supaya dua baris periode yang sama tidak lolos dari index
-unik hanya karena berbeda hari.
+`fee_type` yang masih NULL diperlakukan sebagai `recurring` — itu keadaan tarif
+lama yang belum diklasifikasi, dan sebelum kolom itu ada semua tarif memang
+berperiode.
 
-API memakai bentuk **"MM/YYYY"** karena itulah yang ditampilkan di UI. Validasinya
-memakai `regex`, bukan aturan `date` — `"08/2026"` bukan tanggal yang sah bagi
-Laravel.
+Sebelumnya kolomnya satu DATE yang dinormalkan ke tanggal 1. Bentuk itu gugur
+begitu tarif sekali bayar masuk: pungutan tanpa periode hanya bisa diwakili
+tanggal karangan yang tidak berarti apa-apa tapi tetap ikut terurut dan
+terhitung.
+
+Filter rentang tetap memakai index. Kuncinya bukan ekspresi gabungan
+(`year * 100 + month`) yang mematikan index, melainkan perbandingan bertingkat
+`year > ? OR (year = ? AND month >= ?)` yang masih berupa perbandingan kolom
+biasa terhadap index gabungan (`year`, `month`).
+
+Baris tanpa periode otomatis tersaring keluar dari filter rentang mana pun —
+perbandingan terhadap NULL bernilai NULL, bukan true. Itu memang yang diinginkan.
+
+Validasi `payment_period` memakai `regex`, bukan aturan `date` — `"08/2026"`
+bukan tanggal yang sah bagi Laravel, padahal itulah bentuk yang dipakai di UI.
+Aturannya `nullable`, tapi wajib-tidaknya ditentukan `fee_type` tarif dan
+diperiksa terpisah; aturan validasi biasa tidak bisa melihat isi tabel `rates`.
 
 ### `total` dihitung, tidak disimpan
 
@@ -91,17 +108,46 @@ dengan galat SQL mentah yang tidak menyebut penyebabnya.
 **Method:** GET · **Endpoint:** `/api/nafsul/transaksi/rencana` · **Auth:** Bearer Token (wajib)
 
 Petugas cukup memasukkan **jumlah bulan**; periode, nominal, dan diskonnya
-dihitung endpoint ini. Tidak menyimpan apa pun — hasilnya dipakai frontend untuk
+dihitung endpoint ini. Untuk tarif sekali bayar, jumlah bulan tidak dipakai sama
+sekali — lihat bagian di bawah. Tidak menyimpan apa pun — hasilnya dipakai frontend untuk
 mengisi form, lalu dikirim balik lewat `POST /transaksi/header`.
 
 | Query       | Type    | Required | Keterangan                          |
 | ----------- | ------- | -------- | ----------------------------------- |
 | `member_id` | integer | Ya       | `exists:members,id`                 |
 | `rate_id`   | integer | Ya       | `exists:rates,id`                   |
-| `months`    | integer | Ya       | 1–120                               |
+| `months`    | integer | Tergantung | 1–120. Wajib untuk tarif `recurring`, **diabaikan** untuk tarif `one_time` |
 
 Dibatasi 120 bulan (10 tahun): di atas itu hampir pasti salah ketik, dan
 barisnya jadi terlalu banyak untuk ditinjau petugas.
+
+### Tarif sekali bayar
+
+Tarif ber-`fee_type = one_time` tidak punya periode, jadi tidak ada yang bisa
+dikalikan. Bentuk response-nya tetap sama supaya frontend tidak perlu dua cabang
+untuk membacanya — yang berbeda hanya isinya:
+
+| Field                            | Nilai                     |
+| -------------------------------- | ------------------------- |
+| `months`, `free_months`          | `0`                       |
+| `start_period`, `end_period`     | `null`                    |
+| `transactions`                   | tepat **satu** baris      |
+| `transactions[].payment_period`  | `null`                    |
+
+```json
+{
+  "member_id": 12,
+  "rate_id": 3,
+  "months": 0,
+  "free_months": 0,
+  "start_period": null,
+  "end_period": null,
+  "total": "25000.00",
+  "transactions": [
+    { "payment_period": null, "amount": "25000.00", "discount": "0.00", "total": "25000.00", "free": false }
+  ]
+}
+```
 
 ### Aturan
 
@@ -173,7 +219,9 @@ dari rincian yang sama — keduanya memakai rumus `amount - discount` per baris.
 `period_from` dan `period_to` berdiri sendiri: mengisi salah satunya saja tetap
 sah.
 
-Diurutkan `payment_period DESC`, lalu `id DESC`. Periode bisa sama antar baris;
+Diurutkan `year DESC`, `month DESC`, lalu `id DESC`. Baris tanpa periode (tarif
+sekali bayar) terkumpul di ujung karena NULL diurutkan paling akhir. Periode bisa
+sama antar baris;
 `id` dipakai sebagai pemecah seri agar urutannya tidak berubah-ubah antar halaman
 sehingga ada baris yang terlewat atau tampil dua kali.
 
@@ -190,7 +238,7 @@ Response: objek paginator Laravel dengan `data` berisi bentuk hasil `transform()
 | `transaction_header_id` | integer | Tidak | `exists:transaction_headers,id` |
 | `member_id`      | integer | Ya       | `exists:members,id`               |
 | `rate_id`        | integer | Ya       | `exists:rates,id`                 |
-| `payment_period` | string  | Ya       | "MM/YYYY", contoh `08/2026`       |
+| `payment_period` | string  | Tergantung | "MM/YYYY", contoh `08/2026`. Wajib untuk tarif `recurring`, **harus kosong** untuk tarif `one_time` |
 | `amount`         | numeric | Ya       | ≥ 0                               |
 | `discount`       | numeric | Tidak    | ≥ 0, bawaan 0, tidak boleh > `amount` |
 
@@ -233,6 +281,8 @@ Pesan lain yang mungkin muncul:
 | Field            | Pesan                                                        |
 | ---------------- | ------------------------------------------------------------ |
 | `payment_period` | Periode pembayaran harus berformat MM/YYYY, contoh 08/2026.  |
+| `payment_period` | Periode pembayaran wajib diisi untuk tarif berulang.         |
+| `payment_period` | Tarif sekali bayar tidak memakai periode.                    |
 | `discount`       | Diskon tidak boleh melebihi nominal.                         |
 | `member_id`      | Anggota tidak ada di master.                                 |
 | `rate_id`        | Tarif tidak ada di master.                                   |

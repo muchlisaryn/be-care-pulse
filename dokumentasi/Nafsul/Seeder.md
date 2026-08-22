@@ -15,10 +15,30 @@ php artisan db:seed --class=TarifSeeder              # satu master saja
 | `KotaSeeder`           | `cities`           | 35 kota                              |
 | `StatusAnggotaSeeder`  | `member_statuses`  | 5 status                             |
 | `KetuaKelompokSeeder`  | `group_leaders`    | "Pribadi" + 3 contoh ketua           |
-| `TarifSeeder`          | `rates`            | 3 iuran + 4 kas keluar               |
+| `TarifSeeder`          | `rates`            | 3 iuran + 4 kas keluar, ber-`fee_type` |
 | `PendidikanSeeder`     | `educations`       | (sudah ada sebelumnya)               |
 | `PekerjaanSeeder`      | `occupations`      | (sudah ada sebelumnya)               |
 | `StatusNikahSeeder`    | `marital_statuses` | (sudah ada sebelumnya)               |
+
+---
+
+## `fee_type` pada `TarifSeeder`
+
+`rates.fee_type` memisahkan tarif berulang dari yang sekali bayar:
+
+| Kode              | `fee_type`  |
+| ----------------- | ----------- |
+| IUR01, IUR02      | `recurring` |
+| IUR03             | `one_time`  |
+| KK01 – KK04       | `one_time`  |
+
+Kolomnya menyusul lewat migrasi `add_fee_type_to_rates_table` (nullable, tanpa
+default), jadi seluruh baris yang lahir sebelum itu tertinggal NULL — termasuk
+tarif yang dibuat petugas sendiri lewat Master Tarif. Karena `firstOrCreate`
+biasa tidak akan pernah menyentuh baris yang sudah ada, `TarifSeeder` menambal
+khusus kolom itu: **hanya baris yang `fee_type`-nya masih NULL yang diisi.**
+Klasifikasi yang sudah diubah petugas tidak ditimpa saat `db:seed` diulang, dan
+harga serta nama tetap tidak disentuh sama sekali.
 
 ---
 

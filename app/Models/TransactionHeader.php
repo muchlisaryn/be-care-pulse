@@ -33,6 +33,7 @@ class TransactionHeader extends Model
         'total',
         'member_deduction',
         'group_leader_deduction',
+        'group_leader_fee_percent',
         'group_leader_fee',
         'payment',
         'payment_method',
@@ -43,6 +44,7 @@ class TransactionHeader extends Model
         'member_deduction' => 'decimal:2',
         'group_leader_deduction' => 'decimal:2',
         'group_leader_fee' => 'decimal:2',
+        'group_leader_fee_percent' => 'decimal:2',
         'payment' => 'decimal:2',
     ];
 

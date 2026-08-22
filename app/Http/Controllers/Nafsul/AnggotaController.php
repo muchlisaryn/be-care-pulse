@@ -102,6 +102,21 @@ class AnggotaController extends Controller
         }
         $query->orderBy(Member::kolomBaru($sort), $dir);
 
+        /**
+         * `all=1` → seluruh baris tanpa paginasi, sebagai ARRAY polos.
+         *
+         * Dipakai pengisi sheet referensi di impor transaksi: file template
+         * memuat daftar No. Anggota ↔ nama supaya petugas tidak perlu menebak
+         * nomornya. Sama dengan master Nafsul lain yang sudah punya `all`.
+         *
+         * Tanpa ini, pemanggil yang mengirim `all=1` tetap menerima OBJEK
+         * paginasi — bentuk yang tidak bisa di-`map` dan bikin pemanggilnya
+         * gagal dengan galat yang tidak menyebut sebabnya.
+         */
+        if ($request->boolean('all')) {
+            return response()->json($query->get());
+        }
+
         return response()->json($query->paginate($request->integer('per_page', 25)));
     }
 

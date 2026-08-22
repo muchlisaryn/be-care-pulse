@@ -88,6 +88,10 @@ class TransaksiHeaderController extends Controller
                 $data['total'] = array_sum(array_map(fn ($b) => $this->totalBaris($b), $baris));
             }
 
+            // Setelah total final: nominal jasa ketua diturunkan dari total itu,
+            // bukan dari angka kiriman klien.
+            $data = $this->terapkanJasaKetua($data);
+
             $this->periksaPotongan($data);
 
             $header = TransactionHeader::create($data);
@@ -115,7 +119,10 @@ class TransaksiHeaderController extends Controller
             'transactions' => ['nullable', 'array'],
             'transactions.*.member_id' => ['required', 'integer', 'exists:members,id'],
             'transactions.*.rate_id' => ['required', 'integer', 'exists:rates,id'],
-            'transactions.*.payment_period' => ['required', 'string', 'regex:/^(0[1-9]|1[0-2])\/\d{4}$/'],
+            // Wajib-tidaknya ditentukan `fee_type` tarif barisnya, diperiksa
+            // periodeUntukTarif() di bawah — aturan validasi biasa tidak bisa
+            // melihat isi tabel `rates`.
+            'transactions.*.payment_period' => ['nullable', 'string', 'regex:/^(0[1-9]|1[0-2])\/\d{4}$/'],
             'transactions.*.amount' => ['required', 'numeric', 'min:0', 'max:999999999999.99'],
             'transactions.*.discount' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
         ], [
@@ -123,7 +130,6 @@ class TransaksiHeaderController extends Controller
             'transactions.*.member_id.exists' => 'Anggota pada baris :position tidak ada di master.',
             'transactions.*.rate_id.required' => 'Tarif pada baris :position wajib dipilih.',
             'transactions.*.rate_id.exists' => 'Tarif pada baris :position tidak ada di master.',
-            'transactions.*.payment_period.required' => 'Periode pada baris :position wajib diisi.',
             'transactions.*.payment_period.regex' => 'Periode pada baris :position harus berformat MM/YYYY.',
             'transactions.*.amount.required' => 'Nominal pada baris :position wajib diisi.',
         ]);
@@ -138,25 +144,34 @@ class TransaksiHeaderController extends Controller
             $data = [
                 'member_id' => (int) $baris['member_id'],
                 'rate_id' => (int) $baris['rate_id'],
-                'payment_period' => $this->awalBulan((string) $baris['payment_period'], $field),
                 'amount' => $baris['amount'],
                 'discount' => $baris['discount'] ?? 0,
-            ];
+            ] + $this->periodeUntukTarif(
+                $baris['payment_period'] ?? null,
+                (int) $baris['rate_id'],
+                $field
+            );
 
             $this->periksaDiskon($data, $field);
 
             // Bentrok di dalam kiriman yang sama tidak akan tertangkap
             // pengecekan database — barisnya belum tersimpan saat baris
             // berikutnya diperiksa.
-            $kunci = $data['member_id'].'-'.$data['rate_id'].'-'.$data['payment_period'];
+            //
+            // Baris tarif sekali bayar dilewati: periodenya null, jadi seluruh
+            // baris semacam itu akan punya kunci yang sama dan saling menuduh
+            // duplikat, padahal pungutan sekali bayar memang boleh berulang.
+            if ($data['month'] !== null) {
+                $kunci = $data['member_id'].'-'.$data['rate_id'].'-'.$data['month'].'-'.$data['year'];
 
-            if (isset($terpakai[$kunci])) {
-                throw ValidationException::withMessages([
-                    $field => "Baris {$nomor} mengulang anggota, tarif, dan periode yang sama dengan baris {$terpakai[$kunci]}.",
-                ]);
+                if (isset($terpakai[$kunci])) {
+                    throw ValidationException::withMessages([
+                        $field => "Baris {$nomor} mengulang anggota, tarif, dan periode yang sama dengan baris {$terpakai[$kunci]}.",
+                    ]);
+                }
+
+                $terpakai[$kunci] = $nomor;
             }
-
-            $terpakai[$kunci] = $nomor;
 
             $this->periksaDuplikatPeriode($data, $field);
 
@@ -164,6 +179,52 @@ class TransaksiHeaderController extends Controller
         }
 
         return $hasil;
+    }
+
+    /**
+     * Kembalikan kuitansi ke keadaan BELUM DIBAYAR.
+     *
+     * Rincian iurannya dilepas dari kuitansi (`transaction_header_id` = null)
+     * sehingga kembali berdiri sebagai tagihan yang menunggu pembayaran, lalu
+     * kuitansinya sendiri di-soft-delete. Dipakai saat kuitansi terlanjur
+     * dibuat salah — nominal keliru, anggotanya tertukar, atau uangnya ternyata
+     * belum diterima.
+     *
+     * Berbeda dari `destroy` yang hanya menghapus kuitansinya: di sana rincian
+     * SENGAJA tetap menempel supaya kaitannya pulih bila kuitansi di-restore.
+     * Reset justru memutus kaitan itu, karena tujuannya membebaskan rincian
+     * untuk dibuatkan kuitansi baru.
+     *
+     * Rincian TIDAK ikut dihapus: periodenya sudah tercatat sebagai tagihan
+     * anggota, dan menghapusnya berarti membuang riwayat iuran yang sebenarnya
+     * sah. Karena itu pula periode yang sama tetap ditolak bila diinput lagi.
+     *
+     * Keduanya dalam satu transaksi database: kuitansi yang terhapus sementara
+     * rinciannya masih menempel akan jadi tagihan yang tak bisa ditagih lagi.
+     */
+    public function reset(TransactionHeader $transaksiHeader)
+    {
+        try {
+            $dilepas = DB::transaction(function () use ($transaksiHeader) {
+                $jumlah = $transaksiHeader->transactions()->count();
+
+                // update() massal, bukan satu per satu: tidak ada kolom audit
+                // yang perlu diisi di sini, dan satu kuitansi bisa memuat
+                // ratusan rincian.
+                $transaksiHeader->transactions()->update(['transaction_header_id' => null]);
+
+                $transaksiHeader->delete();
+
+                return $jumlah;
+            });
+
+            return response()->json([
+                'message' => "Kuitansi direset. {$dilepas} rincian kembali menjadi tagihan yang belum dibayar.",
+                'released' => $dilepas,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
+        }
     }
 
     public function show(TransactionHeader $transaksiHeader)
@@ -181,6 +242,11 @@ class TransaksiHeaderController extends Controller
         if (empty($data['transaction_number'])) {
             unset($data['transaction_number']);
         }
+
+        // Persentase atau totalnya bisa berubah, jadi nominal jasa ketua selalu
+        // dihitung ulang — kalau tidak, nominalnya membeku di angka lama dan
+        // tidak lagi cocok dengan persentase yang tercatat di kuitansi ini.
+        $data = $this->terapkanJasaKetua($data);
 
         $this->periksaPotongan($data);
 
@@ -219,8 +285,12 @@ class TransaksiHeaderController extends Controller
             'transaction_type' => ['required', Rule::in(TransactionHeader::TRANSACTION_TYPES)],
             'total' => ['required', 'numeric', 'min:0', 'max:999999999999.99'],
             'member_deduction' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
-            'group_leader_deduction' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
-            'group_leader_fee' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
+            // Persentase, bukan rupiah. Dua kolom rupiah di sebelahnya
+            // (`group_leader_deduction` & `group_leader_fee`) TIDAK diterima
+            // dari klien — keduanya dihitung dari persentase ini di
+            // `terapkanJasaKetua()` supaya angka di layar dan yang tersimpan
+            // tidak pernah berbeda.
+            'group_leader_fee_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'payment' => ['required', 'numeric', 'min:0', 'max:999999999999.99'],
             'payment_method' => ['required', Rule::in(TransactionHeader::PAYMENT_METHODS)],
         ], [
@@ -229,24 +299,49 @@ class TransaksiHeaderController extends Controller
             'transaction_type.in' => 'Jenis transaksi hanya boleh kelompok atau pribadi.',
             'total.required' => 'Total wajib diisi.',
             'total.numeric' => 'Total harus berupa angka.',
+            'group_leader_fee_percent.numeric' => 'Potongan ketua kelompok harus berupa angka.',
+            'group_leader_fee_percent.max' => 'Potongan ketua kelompok tidak boleh lebih dari 100%.',
             'payment.required' => 'Pembayaran wajib diisi.',
             'payment.numeric' => 'Pembayaran harus berupa angka.',
             'payment_method.required' => 'Cara bayar wajib dipilih.',
             'payment_method.in' => 'Cara bayar hanya boleh transfer atau cash.',
         ]);
 
-        foreach (['member_deduction', 'group_leader_deduction', 'group_leader_fee'] as $kolom) {
-            $data[$kolom] = $data[$kolom] ?? 0;
-        }
+        $data['member_deduction'] = $data['member_deduction'] ?? 0;
+        $data['group_leader_fee_percent'] = $data['group_leader_fee_percent'] ?? 0;
 
         // Potongan & jasa ketua kelompok hanya berlaku pada setoran kelompok.
         // Dinolkan di sini, bukan sekadar disembunyikan di form: form yang
         // menyembunyikan field tidak menghalangi permintaan yang disusun
         // sendiri, dan angka nyasar itu tetap akan menggeser `balance`.
         if ($data['transaction_type'] === 'pribadi') {
-            $data['group_leader_deduction'] = 0;
-            $data['group_leader_fee'] = 0;
+            $data['group_leader_fee_percent'] = 0;
         }
+
+        return $data;
+    }
+
+    /**
+     * Turunkan potongan & jasa ketua kelompok dari persentasenya.
+     *
+     * Ketua kelompok menahan komisinya dari uang yang ia kumpulkan, jadi satu
+     * angka yang sama muncul sebagai POTONGAN (mengurangi setoran) sekaligus
+     * sebagai JASA (hak ketua). Keduanya saling menghapus di `balance`, dan yang
+     * disetorkan tetap total dikurangi potongan anggota.
+     *
+     * Dihitung di server dari `total` final — bukan diterima dari klien —
+     * supaya nominalnya tidak bisa berselisih dengan persentase yang tercatat
+     * di kuitansi yang sama.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function terapkanJasaKetua(array $data): array
+    {
+        $nominal = round((float) $data['total'] * (float) $data['group_leader_fee_percent'] / 100, 2);
+
+        $data['group_leader_deduction'] = $nominal;
+        $data['group_leader_fee'] = $nominal;
 
         return $data;
     }
@@ -284,6 +379,10 @@ class TransaksiHeaderController extends Controller
             'total' => $row->total,
             'member_deduction' => $row->member_deduction,
             'group_leader_deduction' => $row->group_leader_deduction,
+            // Persentasenya ikut dikirim supaya form yang membuka kuitansi lama
+            // menampilkan angka yang diketik petugas (10), bukan hasil hitung
+            // mundur dari rupiah yang bisa meleset karena pembulatan.
+            'group_leader_fee_percent' => $row->group_leader_fee_percent,
             'group_leader_fee' => $row->group_leader_fee,
             'payment' => $row->payment,
             'payment_method' => $row->payment_method,
@@ -295,7 +394,8 @@ class TransaksiHeaderController extends Controller
         if ($denganRincian) {
             $hasil['transactions'] = $row->transactions()
                 ->with(['member:id,member_number,name', 'rate:id,code,name'])
-                ->orderBy('payment_period')
+                ->orderBy('year')
+                ->orderBy('month')
                 ->get()
                 ->map(fn ($t) => [
                     'id' => $t->id,
@@ -305,7 +405,7 @@ class TransaksiHeaderController extends Controller
                     'member_name' => $t->member?->name,
                     'rate_id' => $t->rate_id,
                     'rate_name' => $t->rate?->name,
-                    'payment_period' => optional($t->payment_period)->format('m/Y'),
+                    'payment_period' => $t->payment_period,
                     'amount' => $t->amount,
                     'discount' => $t->discount,
                     'total' => $t->total,

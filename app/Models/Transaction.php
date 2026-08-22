@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Traits\HasAuditColumns;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Str;
@@ -24,16 +25,26 @@ class Transaction extends Model
         'transaction_header_id',
         'member_id',
         'rate_id',
-        'payment_period',
+        'month',
+        'year',
         'amount',
         'discount',
     ];
 
     protected $casts = [
-        'payment_period' => 'date',
+        'month' => 'integer',
+        'year' => 'integer',
         'amount' => 'decimal:2',
         'discount' => 'decimal:2',
     ];
+
+    /**
+     * Kolom periode ikut diserahkan ke JSON sebagai `payment_period`.
+     *
+     * Bentuk response sengaja tidak berubah setelah kolomnya dipecah: frontend
+     * tetap menerima satu field "MM/YYYY" seperti sebelumnya.
+     */
+    protected $appends = ['payment_period'];
 
     /**
      * UUID diisi otomatis saat baris dibuat.
@@ -56,6 +67,34 @@ class Transaction extends Model
     public function getRouteKeyName(): string
     {
         return 'uuid';
+    }
+
+    /**
+     * Periode dalam bentuk "MM/YYYY", atau `null` untuk tarif sekali bayar.
+     *
+     * Kolomnya dipecah jadi `month` + `year` di database, tapi seluruh
+     * antarmuka — API, kuitansi, tabel — memakai satu string gabungan. Merakit
+     * ulang di sini menghindari format yang berbeda-beda di tiap pemanggil.
+     */
+    public function getPaymentPeriodAttribute(): ?string
+    {
+        if ($this->month === null || $this->year === null) {
+            return null;
+        }
+
+        return sprintf('%02d/%04d', $this->month, $this->year);
+    }
+
+    /**
+     * Urutan kronologis, terbaru dulu.
+     *
+     * Baris tanpa periode (tarif sekali bayar) ikut terkumpul di ujung karena
+     * NULL diurutkan paling akhir oleh `ORDER BY ... DESC` di MySQL; `id`
+     * dipakai sebagai pemecah seri agar urutannya stabil antar halaman.
+     */
+    public function scopeUrutPeriodeTerbaru(Builder $query): Builder
+    {
+        return $query->orderByDesc('year')->orderByDesc('month')->orderByDesc('id');
     }
 
     /**

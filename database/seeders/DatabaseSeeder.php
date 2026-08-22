@@ -11,36 +11,46 @@ class DatabaseSeeder extends Seeder
 
     /**
      * Seed the application's database.
+     *
+     * Isinya sekarang tiga kelompok:
+     *   1. STRUKTUR MENU — title + seluruh menu (CSSD, Medis, Pengaturan, Nafsul).
+     *      Ini yang jadi bahan otoritas, jadi harus lengkap lebih dulu.
+     *   2. AKSES — otoritas "Administrator" (meng-attach SELURUH menu di atas)
+     *      lalu user bawaan yang memakainya. Tanpa dua ini database baru tidak
+     *      punya akun yang bisa login, sementara menu Otoritas & Pengguna baru
+     *      bisa dibuka setelah login.
+     *   3. MASTER DATA NAFSUL — isi form anggota & transaksi.
+     *
+     * Seeder master CSSD (instrumen, ruangan, mesin, printer, kondisi, kategori
+     * clinical pathway) sudah dihapus — datanya diisi lewat aplikasi. Yang tersisa
+     * di sini hanya menu-nya, supaya otoritas Administrator tetap dapat semua.
      */
     public function run(): void
     {
         $this->call([
+            // ---- 1. Struktur menu ----
             TitleMenuSeeder::class,
             MenuSeeder::class,
-            // Menu Nafsul harus dibuat SEBELUM AuthoritySeeder agar authority
-            // "Administrator" (yang meng-attach seluruh menu) ikut mendapatkannya.
+            // Menu modul Nafsul (grup "Master Nafsul" + turunannya). Setelah
+            // TitleMenuSeeder karena menempel di title "Master Data".
             NafsulMenuSeeder::class,
-            AuthoritySeeder::class,
             // Menu tambahan pasca-rilis (idempotent) — aman untuk DB lama & baru.
             RakMenuSeeder::class,
             PengaturanMenuSeeder::class,
             UbahKataSandiMenuSeeder::class,
             LaporanTransaksiInstrumenMenuSeeder::class,
-            PrinterSeeder::class,
-            RoomSeeder::class,
-            ConditionSeeder::class,
-            InstrumentCatalogSeeder::class,
-            // Tautkan ulang gambar instrumen dari berkas yatim di public/uploads
-            // (referensi DB hilang tiap migrate:fresh, filenya tetap ada).
-            InstrumentImageSeeder::class,
-            InstrumentStockSeeder::class,
-            // Master mesin pipeline CSSD (cleaning & sterilisasi).
-            WasherMachineSeeder::class,
-            SterilizerMachineSeeder::class,
-            CategoriClinicalPathwaySeeder::class,
-            // Master data Nafsul (dipakai form anggota & transaksi) —
-            // semuanya firstOrCreate, jadi aman dijalankan berulang dan tidak
-            // menimpa data yang sudah disunting petugas.
+
+            // ---- 2. Akses ----
+            // Otoritas "Administrator" meng-attach SELURUH isi tabel `menus`,
+            // jadi wajib setelah semua seeder menu di atas — kalau didahulukan,
+            // menu yang lahir belakangan tidak ikut terbagi.
+            AuthoritySeeder::class,
+            // User bawaan `admin` / `Admin@12345`, memakai otoritas di atas.
+            AdminUserSeeder::class,
+
+            // ---- 3. Master data Nafsul ----
+            // Dipakai form anggota & transaksi — semuanya firstOrCreate, jadi aman
+            // dijalankan berulang dan tidak menimpa data yang sudah disunting petugas.
             PendidikanSeeder::class,
             PekerjaanSeeder::class,
             StatusNikahSeeder::class,

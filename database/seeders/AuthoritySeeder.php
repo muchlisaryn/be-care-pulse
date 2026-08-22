@@ -6,23 +6,31 @@ use App\Models\Authority;
 use App\Models\Menu;
 use Illuminate\Database\Seeder;
 
+/**
+ * Otoritas "Administrator" — pemegang seluruh menu.
+ *
+ * Dipertahankan (bersama AdminUserSeeder) meski seeder lain sudah dibersihkan:
+ * tanpa keduanya database baru tidak punya satu pun akun yang bisa login, dan
+ * menu Otoritas sendiri hanya bisa dibuka setelah login. Otoritas selain
+ * Administrator dibuat lewat menu Otoritas, bukan di sini.
+ *
+ * WAJIB dijalankan SETELAH SELURUH seeder menu (TitleMenu, Menu, NafsulMenu, dan
+ * menu tambahan pasca-rilis): yang di-attach adalah isi tabel `menus` pada saat
+ * seeder ini jalan, jadi menu yang lahir belakangan tidak akan ikut terbagi.
+ *
+ * Jalankan sendiri: php artisan db:seed --class=AuthoritySeeder
+ */
 class AuthoritySeeder extends Seeder
 {
     public function run(): void
     {
-        // Administrator — akses semua menu (parent + children)
-        $administrator = $this->authority('Administrator', 'Akses penuh ke seluruh fitur sistem');
         // syncWithoutDetaching, BUKAN attach/sync: attach menabrak primary key saat
         // seeder diulang, sedangkan sync akan MENCABUT hak yang diatur admin lewat
         // UI. Ini hanya menambahkan menu yang belum terhubung — termasuk menu baru
         // yang lahir dari seeder pasca-rilis.
-        $administrator->menus()->syncWithoutDetaching(Menu::pluck('id')->all());
-
-        // Operator — hanya Dashboard
-        $operator = $this->authority('Operator', 'Akses terbatas pada fitur operasional');
-        $operator->menus()->syncWithoutDetaching(
-            Menu::where('name', 'Dashboard')->pluck('id')->all()
-        );
+        $this->authority('Administrator', 'Akses penuh ke seluruh fitur sistem')
+            ->menus()
+            ->syncWithoutDetaching(Menu::pluck('id')->all());
     }
 
     /**

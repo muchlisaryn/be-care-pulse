@@ -29,9 +29,10 @@ use App\Http\Controllers\Nafsul\PekerjaanController;
 use App\Http\Controllers\Nafsul\PendidikanController;
 use App\Http\Controllers\Nafsul\StatusAnggotaController;
 use App\Http\Controllers\Nafsul\StatusNikahController;
+use App\Http\Controllers\Nafsul\TarifController;
 use App\Http\Controllers\Nafsul\TransaksiController;
 use App\Http\Controllers\Nafsul\TransaksiHeaderController;
-use App\Http\Controllers\Nafsul\TarifController;
+use App\Http\Controllers\Nafsul\TransaksiImportController;
 use App\Http\Controllers\Nafsul\WilayahController;
 use App\Http\Controllers\Transaction\CleaningController;
 use App\Http\Controllers\Transaction\DistributionController;
@@ -365,6 +366,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // controller mem-binding `Transaction $transaksi`.
         // Header didaftarkan lebih dulu: `transaksi/header` harus dikenali
         // sebagai rute tersendiri, bukan tertangkap `transaksi/{transaksi}`.
+        // Reset kuitansi: rincian dilepas jadi tagihan lagi, kuitansinya
+        // dihapus. Didaftarkan sebelum apiResource-nya agar tidak tertangkap
+        // sebagai `transaksi/header/{transaksiHeader}`.
+        Route::post('transaksi/header/{transaksiHeader}/reset', [TransaksiHeaderController::class, 'reset']);
+
         Route::apiResource('transaksi/header', TransaksiHeaderController::class)
             ->parameters(['header' => 'transaksiHeader'])
             ->names('transaksi-header');
@@ -372,6 +378,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // Sama seperti `transaksi/header`: harus sebelum apiResource, kalau
         // tidak tertangkap sebagai `transaksi/{transaksi}`.
         Route::get('transaksi/rencana', [TransaksiController::class, 'rencana']);
+
+        // Impor Excel: satu baris file = satu rincian, digabung jadi kuitansi
+        // lewat kolom `kode_kuitansi`. Juga harus di atas apiResource.
+        Route::post('transaksi/import', [TransaksiImportController::class, 'import']);
 
         Route::apiResource('transaksi', TransaksiController::class)
             ->parameters(['transaksi' => 'transaksi']);

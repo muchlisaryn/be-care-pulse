@@ -26,8 +26,9 @@ nama kolom database dan nama field API sama-sama Inggris. Responsnya JSON polos
 | `transaction_type`       | `transaction_type`       | `kelompok` atau `pribadi`           |
 | `total`                  | `total`                  | decimal(15,2)                       |
 | `member_deduction`       | `member_deduction`       | Potongan anggota                    |
-| `group_leader_deduction` | `group_leader_deduction` | Potongan ketua kelompok             |
-| `group_leader_fee`       | `group_leader_fee`       | Jasa ketua kelompok                 |
+| `group_leader_fee_percent` | `group_leader_fee_percent` | **Persentase** komisi ketua kelompok, mis. `10.00` |
+| `group_leader_deduction` | `group_leader_deduction` | Potongan ketua kelompok (rupiah, **dihitung**) |
+| `group_leader_fee`       | `group_leader_fee`       | Jasa ketua kelompok (rupiah, **dihitung**) |
 | `payment`                | `payment`                | Uang yang benar-benar diterima      |
 | `payment_method`         | `payment_method`         | `transfer` atau `cash`              |
 | —                        | `balance`                | Dihitung, lihat di bawah            |
@@ -132,6 +133,39 @@ mengunci tabel; di sini cukup menambah satu nilai di konstanta
 
 ---
 
+## Komisi ketua kelompok dihitung dari persentase
+
+Yang dikirim klien hanya `group_leader_fee_percent` (mis. `10` untuk 10%).
+Nominal rupiahnya diturunkan server dari **total rincian final**:
+
+```
+nominal = round(total × persen / 100, 2)
+group_leader_deduction = nominal
+group_leader_fee       = nominal
+```
+
+Satu angka yang sama muncul dua kali karena ketua kelompok **menahan komisinya
+dari uang yang ia kumpulkan**: ia mengurangi setoran (sebagai potongan) lalu
+ditambahkan kembali sebagai haknya (sebagai jasa). Keduanya saling menghapus di
+`balance`; yang disetorkan tetap total dikurangi potongan anggota.
+
+| Total rincian | Persen | Potongan ketua | Jasa ketua | Harus dibayar |
+| ------------- | ------ | -------------- | ---------- | ------------- |
+| 500.000       | 10     | −50.000        | +50.000    | 500.000       |
+
+Kedua kolom rupiah itu **tidak diterima dari klien**. Dikirim pun diabaikan —
+angka yang bisa diketik sendiri hanya akan berselisih dengan persentase yang
+tercatat di kuitansi yang sama, tanpa ada yang tahu mana yang benar.
+
+Persentasenya ikut disimpan, bukan cuma nominalnya: form yang membuka kuitansi
+lama harus menampilkan angka yang diketik petugas (10), bukan hasil hitung mundur
+`rupiah ÷ total` yang bisa meleset karena pembulatan — dan tidak bisa dihitung
+sama sekali kalau totalnya nol.
+
+Pada kuitansi `pribadi` persentasenya dinolkan, sama seperti kolom ketua lainnya.
+
+---
+
 ## `balance` dihitung, tidak disimpan
 
 ```
@@ -177,8 +211,7 @@ berubah-ubah antar halaman.
 | `transaction_type`       | string  | **Ya**   | `kelompok` atau `pribadi`           |
 | `total`                  | numeric | Ya       | ≥ 0                                 |
 | `member_deduction`       | numeric | Tidak    | ≥ 0, bawaan 0                       |
-| `group_leader_deduction` | numeric | Tidak    | ≥ 0, bawaan 0                       |
-| `group_leader_fee`       | numeric | Tidak    | ≥ 0, bawaan 0                       |
+| `group_leader_fee_percent` | numeric | Tidak  | 0–100, bawaan 0. **Persen**, bukan rupiah |
 | `payment`                | numeric | Ya       | ≥ 0                                 |
 | `payment_method`         | string  | Ya       | `transfer` atau `cash`              |
 | `transactions`           | array   | Tidak    | Rincian iuran; lihat di bawah       |
@@ -197,7 +230,7 @@ beberapa anggota dari kelompok yang sama.
 | -------------------------------- | ------- | -------- | --------------------------- |
 | `transactions.*.member_id`       | integer | Ya       | `exists:members,id`         |
 | `transactions.*.rate_id`         | integer | Ya       | `exists:rates,id`           |
-| `transactions.*.payment_period`  | string  | Ya       | "MM/YYYY"                   |
+| `transactions.*.payment_period`  | string  | Tergantung | "MM/YYYY". Wajib untuk tarif `recurring`, **harus kosong** untuk tarif `one_time` |
 | `transactions.*.amount`          | numeric | Ya       | ≥ 0                         |
 | `transactions.*.discount`        | numeric | Tidak    | ≥ 0, tidak boleh > `amount` |
 
@@ -211,7 +244,8 @@ beberapa anggota dari kelompok yang sama.
   "transactions": [
     { "member_id": 12, "rate_id": 1, "payment_period": "07/2026", "amount": 50000 },
     { "member_id": 13, "rate_id": 1, "payment_period": "07/2026", "amount": 50000, "discount": 5000 },
-    { "member_id": 14, "rate_id": 1, "payment_period": "07/2026", "amount": 50000 }
+    { "member_id": 14, "rate_id": 1, "payment_period": "07/2026", "amount": 50000 },
+    { "member_id": 12, "rate_id": 3, "payment_period": null, "amount": 25000 }
   ]
 }
 ```
@@ -319,6 +353,53 @@ kosong **tidak** mengosongkan nomor yang sudah terbit — field-nya diabaikan.
 null karena global scope menyaring header yang sudah dihapus, dan kaitannya
 pulih utuh bila header di-restore. Mengosongkan kolomnya justru membuat restore
 tidak ada gunanya.
+
+---
+
+## 5. reset
+
+**Method:** POST · **Endpoint:** /api/nafsul/transaksi/header/{uuid}/reset · **Auth:** Bearer Token (wajib)
+
+Kembalikan kuitansi ke keadaan **belum dibayar**. Dipakai saat kuitansi terlanjur
+dibuat salah — nominal keliru, anggotanya tertukar, atau uangnya ternyata belum
+diterima.
+
+Dua langkah, dalam satu transaksi database:
+
+1. Seluruh rinciannya dilepas (`transaction_header_id` → `null`) sehingga kembali
+   berdiri sebagai tagihan yang menunggu pembayaran;
+2. kuitansinya sendiri di-soft-delete.
+
+### Bedanya dengan `destroy`
+
+| | `destroy` | `reset` |
+| --- | --- | --- |
+| Kuitansi | soft delete | soft delete |
+| `transaction_header_id` rincian | **tetap terisi** | **dikosongkan** |
+| Tujuan | menghapus kuitansi, kaitannya pulih bila di-restore | membebaskan rincian untuk dibuatkan kuitansi baru |
+
+### Rincian tidak ikut terhapus
+
+Periodenya sudah tercatat sebagai tagihan anggota, dan menghapusnya berarti
+membuang riwayat iuran yang sebenarnya sah. Karena itu pula periode yang sama
+**tetap ditolak** bila diinput lagi:
+
+```
+POST /api/nafsul/transaksi { payment_period: "01/2029", ... }
+→ 422 "Anggota ini sudah punya transaksi untuk tarif dan periode tersebut."
+```
+
+### Response (200)
+
+```json
+{
+  "message": "Kuitansi direset. 3 rincian kembali menjadi tagihan yang belum dibayar.",
+  "released": 3
+}
+```
+
+Route-nya didaftarkan **sebelum** `apiResource('transaksi/header')`, alasannya
+sama dengan bagian di bawah.
 
 ---
 
