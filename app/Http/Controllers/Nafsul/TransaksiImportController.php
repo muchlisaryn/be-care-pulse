@@ -23,6 +23,14 @@ use Illuminate\Validation\ValidationException;
  * | `Kuitansi`  | satu baris per kuitansi    | `headers`       |
  * | `Rincian`   | satu baris per iuran       | `rows`          |
  *
+ * Kolom WAJIB sheet `Kuitansi`: `Kode Kuitansi`, `Tanggal`, `Jenis`, `Dibayar`,
+ * `Metode`. Sisanya boleh kosong dan diperlakukan sebagai nol.
+ *
+ * Kolom WAJIB sheet `Rincian`: `Kode Kuitansi`, `No. Anggota`, `Kode Tarif`.
+ * `Nominal` boleh kosong — server memakai harga tarifnya, supaya petugas tidak
+ * perlu menyalin angka yang sama ratusan kali. `Periode` mengikuti sifat
+ * tarifnya: wajib untuk tarif berulang, harus KOSONG untuk tarif sekali bayar.
+ *
  * Keduanya dihubungkan kolom `Kode Kuitansi`. Kode itu hanya berlaku di dalam
  * file — dipakai untuk merangkai, bukan disimpan; nomor kuitansi yang sebenarnya
  * tetap dibuat server (`generateNumber`).
@@ -68,6 +76,10 @@ class TransaksiImportController extends Controller
      * sendiri hanya akan berselisih dengan hasil hitungannya.
      */
     private const KOLOM_KUITANSI = [
+        // Tanggal uang DITERIMA. Wajib — kuitansi tanpa tanggal tidak bisa
+        // dipertanggungjawabkan ke buku kas, dan menebaknya dari waktu impor
+        // justru memberi tanggal yang pasti salah untuk data lama.
+        'tanggal' => 'date',
         'jenis' => 'transaction_type',
         'dibayar' => 'payment',
         'metode' => 'payment_method',
@@ -289,22 +301,22 @@ class TransaksiImportController extends Controller
         $data['payment_method'] = mb_strtolower((string) $data['payment_method']);
         $data['transaction_type'] = mb_strtolower((string) $data['transaction_type']);
 
-        $data['payment_method'] = mb_strtolower((string) $data['payment_method']);
-        $data['transaction_type'] = mb_strtolower((string) $data['transaction_type']);
-
         $validator = Validator::make($data, [
+            'date' => ['required', 'date'],
             'transaction_type' => ['required', Rule::in(TransactionHeader::TRANSACTION_TYPES)],
             'payment' => ['required', 'numeric', 'min:0', 'max:999999999999.99'],
             'payment_method' => ['required', Rule::in(TransactionHeader::PAYMENT_METHODS)],
             'member_deduction' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
             'group_leader_fee_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
         ], [
+            'date.required' => 'Tanggal wajib diisi (format YYYY-MM-DD, mis. 2026-08-23).',
+            'date.date' => 'Tanggal tidak dikenali. Pakai format YYYY-MM-DD, mis. 2026-08-23.',
             'transaction_type.required' => 'Jenis wajib diisi (kelompok / pribadi).',
             'transaction_type.in' => 'Jenis hanya boleh "kelompok" atau "pribadi".',
             'payment.required' => 'Dibayar wajib diisi.',
             'payment.numeric' => 'Dibayar harus berupa angka.',
-            'payment_method.required' => 'Metode wajib diisi (cash / transfer).',
-            'payment_method.in' => 'Metode hanya boleh "cash" atau "transfer".',
+            'payment_method.required' => 'Metode wajib diisi (cash / transfer / other).',
+            'payment_method.in' => 'Metode hanya boleh "cash", "transfer", atau "other".',
             'numeric' => ':attribute harus berupa angka.',
             'group_leader_fee_percent.max' => 'Potongan ketua tidak boleh lebih dari 100%.',
         ], [

@@ -256,6 +256,14 @@ Route::middleware('auth:sanctum')->group(function () {
         // CRUD sterilisasi) untuk halaman /cssd/kedaluwarsa
         Route::get('sterile-expiry/summary', [SterileExpiryController::class, 'summary']);
         Route::get('sterile-expiry', [SterileExpiryController::class, 'index']);
+        // Rincian isi satu batch, dipecah per LABEL kemasan (dasar pilihan petugas).
+        // Parameternya id batch steril mentah — bukan route model binding: daftar
+        // memakai id 0 untuk baris gudang lama yang tak punya batch.
+        Route::get('sterile-expiry/{sterilization}/units', [SterileExpiryController::class, 'units'])
+            ->whereNumber('sterilization');
+        // Packaging Ulang: tarik label kedaluwarsa dari rak → ronde RPK baru.
+        Route::post('sterile-expiry/{sterilization}/repackage', [SterileExpiryController::class, 'repackage'])
+            ->whereNumber('sterilization');
 
         // Sterilisasi CSSD: batch/siklus sterilisasi + unit di dalamnya
         Route::get('sterilizations/expiring', [SterilizationController::class, 'expiring']);
@@ -370,6 +378,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // dihapus. Didaftarkan sebelum apiResource-nya agar tidak tertangkap
         // sebagai `transaksi/header/{transaksiHeader}`.
         Route::post('transaksi/header/{transaksiHeader}/reset', [TransaksiHeaderController::class, 'reset']);
+        // Validasi kuitansi: mengisi `validation_at` + `validation_by`. Sama
+        // seperti reset, harus di atas apiResource-nya.
+        Route::post('transaksi/header/{transaksiHeader}/validasi', [TransaksiHeaderController::class, 'validasi']);
+        // Buka kunci: `validation_at` & `validation_by` dikosongkan lagi.
+        Route::post('transaksi/header/{transaksiHeader}/batal-validasi', [TransaksiHeaderController::class, 'batalValidasi']);
 
         Route::apiResource('transaksi/header', TransaksiHeaderController::class)
             ->parameters(['header' => 'transaksiHeader'])

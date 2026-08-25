@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Traits\HasAuditColumns;
+use App\Traits\MarksDisabledWhenDeleted;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -17,7 +18,11 @@ use Illuminate\Support\Str;
  */
 class Transaction extends Model
 {
-    use HasAuditColumns;
+    /**
+     * `MarksDisabledWhenDeleted` menurunkan kolom `disabled` dari `deleted_by`.
+     * Sengaja BUKAN di `$fillable` — lihat alasannya di trait tersebut.
+     */
+    use HasAuditColumns, MarksDisabledWhenDeleted;
 
     protected $table = 'transactions';
 

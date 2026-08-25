@@ -27,56 +27,43 @@ mengalir lewat pipeline dan **kembali `tersedia`** saat sterilisasi selesai.
 Bila stok `tersedia` tidak mencukupi untuk salah satu instrumen, seluruh proses
 dibatalkan (rollback) dan mengembalikan **422** — tidak ada batch yang dibuat.
 
-### Stok steril di gudang dikecualikan
+### Unit yang dipinjam atau masih di rak DIKECUALIKAN
 
-Unit yang **sudah jadi stok steril siap pakai di rak** tidak ikut jadi kandidat
-produksi, walaupun statusnya di Master `tersedia`.
+Kandidat produksi disaring dua kali, dan keduanya wajib:
 
-Sebelumnya unit seperti itu ikut terambil. Karena petugas hanya memilih **jenis +
-jumlah** — bukan unit fisiknya — baris gudangnya ditutup diam-diam
-(`closeStorageForReprocessed`) dan stoknya **lenyap dari halaman Gudang Steril
-tanpa pernah dipinjam**: `order_id` tetap NULL, barisnya masih ada di database,
-tapi tersaring `sterilePool()` karena `removed_at` sudah terisi.
+| Saringan | Membuang | Kenapa status saja tidak cukup |
+|---|---|---|
+| `instrument_stocks.status = tersedia` | Unit yang sedang **dipinjam**, sedang di tengah siklus produksi lain, atau baru dikembalikan | — |
+| `InstrumentStorage::heldInRackStockIds()` | Unit yang **fisiknya masih di rak** gudang steril: `deleted_by` NULL + `removed_at` NULL | Unit di rak statusnya TETAP `tersedia` sampai benar-benar didistribusikan — termasuk yang sudah direservasi sebuah order |
 
-Yang dikecualikan **hanya yang masih berlaku**. Unit yang sudah kedaluwarsa tetap
-boleh diproduksi ulang — justru itulah yang wajib diproses. Kalau ikut
-dilindungi, unitnya terjebak permanen: distribusi menolaknya lewat
-`blockedPackagingBarcodes()`, sedangkan halaman Kedaluwarsa hanya bisa memantau
-dan tidak punya aksi menarik unit dari rak.
+Kalau unit rak ikut terambil, baris gudangnya ditutup diam-diam oleh
+`closeStorageForReprocessed` — petugas hanya memilih **jenis + jumlah**, bukan unit
+fisiknya — dan stoknya **lenyap dari halaman Gudang Steril tanpa pernah dipinjam**.
+Untuk baris yang sudah direservasi order, ordernya ikut kehilangan barang yang
+sudah dijanjikan ke pemesan.
 
-Daftarnya dihitung `InstrumentStorage::readyStockIds()`.
+`heldInRackStockIds()` sengaja **bukan** turunan `sterilePool()`: scope itu
+mensyaratkan `order_id` NULL, sehingga baris yang direservasi order justru lolos
+dari saringan — padahal barangnya jelas masih menempati rak.
 
-### Jaminan database: satu unit, satu baris rak aktif
+**Pengecualiannya: unit yang sudah KEDALUWARSA tetap boleh diproduksi ulang.**
+Justru itulah yang wajib diproses. Kalau ikut dilindungi, unitnya terjebak
+permanen — distribusi menolaknya lewat `blockedPackagingBarcodes()`, sedangkan
+halaman Kedaluwarsa (`SterileExpiryController`) hanya punya `index` & `summary`:
+memantau, tanpa aksi menarik unit dari rak. Produksi adalah satu-satunya jalan
+keluar unit kedaluwarsa dari gudang. Baris raknya ditutup
+`closeStorageForReprocessed` (`status` → `keluar`, `removed_at` diisi) saat unit
+ditarik.
 
-Kolom turunan `instrument_storages.active_stock_id` + index unik
-`instrument_storages_active_stock_unique` menjamin satu unit fisik tidak pernah
-punya dua baris rak yang aktif sekaligus.
-
-```sql
-active_stock_id = CASE
-    WHEN deleted_by IS NULL AND removed_at IS NULL AND order_id IS NULL
-    THEN instrument_stock_id
-END
-```
-
-Baris riwayat (sudah dihapus / keluar rak / dipesan order) bernilai `NULL`, dan
-MySQL menganggap setiap NULL berbeda pada index unik — jadi riwayat tetap boleh
-menumpuk, yang dijaga hanya baris yang benar-benar sedang di rak.
-
-Definisinya **wajib sama** dengan `InstrumentStorage::sterilePool()`. Bila salah
-satunya diubah tanpa yang lain, index ini menjaga himpunan baris yang berbeda
-dari yang ditampilkan halaman Gudang Steril.
-
-Kolomnya VIRTUAL, bukan STORED: MySQL 8 menolak menambah kolom stored lewat
-ALTER in-place pada tabel ber-foreign-key (galat 1215).
-
-Gunanya sebagai lapis terakhir. Pemeriksaan di `StorageController` (unit harus
-berstatus `tersedia`) adalah baca-lalu-tulis — dua permintaan bersamaan bisa
-lolos berdua, lalu satu instrumen muncul dua kali sebagai stok steril, atau
-muncul di gudang padahal sedang dipinjam unit lain sehingga bisa terpesan dua
-kali. Saat index menyala, kedua jalur penyimpanan menerjemahkannya jadi **422**
-"Sebagian unit sudah tersimpan di gudang steril oleh proses lain", bukan galat
-SQL mentah.
+> **Tidak ada constraint database yang menjaga aturan ini** — index unik
+> `active_stock_id` sempat dirancang lalu dibatalkan, karena memasangnya pada
+> data yang sudah berjalan berisiko gagal di tengah jalan. Aturannya sepenuhnya
+> hidup di kode, jadi pemeriksaan di `StorageController` (unit harus berstatus
+> `tersedia` sebelum masuk rak) bersifat baca-lalu-tulis: dua petugas yang
+> menyimpan batch yang sama pada detik yang sama secara teori masih bisa
+> lolos berdua. `UniqueConstraintViolationException` tetap ditangkap di kedua
+> jalur penyimpanan sebagai jaring pengaman untuk database yang memasang
+> constraint-nya sendiri.
 
 ### Headers
 | Key | Value | Required |
@@ -151,14 +138,16 @@ SQL mentah.
 }
 ```
 
-Bila selisihnya karena unit tertahan di gudang steril, pesannya menyebutkan itu —
-tanpa keterangan ini petugas melihat "tersedia 2" padahal Master menampilkan 5
-unit bertanda Tersedia:
+**Angka `tersedia` di pesan ini SELALU lebih kecil** daripada jumlah bertanda
+"Tersedia" di Master › Katalog Instrumen, karena unit yang masih menempati rak
+ikut dibuang (lihat bagian "Unit yang dipinjam atau masih di rak dikecualikan").
+Supaya selisih itu bisa dijelaskan petugas, pesannya menyebutkan berapa yang
+tertahan:
 
 ```json
 {
   "status": false,
-  "message": "Stok \"Gunting Bedah\" tidak cukup: butuh 5, tersedia 2. 3 unit lain sudah jadi stok steril di gudang dan tidak bisa diproduksi ulang selama masih berlaku."
+  "message": "Stok \"Gunting Bedah\" tidak cukup: butuh 5, tersedia 2. 3 unit lain masih tersimpan di rak gudang steril dan tidak bisa diproduksi ulang selama masih berlaku."
 }
 ```
 

@@ -15,10 +15,23 @@ sumber data halaman **Alat Kedaluwarsa Steril** (`/cssd/kedaluwarsa`).
 
 ## Sumber data
 
-Baris `instrument_storages` ber-`order_id` **NULL** — persis basis yang dipakai
-`StorageController@inventory` (tanpa menyaring status baris gudang maupun status unit) — lalu
-dibatasi `expiry_date <= hari ini + days` dan diringkas **per batch sterilisasi**. Tanggal
-kedaluwarsa batch = tanggal **paling dekat** di antara barisnya.
+Baris `instrument_storages` yang **masih di rak** dan ber-`order_id` **NULL** — basis yang
+sama dengan `StorageController@inventory` (tanpa menyaring status baris gudang maupun status
+unit) — lalu dibatasi `expiry_date <= hari ini + days` dan diringkas **per batch sterilisasi**.
+Tanggal kedaluwarsa batch = tanggal **paling dekat** di antara barisnya.
+
+"Masih di rak" = scope `InstrumentStorage::stillInRack()`: `deleted_by` NULL, `removed_at`
+NULL, `disabled_at` NULL. Dulu penyaringnya hanya `order_id` NULL, sehingga baris yang sudah
+DIANGKAT dari rak — ditarik ke produksi lewat `ProductionController::closeStorageForReprocessed`,
+atau di-void oleh aksi [Packaging Ulang](repackage.md) — tetap terdaftar sebagai stok
+kedaluwarsa padahal barangnya sudah tidak ada di sana.
+
+## Aksi pada halaman ini
+
+| Aksi | Endpoint |
+|---|---|
+| Lihat isi batch per label kemasan | [`GET .../{sterilization}/units`](units.md) |
+| Tarik label kedaluwarsa → ronde pengemasan baru | [`POST .../{sterilization}/repackage`](repackage.md) |
 
 ## Aturan jumlah unit
 

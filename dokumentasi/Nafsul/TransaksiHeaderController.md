@@ -23,6 +23,7 @@ nama kolom database dan nama field API sama-sama Inggris. Responsnya JSON polos
 | ------------------------ | ------------------------ | ----------------------------------- |
 | `uuid`                   | `uuid`                   | Kunci publik untuk view/update/delete |
 | `transaction_number`     | `transaction_number`     | Nomor kuitansi, unik                |
+| `date`                   | `date`                   | Tanggal uang DITERIMA (`YYYY-MM-DD`) |
 | `transaction_type`       | `transaction_type`       | `kelompok` atau `pribadi`           |
 | `total`                  | `total`                  | decimal(15,2)                       |
 | `member_deduction`       | `member_deduction`       | Potongan anggota, **selalu rupiah** |
@@ -32,9 +33,80 @@ nama kolom database dan nama field API sama-sama Inggris. Responsnya JSON polos
 | `group_leader_deduction` | `group_leader_deduction` | Potongan ketua kelompok (rupiah, **dihitung**) |
 | `group_leader_fee`       | `group_leader_fee`       | Jasa ketua kelompok (rupiah, **dihitung**) |
 | `payment`                | `payment`                | Uang yang benar-benar diterima      |
-| `payment_method`         | `payment_method`         | `transfer` atau `cash`              |
+| `payment_method`         | `payment_method`         | `transfer`, `cash`, atau `other`    |
+| `validation_at`          | `validation_at`          | Waktu kuitansi diperiksa; `null` = **belum** divalidasi |
+| `validation_by`          | `validation_by`          | NAMA pemeriksa (bukan FK ke `users`) |
 | —                        | `balance`                | Dihitung, lihat di bawah            |
 | —                        | `transactions_count`     | Jumlah baris rincian                |
+| `disabled`               | `disabled`               | `true` bila barisnya sudah dihapus  |
+| `deleted_at`             | `deleted_at`             | Kapan dihapus                       |
+| `deleted_by`             | `deleted_by`             | **Username** penghapus              |
+
+---
+
+## `disabled` menandai baris yang sudah dihapus
+
+`transaction_headers` dan `transactions` sama-sama punya kolom `disabled`:
+`true` begitu barisnya dihapus, `false` selama belum.
+
+**Nilainya turunan, tidak pernah diisi tangan.** Trait
+`App\Traits\MarksDisabledWhenDeleted` mengisinya lewat event `saving`, jadi
+jalur apa pun yang menyimpan model — `delete()`, `restore()`, maupun `update()`
+biasa — meninggalkannya konsisten dengan `deleted_by`. Kolomnya juga sengaja
+**tidak** masuk `$fillable` supaya tidak bisa ditumpangi mass assignment dari
+request.
+
+Itu syarat yang membuatnya aman: `deleted_by` sudah jadi penentu tunggal apakah
+sebuah baris terhapus (global scope `active` membacanya), jadi kolom kedua yang
+menjawab pertanyaan yang sama hanya berguna kalau mustahil berselisih dengannya.
+
+> **Jangan menghapus baris lewat pembaruan massal** (`->update([...])` pada query
+> builder): itu tidak memicu event model, sehingga `disabled` tertinggal. Di
+> proyek ini penghapusan memang selalu lewat instance model — `HasAuditColumns::delete()`
+> pun begitu, karena hanya di sanalah `deleted_by` terisi.
+
+### Siapa yang menghapus
+
+Sudah tercatat sejak awal oleh `HasAuditColumns::delete()`, tiga kolom sekaligus:
+
+| Kolom | Isi |
+| ----- | --- |
+| `deleted_at` | Waktu penghapusan |
+| `deleted_by` | **Username** penghapus (perhatikan: `created_by`/`updated_by` memakai `name`) |
+| `deleted_user_id` | Id user penghapus, sebagai snapshot — bukan foreign key |
+
+`disabled`, `deleted_at`, dan `deleted_by` ikut dikirim pada payload header
+maupun rincian. Pada pemanggilan biasa ketiganya **selalu** bernilai
+`false`/`null` karena global scope menyaring baris terhapus; isinya baru terlihat
+bila sengaja diambil lewat `withTrashed()`. Tetap dikirim supaya bentuk
+responsnya satu macam, tidak berubah tergantung cakupan query.
+
+---
+
+## `date` bukan `created_at`
+
+`created_at` mencatat kapan BARISNYA DIBUAT di sistem; `date` mencatat kapan
+UANGNYA DITERIMA. Keduanya sering berbeda — setoran Sabtu baru diinput Senin,
+dan kuitansi lama dicatat ulang berbulan-bulan kemudian. Selama tidak ada kolom
+ini, laporan harian memakai tanggal input dan tidak pernah cocok dengan buku kas.
+
+Tipenya `date`, bukan `timestamp`: yang dicatat kuitansi adalah HARI penerimaan.
+Jam-menitnya tidak pernah dipakai, dan menyimpannya hanya memaksa setiap
+penyaringan membungkus kolomnya dengan `DATE()`.
+
+**Nullable di database, WAJIB di API.** Nullable hanya supaya migrasi
+`add_date_to_transaction_headers` tidak perlu memaksakan nilai palsu lewat
+DEFAULT pada baris lama; baris lama justru diisi dari `DATE(created_at)`-nya
+sendiri, perkiraan terbaik yang tersedia. Kuitansi baru selalu wajib membawa
+tanggalnya.
+
+Penyaring `date_from`/`date_to` pada `index` membaca
+`COALESCE(date, created_at)` — cadangan itu menjaga baris yang tanggalnya
+kebetulan kosong agar tidak diam-diam terbuang dari hasil.
+
+Form transaksi baru mengisinya **hari ini** secara bawaan, dihitung dari waktu
+LOKAL perangkat (bukan `toISOString()` yang memakai UTC — di WIB, setoran sebelum
+pukul 07.00 akan tercatat mundur satu hari).
 
 ---
 
@@ -183,6 +255,12 @@ Menambah cara bayar baru (mis. QRIS) pada ENUM berarti `ALTER TABLE` yang
 mengunci tabel; di sini cukup menambah satu nilai di konstanta
 `TransactionHeader::PAYMENT_METHODS`.
 
+Nilai `other` ("lain-lain") ditambahkan persis dengan cara itu — **tanpa
+migrasi**. Isinya setoran yang tidak lewat kas maupun rekening: potong tabungan,
+barter, atau titipan pengurus. Ditampung satu nilai saja alih-alih kolom
+keterangan bebas, karena yang dibutuhkan laporan hanya pemisahan kas/bank dan
+sisanya cukup dikelompokkan.
+
 ---
 
 ## Komisi ketua kelompok dihitung dari persentase
@@ -274,7 +352,8 @@ berubah-ubah antar halaman.
 | `member_deduction`       | numeric | Tidak    | ≥ 0, bawaan 0                       |
 | `group_leader_fee_percent` | numeric | Tidak  | 0–100, bawaan 0. **Persen**, bukan rupiah |
 | `payment`                | numeric | Ya       | ≥ 0                                 |
-| `payment_method`         | string  | Ya       | `transfer` atau `cash`              |
+| `payment_method`         | string  | Ya       | `transfer`, `cash`, atau `other`    |
+| `date`                   | date    | Ya       | Tanggal uang diterima (`YYYY-MM-DD`) |
 | `transactions`           | array   | Tidak    | Rincian iuran; lihat di bawah       |
 
 Gabungan `member_deduction + group_leader_deduction` tidak boleh melebihi
@@ -361,7 +440,7 @@ bagian dari kuitansi.
 
 | Field              | Pesan                                                                  |
 | ------------------ | ---------------------------------------------------------------------- |
-| `payment_method`   | Cara bayar hanya boleh transfer atau cash.                             |
+| `payment_method`   | Cara bayar hanya boleh transfer, tunai, atau lain-lain.                |
 | `transaction_type` | Jenis transaksi hanya boleh kelompok atau pribadi.                     |
 | `member_deduction` | Potongan anggota + potongan ketua kelompok tidak boleh melebihi total. |
 | `transaction_number` | No. Transaksi "260821001" sudah dipakai.                             |
@@ -408,6 +487,34 @@ Berbeda dengan `index`, respons `show` **menyertakan rinciannya** di field
 `update` memakai aturan yang sama dengan `store`, hanya saja barisnya sendiri
 dikecualikan dari pemeriksaan keunikan nomor. Mengirim `transaction_number`
 kosong **tidak** mengosongkan nomor yang sudah terbit — field-nya diabaikan.
+
+### Rincian ikut bisa diubah
+
+Bila `transactions` **dikirim**, isinya disamakan dengan kiriman itu: baris
+diperbarui, dibuat, atau dilepas sesuai kebutuhan, lalu `total` header dihitung
+ulang dari jumlah rinciannya — aturan yang sama dengan `store`. Header dan
+rincian karena itu tidak pernah bisa berselisih.
+
+Bila `transactions` **tidak dikirim**, rincian tidak disentuh sama sekali.
+Pembaruan yang hanya mengubah header (mis. cara bayar) tidak perlu ikut mengirim
+seluruh rinciannya, dan diamnya field ini TIDAK berarti "kosongkan". Mengirim
+array kosong ditolak **422**: kuitansi tanpa rincian tidak punya arti.
+
+| Field baris  | Wajib | Keterangan |
+| ------------ | ----- | ---------- |
+| `uuid`       | Tidak | Diisi untuk baris yang SUDAH ADA. Menandakan baris itu diperbarui **di tempat**, bukan dihapus lalu dibuat ulang — pemeriksaan duplikat periode bercakupan `withTrashed()`, jadi baris yang dibuat ulang dengan periode yang sama akan ditolak oleh bekasnya sendiri. Baris tanpa `uuid` dianggap baru. |
+| `member_id`  | Ya    | Tetap wajib walau tidak diubah form edit. |
+| `rate_id`    | Ya    | Idem. |
+| `payment_period` | Tergantung tarif | Wajib untuk tarif berulang, harus kosong untuk tarif sekali bayar. |
+| `amount`, `discount` | `amount` wajib | — |
+
+Baris yang tidak lagi ada di kiriman dilepas satu per satu lewat model, bukan
+mass delete: `HasAuditColumns::delete()` yang mengisi `deleted_by` hanya berjalan
+pada instance model, dan tanpa kolom itu barisnya tidak terhitung terhapus sama
+sekali.
+
+Kuitansi yang sudah **divalidasi** ditolak `update` maupun `destroy` — buka
+kuncinya dulu lewat `batal-validasi`.
 
 `destroy` melakukan soft delete. Rinciannya **tidak** ikut terhapus dan
 `transaction_header_id` sengaja dibiarkan terisi: relasinya otomatis terbaca
@@ -461,6 +568,111 @@ POST /api/nafsul/transaksi { payment_period: "01/2029", ... }
 
 Route-nya didaftarkan **sebelum** `apiResource('transaksi/header')`, alasannya
 sama dengan bagian di bawah.
+
+---
+
+## 6. validasi
+
+**Method:** POST
+**Endpoint:** /api/nafsul/transaksi/header/{uuid}/validasi
+**Auth:** Bearer Token (wajib)
+
+Tandai kuitansi **sudah diperiksa**: `validation_at` diisi waktu sekarang dan
+`validation_by` diisi nama pengguna yang login.
+
+Keduanya ditetapkan **server**, tidak ada satu pun field yang diterima dari body
+— jejak pemeriksaan tidak boleh bisa disetel klien.
+
+### Kenapa dua kolom, bukan satu boolean
+
+Boolean `validated` hanya menjawab "sudah atau belum". Yang dibutuhkan saat ada
+selisih justru **siapa** dan **kapan**. `validation_at` NULL sekaligus menjadi
+penanda statusnya, jadi tidak ada kolom kedua yang bisa menyimpang darinya.
+
+`validation_by` menyimpan **nama**, bukan foreign key ke `users` — mengikuti pola
+`created_by`/`updated_by` di seluruh proyek ini: nama pada kuitansi lama tidak
+boleh ikut berubah bila akun pemeriksanya di-rename atau dihapus.
+
+### Hanya sekali
+
+Kuitansi yang sudah punya `validation_at` ditolak **422**, bukan diam-diam
+ditimpa. Kalau nama & waktu pemeriksa pertama bisa tergeser oleh klik kedua siapa
+pun, jejaknya tidak lagi bisa dipakai menelusuri siapa yang sebenarnya memeriksa.
+
+### Setelah divalidasi, kuitansi terkunci
+
+`update()` dan `destroy()` menolak kuitansi yang sudah punya `validation_at`
+dengan **422**. Jejak pemeriksaan tidak ada artinya kalau isi kuitansinya masih
+bisa bergeser sesudahnya — nama pemeriksa tetap menempel pada angka yang bukan
+lagi yang ia periksa.
+
+Ditegakkan **di server**, bukan sekadar menyembunyikan tombolnya di halaman:
+tombol yang hilang hanya menutup jalan yang lewat antarmuka.
+
+```json
+{ "message": "Kuitansi 260821001 sudah divalidasi oleh Siti Aminah, jadi tidak bisa diubah lagi." }
+```
+
+Untuk membatalkannya, `validation_at` harus dikosongkan lebih dulu. Endpointnya
+sengaja belum ada supaya pembatalan validasi jadi keputusan sadar, bukan efek
+samping dari sebuah edit.
+
+### Response (200)
+
+```json
+{
+  "message": "Kuitansi 260821001 berhasil divalidasi.",
+  "data": {
+    "uuid": "…",
+    "transaction_number": "260821001",
+    "validation_at": "2026-08-23 09:14:02",
+    "validation_by": "Siti Aminah"
+  }
+}
+```
+
+### Error (422) — sudah divalidasi
+
+```json
+{ "message": "Kuitansi ini sudah divalidasi oleh Siti Aminah." }
+```
+
+Route-nya juga didaftarkan **sebelum** `apiResource('transaksi/header')`.
+
+---
+
+## 7. batal-validasi
+
+**Method:** POST
+**Endpoint:** /api/nafsul/transaksi/header/{uuid}/batal-validasi
+**Auth:** Bearer Token (wajib)
+
+Buka kunci: `validation_at` & `validation_by` dikosongkan lagi, sehingga kuitansi
+bisa diubah & dihapus kembali.
+
+Endpoint **terpisah** dari `update()`, bukan sekadar field yang boleh dikirim
+saat mengedit. Membuka kunci adalah keputusan sendiri — kalau ia bisa menumpang
+pada sebuah edit, kuncinya terbuka sebagai efek samping dan tidak ada yang
+menyadarinya.
+
+Jejak pemeriksa lama **tidak disimpan** ke mana pun: begitu dibuka, kuitansi
+kembali ke keadaan belum diperiksa seutuhnya, dan validasi berikutnya mencatat
+nama & waktu yang baru.
+
+### Response (200)
+
+```json
+{
+  "message": "Validasi kuitansi 260821001 dibatalkan. Kuitansi bisa diubah & dihapus lagi.",
+  "data": { "validation_at": null, "validation_by": null }
+}
+```
+
+### Error (422) — memang belum divalidasi
+
+```json
+{ "message": "Kuitansi 260821001 memang belum divalidasi." }
+```
 
 ---
 

@@ -145,7 +145,14 @@ class InstrumentStock extends Model
         //  - `order_id` NULL  → masih di rak (belum diklaim order mana pun);
         //  - `expiry_date`    → masih layak atau sudah kedaluwarsa;
         //  - `order_id` terisi → sudah keluar rak untuk sebuah order.
+        //
+        // Baris yang DI-VOID dilewati: ia tidak lagi menggambarkan keadaan unit.
+        // Tanpa ini, unit kedaluwarsa yang sudah ditarik untuk dikemas ulang tetap
+        // dinilai dari baris lamanya lalu ber-badge "Kedaluwarsa" padahal barangnya
+        // sedang antre disterilkan ulang (cabang `pengemasan` hanya menutupinya
+        // selama record RPK masih berstatus `diproses`).
         $storageIds = InstrumentStorage::selectRaw('MAX(id) as id')
+            ->whereNull('disabled_at')
             ->whereIn('instrument_stock_id', $activeIds)->groupBy('instrument_stock_id')->pluck('id');
         $latestStorage = InstrumentStorage::whereIn('id', $storageIds)
             ->get(['instrument_stock_id', 'order_id', 'removed_at', 'expiry_date'])
@@ -334,7 +341,8 @@ class InstrumentStock extends Model
      *  1. tidak dipegang order berjalan — scopeNotHeldByActiveOrder (`order_item.is_returned`
      *     + `order.canceled_at`/`deleted_by`);
      *  2. tidak tercatat di GUDANG STERIL — tidak ada baris `instrument_storages` yang
-     *     masuk `sterilePool()` (belum dihapus, `order_id` NULL, `removed_at` NULL).
+     *     masuk `sterilePool()` (belum dihapus, `order_id` NULL, `removed_at` NULL,
+     *     `disabled_at` NULL).
      *     Unit yang ada di rak sedang disimpan, bukan stok bebas: ia sudah punya tempat
      *     sendiri di tab Inventaris Gudang Steril dan tidak boleh diubah/dihapus dari
      *     master. Syaratnya sengaja dibaca dari baris yang SAMA dengan yang menyusun tab
@@ -349,6 +357,12 @@ class InstrumentStock extends Model
      *     produksi", sehingga unit yang sudah dikembalikan peminjam tidak pernah terhitung
      *     tersedia lagi seumur hidupnya.
      *
+     *     Baris gudang yang DI-VOID tidak dihitung di sini — itulah gunanya kolom
+     *     `disabled_at`. Saat unit kedaluwarsa ditarik dari rak untuk dikemas ulang,
+     *     barisnya tetap ada (riwayat), jadi tanpa penyaring ini siklusnya terbaca
+     *     "tuntas" dan unitnya langsung terhitung stok bebas — bisa tertarik ke batch
+     *     produksi lain padahal fisiknya sedang di tahap Packaging.
+     *
      * Ketiganya syarat DAN, dan tidak satu pun membaca kolom `status`.
      */
     public function scopeAvailableStock($query)
@@ -360,7 +374,8 @@ class InstrumentStock extends Model
                 ->whereColumn('instrument_storages.instrument_stock_id', 'instrument_stocks.id')
                 ->whereNull('instrument_storages.deleted_by')
                 ->whereNull('instrument_storages.order_id')
-                ->whereNull('instrument_storages.removed_at'))
+                ->whereNull('instrument_storages.removed_at')
+                ->whereNull('instrument_storages.disabled_at'))
             // Siklus produksi TERAKHIR unit belum tuntas (belum ada baris gudangnya).
             ->whereNotExists(fn ($p) => $p->selectRaw('1')
                 ->from('production_item')
@@ -373,7 +388,10 @@ class InstrumentStock extends Model
                 ->whereNotExists(fn ($g) => $g->selectRaw('1')
                     ->from('instrument_storages')
                     ->whereColumn('instrument_storages.production_item_id', 'production_item.id')
-                    ->whereNull('instrument_storages.deleted_by')));
+                    ->whereNull('instrument_storages.deleted_by')
+                    // Baris yang di-void tidak menuntaskan siklus — unitnya justru
+                    // baru dikirim balik ke tahap Packaging.
+                    ->whereNull('instrument_storages.disabled_at')));
     }
 
     public function instrument()

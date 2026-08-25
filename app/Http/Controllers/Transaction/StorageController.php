@@ -154,11 +154,17 @@ class StorageController extends Controller
             // Unit tanpa asal produksi — validasi bisnis, bukan error server.
             return $this->error($e->getMessage(), 422);
         } catch (UniqueConstraintViolationException $e) {
-            // Index `instrument_storages_active_stock_unique` menyala: unit itu
-            // sudah punya baris rak aktif. Terjadi bila dua petugas menyimpan
-            // batch yang sama bersamaan — pemeriksaan status di atas lolos
-            // berdua, dan database yang menahan yang kedua. Diterjemahkan ke
-            // pesan yang bisa ditindaklanjuti daripada galat SQL mentah.
+            // Sebuah constraint unik `instrument_storages` menahan penyimpanan:
+            // unit itu sudah punya baris rak. Terjadi bila dua petugas menyimpan
+            // batch yang sama bersamaan — pemeriksaan status di atas baca-lalu-
+            // tulis, jadi keduanya bisa lolos dan database yang menahan yang
+            // kedua. Diterjemahkan ke pesan yang bisa ditindaklanjuti daripada
+            // galat SQL mentah.
+            //
+            // Repo ini sendiri tidak memasang constraint tsb (rencana index unik
+            // `active_stock_id` dibatalkan; aturannya dijaga di kode — lihat
+            // InstrumentStorage::heldInRackStockIds()). Penangkap ini ditinggal
+            // sebagai jaring pengaman untuk database yang memasangnya sendiri.
             return $this->error(
                 'Sebagian unit sudah tersimpan di gudang steril oleh proses lain. '
                 .'Muat ulang halaman untuk melihat keadaan terbaru.',
@@ -482,11 +488,17 @@ class StorageController extends Controller
             // Unit tanpa asal produksi — validasi bisnis, bukan error server.
             return $this->error($e->getMessage(), 422);
         } catch (UniqueConstraintViolationException $e) {
-            // Index `instrument_storages_active_stock_unique` menyala: unit itu
-            // sudah punya baris rak aktif. Terjadi bila dua petugas menyimpan
-            // batch yang sama bersamaan — pemeriksaan status di atas lolos
-            // berdua, dan database yang menahan yang kedua. Diterjemahkan ke
-            // pesan yang bisa ditindaklanjuti daripada galat SQL mentah.
+            // Sebuah constraint unik `instrument_storages` menahan penyimpanan:
+            // unit itu sudah punya baris rak. Terjadi bila dua petugas menyimpan
+            // batch yang sama bersamaan — pemeriksaan status di atas baca-lalu-
+            // tulis, jadi keduanya bisa lolos dan database yang menahan yang
+            // kedua. Diterjemahkan ke pesan yang bisa ditindaklanjuti daripada
+            // galat SQL mentah.
+            //
+            // Repo ini sendiri tidak memasang constraint tsb (rencana index unik
+            // `active_stock_id` dibatalkan; aturannya dijaga di kode — lihat
+            // InstrumentStorage::heldInRackStockIds()). Penangkap ini ditinggal
+            // sebagai jaring pengaman untuk database yang memasangnya sendiri.
             return $this->error(
                 'Sebagian unit sudah tersimpan di gudang steril oleh proses lain. '
                 .'Muat ulang halaman untuk melihat keadaan terbaru.',

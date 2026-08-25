@@ -30,10 +30,10 @@ sheet terpisah keadaan itu tidak bisa terjadi.
 
 Sheet **Kuitansi**
 
-| Kode Kuitansi | Jenis   | Dibayar | Metode | Potongan Anggota | Potongan Ketua |
-| ------------- | ------- | ------- | ------ | ---------------- | -------------- |
-| K1            | pribadi | 150000  | cash   | 0                | 0              |
-| K2            | pribadi | 25000   | cash   | 0                | 0              |
+| Kode Kuitansi | Tanggal    | Jenis   | Dibayar | Metode | Potongan Anggota | Potongan Ketua |
+| ------------- | ---------- | ------- | ------- | ------ | ---------------- | -------------- |
+| K1            | 2026-08-23 | pribadi | 150000  | cash   | 0                | 0              |
+| K2            | 2026-08-23 | pribadi | 25000   | cash   | 0                | 0              |
 
 Sheet **Rincian**
 
@@ -80,14 +80,32 @@ id tidak pernah muncul di layar mana pun, jadi tidak ada cara wajar mengisinya.
 | Field              | Required | Keterangan                          |
 | ------------------ | -------- | ----------------------------------- |
 | `kode_kuitansi`    | Ya       | Kunci penghubung ke `rows`          |
+| `tanggal`          | Ya       | Tanggal uang DITERIMA, `YYYY-MM-DD` |
 | `jenis`            | Ya       | `kelompok` / `pribadi`              |
 | `dibayar`          | Ya       | Jumlah yang diterima                |
-| `metode`           | Ya       | `cash` / `transfer`                 |
+| `metode`           | Ya       | `cash` / `transfer` / `other`       |
 | `potongan_anggota` | Tidak    | Bawaan 0                            |
 | `potongan_ketua`   | Tidak    | **Persen** (10 = 10%), 0–100. Bawaan 0, dinolkan bila `pribadi` |
 
 `metode` & `jenis` dinormalkan ke huruf kecil sebelum divalidasi — "Cash" dan
 "Pribadi" diterima apa adanya.
+
+### Kolom wajib
+
+Sheet **Kuitansi**: `Kode Kuitansi`, `Tanggal`, `Jenis`, `Dibayar`, `Metode`.
+Sheet **Rincian**: `Kode Kuitansi`, `No. Anggota`, `Kode Tarif`.
+
+Kolom bertanda wajib disorot kuning di file template, dan barisnya ditolak di
+sisi klien sebelum dikirim — jadi galat "wajib diisi" muncul tanpa perlu bolak-balik
+ke server.
+
+**Kolom `Tanggal` tidak menebak.** Kuitansi tanpa tanggal ditolak, bukan diisi
+tanggal impor: data lama yang dicatat ulang berbulan-bulan kemudian akan dapat
+tanggal yang pasti salah, dan salahnya tidak kelihatan.
+
+Sel yang diformat sebagai **tanggal** di Excel juga aman: pembaca file mengubahnya
+jadi `YYYY-MM-DD` memakai tanggal LOKAL, sehingga tidak bergeser sehari seperti
+kalau dilewatkan UTC.
 
 **Potongan Ketua diisi persentase, bukan rupiah.** Nominalnya — potongan
 sekaligus jasa ketua — diturunkan dari persentase itu dikali total rincian, jadi

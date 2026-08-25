@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Traits\HasAuditColumns;
+use App\Traits\MarksDisabledWhenDeleted;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -17,12 +18,28 @@ use Illuminate\Support\Str;
  */
 class TransactionHeader extends Model
 {
-    use HasAuditColumns;
+    /**
+     * `MarksDisabledWhenDeleted` menurunkan kolom `disabled` dari `deleted_by`.
+     * Sengaja BUKAN di `$fillable`: nilainya ditetapkan trait itu, dan kalau bisa
+     * ditumpangi mass assignment ia bisa berselisih dengan keadaan hapus yang
+     * sebenarnya.
+     */
+    use HasAuditColumns, MarksDisabledWhenDeleted;
 
     protected $table = 'transaction_headers';
 
-    /** Cara bayar yang diterima. */
-    public const PAYMENT_METHODS = ['transfer', 'cash'];
+    /**
+     * Cara bayar yang diterima.
+     *
+     * `other` = lain-lain: setoran yang tidak lewat kas maupun rekening —
+     * potong tabungan, barter, atau titipan pengurus. Ditampung satu nilai saja
+     * alih-alih menambah kolom keterangan bebas: yang dibutuhkan laporan cuma
+     * pemisahan kas/bank, sisanya cukup dikelompokkan.
+     *
+     * Kolomnya `string`, bukan ENUM, jadi menambah nilai di sini TIDAK perlu
+     * migrasi — alasan yang sama dengan `transaction_type`.
+     */
+    public const PAYMENT_METHODS = ['transfer', 'cash', 'other'];
 
     /** Jenis kuitansi yang diterima. */
     public const TRANSACTION_TYPES = ['kelompok', 'pribadi'];
@@ -32,6 +49,9 @@ class TransactionHeader extends Model
 
     protected $fillable = [
         'transaction_number',
+        // Tanggal uang DITERIMA — bukan kapan barisnya dibuat (`created_at`).
+        // Keduanya sering berbeda: setoran Sabtu baru diinput Senin.
+        'date',
         'transaction_type',
         'total',
         'member_deduction',
@@ -42,9 +62,14 @@ class TransactionHeader extends Model
         'group_leader_fee',
         'payment',
         'payment_method',
+        // Jejak pemeriksaan kuitansi. `validation_at` NULL = belum divalidasi.
+        'validation_at',
+        'validation_by',
     ];
 
     protected $casts = [
+        'date' => 'date',
+        'validation_at' => 'datetime',
         'total' => 'decimal:2',
         'member_deduction' => 'decimal:2',
         'member_deduction_input' => 'decimal:4',

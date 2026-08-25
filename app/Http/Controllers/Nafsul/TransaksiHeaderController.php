@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Nafsul;
 use App\Http\Controllers\Controller;
 use App\Models\TransactionHeader;
 use App\Traits\HandlesTransactionRows;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -40,12 +41,17 @@ class TransaksiHeaderController extends Controller
         }
 
         // Filter tanggal transaksi (bukan periode iuran — itu milik rincian).
+        //
+        // Dibaca dari kolom `date`, dengan `created_at` sebagai cadangan lewat
+        // COALESCE. Cadangan itu untuk baris yang tanggalnya belum sempat terisi;
+        // migrasi `add_date_to_transaction_headers` sudah mengisi baris lama, tapi
+        // penyaring tidak boleh diam-diam membuang baris yang kebetulan kosong.
         if ($dari = $request->query('date_from')) {
-            $query->whereDate('created_at', '>=', $dari);
+            $query->whereRaw('DATE(COALESCE(`date`, created_at)) >= ?', [$dari]);
         }
 
         if ($sampai = $request->query('date_to')) {
-            $query->whereDate('created_at', '<=', $sampai);
+            $query->whereRaw('DATE(COALESCE(`date`, created_at)) <= ?', [$sampai]);
         }
 
         // Nomor transaksi urut kronologis, jadi pengurutannya cukup dari situ.
@@ -98,6 +104,9 @@ class TransaksiHeaderController extends Controller
             $header = TransactionHeader::create($data);
 
             foreach ($baris as $b) {
+                // `_id` hanya penanda internal validateRows (dipakai update);
+                // bukan kolom, jadi jangan ikut masuk mass assignment.
+                unset($b['_id']);
                 $header->transactions()->create($b);
             }
 
@@ -114,10 +123,15 @@ class TransaksiHeaderController extends Controller
      * Pesan galatnya menyebut nomor baris supaya pengguna tahu baris mana di
      * formnya yang bermasalah.
      */
-    private function validateRows(Request $request): array
+    private function validateRows(Request $request, ?TransactionHeader $header = null): array
     {
         $request->validate([
             'transactions' => ['nullable', 'array'],
+            // Diisi saat MENGEDIT: menandai baris ini sudah ada, jadi ia
+            // diperbarui di tempat alih-alih dibuat ulang. Tanpa itu baris lama
+            // terhapus lalu dibuat lagi, dan periode yang sama akan ditolak
+            // sendiri oleh pemeriksaan duplikat (cakupannya `withTrashed`).
+            'transactions.*.uuid' => ['nullable', 'string'],
             'transactions.*.member_id' => ['required', 'integer', 'exists:members,id'],
             'transactions.*.rate_id' => ['required', 'integer', 'exists:rates,id'],
             // Wajib-tidaknya ditentukan `fee_type` tarif barisnya, diperiksa
@@ -135,12 +149,20 @@ class TransaksiHeaderController extends Controller
             'transactions.*.amount.required' => 'Nominal pada baris :position wajib diisi.',
         ]);
 
+        // Baris yang SUDAH ada pada kuitansi ini, dipetakan dari uuid-nya.
+        // Dibatasi ke kuitansi ini supaya uuid milik kuitansi lain tidak bisa
+        // dipakai untuk menarik barisnya ke sini.
+        $idPerUuid = $header
+            ? $header->transactions()->pluck('id', 'uuid')
+            : collect();
+
         $hasil = [];
         $terpakai = [];
 
         foreach ($request->input('transactions', []) as $i => $baris) {
             $nomor = $i + 1;
             $field = "transactions.{$i}";
+            $idLama = isset($baris['uuid']) ? ($idPerUuid[$baris['uuid']] ?? null) : null;
 
             $data = [
                 'member_id' => (int) $baris['member_id'],
@@ -174,8 +196,12 @@ class TransaksiHeaderController extends Controller
                 $terpakai[$kunci] = $nomor;
             }
 
-            $this->periksaDuplikatPeriode($data, $field);
+            // Baris yang sedang diedit harus mengabaikan dirinya sendiri —
+            // kalau tidak, menyimpan ulang tanpa mengubah periode pun ditolak
+            // sebagai duplikat.
+            $this->periksaDuplikatPeriode($data, $field, $idLama);
 
+            $data['_id'] = $idLama;
             $hasil[] = $data;
         }
 
@@ -228,6 +254,81 @@ class TransaksiHeaderController extends Controller
         }
     }
 
+    /**
+     * Tandai kuitansi SUDAH DIPERIKSA: `validation_at` + `validation_by` diisi.
+     *
+     * Sekali saja. Kuitansi yang sudah divalidasi ditolak di sini, bukan
+     * diam-diam ditimpa — kalau nama & waktu pemeriksa pertama bisa tergeser
+     * oleh klik kedua siapa pun, jejaknya tidak lagi bisa dipakai menelusuri
+     * siapa yang sebenarnya memeriksa.
+     *
+     * Isi kuitansinya sendiri TIDAK dikunci: validasi di sini adalah jejak
+     * pemeriksaan, bukan penguncian data. Kalau nanti kuitansi tervalidasi
+     * perlu dilarang diedit, aturannya ditambahkan di `update()`/`destroy()`,
+     * bukan diselipkan ke sini.
+     */
+    public function validasi(TransactionHeader $transaksiHeader)
+    {
+        if ($transaksiHeader->validation_at !== null) {
+            return response()->json([
+                'message' => 'Kuitansi ini sudah divalidasi oleh '
+                    .($transaksiHeader->validation_by ?: 'pengguna lain').'.',
+            ], 422);
+        }
+
+        try {
+            $transaksiHeader->forceFill([
+                'validation_at' => now(),
+                // Nama pengguna, bukan id: mengikuti pola kolom audit di
+                // seluruh proyek ini agar tidak ikut berubah bila akunnya
+                // di-rename atau dihapus.
+                'validation_by' => auth()->user()?->name,
+            ])->save();
+
+            return response()->json([
+                'message' => "Kuitansi {$transaksiHeader->transaction_number} berhasil divalidasi.",
+                'data' => $this->transform($transaksiHeader->loadCount('transactions')),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Batalkan validasi: `validation_at` & `validation_by` dikosongkan lagi.
+     *
+     * Endpoint TERPISAH dari `update()`, bukan sekadar field yang boleh dikirim
+     * saat mengedit. Membuka kunci kuitansi adalah keputusan sendiri — kalau ia
+     * bisa ikut menumpang pada sebuah edit, kuncinya terbuka sebagai efek
+     * samping dan tidak ada yang menyadarinya.
+     *
+     * Jejak pemeriksa lama TIDAK disimpan ke mana-mana: begitu dibuka, kuitansi
+     * kembali ke keadaan belum diperiksa seutuhnya, dan validasi berikutnya
+     * mencatat nama & waktu yang baru.
+     */
+    public function batalValidasi(TransactionHeader $transaksiHeader)
+    {
+        if ($transaksiHeader->validation_at === null) {
+            return response()->json([
+                'message' => "Kuitansi {$transaksiHeader->transaction_number} memang belum divalidasi.",
+            ], 422);
+        }
+
+        try {
+            $transaksiHeader->forceFill([
+                'validation_at' => null,
+                'validation_by' => null,
+            ])->save();
+
+            return response()->json([
+                'message' => "Validasi kuitansi {$transaksiHeader->transaction_number} dibatalkan. Kuitansi bisa diubah & dihapus lagi.",
+                'data' => $this->transform($transaksiHeader->loadCount('transactions')),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
+        }
+    }
+
     public function show(TransactionHeader $transaksiHeader)
     {
         return response()->json(
@@ -237,30 +338,104 @@ class TransaksiHeaderController extends Controller
 
     public function update(Request $request, TransactionHeader $transaksiHeader)
     {
+        if ($tolakan = $this->tolakBilaTervalidasi($transaksiHeader, 'diubah')) {
+            return $tolakan;
+        }
+
         $data = $this->validateData($request, $transaksiHeader);
+
+        // Rincian hanya disentuh bila memang dikirim. Pembaruan yang hanya
+        // mengubah header (mis. cara bayar) tidak perlu ikut mengirim seluruh
+        // rinciannya, dan diamnya field ini TIDAK boleh diartikan "kosongkan".
+        $denganRincian = $request->has('transactions');
+        $baris = $denganRincian ? $this->validateRows($request, $transaksiHeader) : [];
+
+        if ($denganRincian && $baris === []) {
+            throw ValidationException::withMessages([
+                'transactions' => 'Kuitansi harus punya minimal satu rincian.',
+            ]);
+        }
 
         // Nomor yang sudah terbit tidak boleh terhapus jadi kosong saat diedit.
         if (empty($data['transaction_number'])) {
             unset($data['transaction_number']);
         }
 
-        // Persentase atau totalnya bisa berubah, jadi nominal jasa ketua selalu
-        // dihitung ulang — kalau tidak, nominalnya membeku di angka lama dan
-        // tidak lagi cocok dengan persentase yang tercatat di kuitansi ini.
-        $data = $this->terapkanPotonganAnggota($data);
-        $data = $this->terapkanJasaKetua($data);
+        return DB::transaction(function () use ($transaksiHeader, $data, $baris, $denganRincian) {
+            if ($denganRincian) {
+                // Total mengikuti jumlah rinciannya, bukan angka kiriman klien —
+                // aturan yang sama dengan store(). Tanpa ini header dan rincian
+                // bisa berselisih tanpa ada yang tahu mana yang benar.
+                $data['total'] = array_sum(array_map(fn ($b) => $this->totalBaris($b), $baris));
 
-        $this->periksaPotongan($data);
+                $this->sinkronkanRincian($transaksiHeader, $baris);
+            }
 
-        $transaksiHeader->update($data);
+            // Persentase atau totalnya bisa berubah, jadi nominal jasa ketua selalu
+            // dihitung ulang — kalau tidak, nominalnya membeku di angka lama dan
+            // tidak lagi cocok dengan persentase yang tercatat di kuitansi ini.
+            $data = $this->terapkanPotonganAnggota($data);
+            $data = $this->terapkanJasaKetua($data);
 
-        return response()->json(
-            $this->transform($transaksiHeader->fresh()->loadCount('transactions'))
-        );
+            $this->periksaPotongan($data);
+
+            $transaksiHeader->update($data);
+
+            return response()->json(
+                $this->transform($transaksiHeader->fresh()->loadCount('transactions'), true)
+            );
+        });
+    }
+
+    /**
+     * Samakan isi rincian kuitansi dengan yang dikirim form edit.
+     *
+     * Baris yang membawa `uuid` DIPERBARUI di tempat, bukan dihapus lalu dibuat
+     * ulang. Bedanya bukan sekadar rapi: pemeriksaan duplikat periode
+     * bercakupan `withTrashed()`, jadi baris yang dihapus lalu dibuat lagi
+     * dengan periode yang sama akan ditolak oleh bekasnya sendiri.
+     *
+     * Baris yang tidak lagi ada di kiriman dilepas SATU PER SATU lewat model,
+     * bukan mass delete: `HasAuditColumns::delete()` yang mengisi `deleted_by`
+     * hanya berjalan pada instance model, dan tanpa kolom itu barisnya tidak
+     * terhitung terhapus sama sekali (global scope `active` membacanya).
+     *
+     * @param  array<int,array<string,mixed>>  $baris
+     */
+    private function sinkronkanRincian(TransactionHeader $header, array $baris): void
+    {
+        $dipertahankan = [];
+
+        foreach ($baris as $b) {
+            $id = $b['_id'] ?? null;
+            unset($b['_id']);
+
+            $lama = $id !== null
+                ? $header->transactions()->whereKey($id)->first()
+                : null;
+
+            if ($lama) {
+                $lama->update($b);
+                $dipertahankan[] = $lama->id;
+
+                continue;
+            }
+
+            $dipertahankan[] = $header->transactions()->create($b)->id;
+        }
+
+        $header->transactions()
+            ->when($dipertahankan !== [], fn ($q) => $q->whereNotIn('id', $dipertahankan))
+            ->get()
+            ->each(fn ($row) => $row->delete());
     }
 
     public function destroy(TransactionHeader $transaksiHeader)
     {
+        if ($tolakan = $this->tolakBilaTervalidasi($transaksiHeader, 'dihapus')) {
+            return $tolakan;
+        }
+
         // Soft delete. Rincian tidak ikut terhapus dan `transaction_header_id`
         // sengaja dibiarkan terisi: relasinya otomatis terbaca null karena
         // global scope menyaring header yang sudah dihapus, dan kaitannya pulih
@@ -269,6 +444,33 @@ class TransaksiHeaderController extends Controller
         $transaksiHeader->delete();
 
         return response()->json(['message' => 'Header transaksi dihapus.']);
+    }
+
+    /**
+     * Kuitansi yang SUDAH divalidasi tidak boleh lagi diubah atau dihapus.
+     *
+     * Jejak pemeriksaan tidak ada artinya kalau isi kuitansinya masih bisa
+     * bergeser sesudahnya: nama pemeriksa tetap menempel pada angka yang bukan
+     * lagi yang ia periksa.
+     *
+     * Ditegakkan DI SERVER, bukan sekadar menyembunyikan tombolnya di halaman —
+     * tombol yang hilang hanya menutup jalan yang lewat antarmuka.
+     *
+     * Untuk mengeditnya lagi, kuncinya dibuka lebih dulu lewat `batalValidasi()` —
+     * endpoint tersendiri, supaya membuka kunci jadi keputusan sadar dan bukan efek
+     * samping yang menumpang pada sebuah edit.
+     */
+    private function tolakBilaTervalidasi(TransactionHeader $header, string $tindakan): ?JsonResponse
+    {
+        if ($header->validation_at === null) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => "Kuitansi {$header->transaction_number} sudah divalidasi"
+                .($header->validation_by ? ' oleh '.$header->validation_by : '')
+                .", jadi tidak bisa {$tindakan} lagi.",
+        ], 422);
     }
 
     /**
@@ -284,6 +486,10 @@ class TransaksiHeaderController extends Controller
                 'max:50',
                 Rule::unique('transaction_headers', 'transaction_number')->ignore($header?->id),
             ],
+            // Tanggal uang diterima. WAJIB walau kolomnya nullable di database:
+            // nullable hanya supaya migrasi tidak memaksakan nilai palsu pada
+            // baris lama, sedangkan kuitansi baru selalu punya tanggalnya.
+            'date' => ['required', 'date'],
             'transaction_type' => ['required', Rule::in(TransactionHeader::TRANSACTION_TYPES)],
             'total' => ['required', 'numeric', 'min:0', 'max:999999999999.99'],
             // Potongan anggota diterima sebagai NILAI KETIK + SATUAN, bukan
@@ -302,6 +508,8 @@ class TransaksiHeaderController extends Controller
             'payment_method' => ['required', Rule::in(TransactionHeader::PAYMENT_METHODS)],
         ], [
             'transaction_number.unique' => 'No. Transaksi ":input" sudah dipakai.',
+            'date.required' => 'Tanggal transaksi wajib diisi.',
+            'date.date' => 'Tanggal transaksi tidak valid.',
             'transaction_type.required' => 'Jenis transaksi wajib dipilih.',
             'transaction_type.in' => 'Jenis transaksi hanya boleh kelompok atau pribadi.',
             'total.required' => 'Total wajib diisi.',
@@ -313,7 +521,7 @@ class TransaksiHeaderController extends Controller
             'payment.required' => 'Pembayaran wajib diisi.',
             'payment.numeric' => 'Pembayaran harus berupa angka.',
             'payment_method.required' => 'Cara bayar wajib dipilih.',
-            'payment_method.in' => 'Cara bayar hanya boleh transfer atau cash.',
+            'payment_method.in' => 'Cara bayar hanya boleh transfer, tunai, atau lain-lain.',
         ]);
 
         $data['member_deduction_type'] = $data['member_deduction_type'] ?? 'amount';
@@ -421,6 +629,9 @@ class TransaksiHeaderController extends Controller
             'id' => $row->id,
             'uuid' => $row->uuid,
             'transaction_number' => $row->transaction_number,
+            // Tanggal uang diterima; `created_at` tetap dikirim terpisah sebagai
+            // jejak kapan barisnya dibuat — keduanya memang bisa berbeda.
+            'date' => optional($row->date)->toDateString(),
             'transaction_type' => $row->transaction_type,
             'total' => $row->total,
             'member_deduction' => $row->member_deduction,
@@ -434,9 +645,21 @@ class TransaksiHeaderController extends Controller
             'group_leader_fee' => $row->group_leader_fee,
             'payment' => $row->payment,
             'payment_method' => $row->payment_method,
+            // Jejak pemeriksaan. `validation_at` null = belum divalidasi —
+            // itulah satu-satunya penanda statusnya, tidak ada kolom boolean
+            // terpisah yang bisa menyimpang darinya.
+            'validation_at' => optional($row->validation_at)->toDateTimeString(),
+            'validation_by' => $row->validation_by,
             'balance' => $row->balance,
             'transactions_count' => $row->transactions_count ?? 0,
             'created_at' => optional($row->created_at)->toDateTimeString(),
+            // Jejak penghapusan. Pada pemanggilan biasa ketiganya SELALU null —
+            // global scope `active` menyaring baris terhapus — dan baru berisi
+            // saat sengaja diambil lewat `withTrashed()`. Tetap dikirim supaya
+            // bentuk responsnya satu macam, tidak berubah tergantung cakupan.
+            'disabled' => (bool) $row->disabled,
+            'deleted_at' => optional($row->deleted_at)->toDateTimeString(),
+            'deleted_by' => $row->deleted_by,
         ];
 
         if ($denganRincian) {
@@ -457,6 +680,9 @@ class TransaksiHeaderController extends Controller
                     'amount' => $t->amount,
                     'discount' => $t->discount,
                     'total' => $t->total,
+                    'disabled' => (bool) $t->disabled,
+                    'deleted_at' => optional($t->deleted_at)->toDateTimeString(),
+                    'deleted_by' => $t->deleted_by,
                 ]);
         }
 
