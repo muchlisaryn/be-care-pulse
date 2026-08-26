@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
+use App\Models\InstrumentStorage;
 use App\Models\Order;
 use App\Models\OrderEvent;
 use App\Models\OrderItem;
@@ -56,21 +57,14 @@ class MonitoringController extends Controller
         // Nomor label fisik tiap unit — supaya kolom pencarian halaman monitoring
         // bisa menemukan order dari hasil scan barcode bungkus. Dikumpulkan sekali
         // untuk seluruh halaman (bukan per ruangan) agar tidak N+1.
-        $barcodeByStock = $this->barcodeNoByStock(
+        $barcodeByOrderStock = $this->barcodeNoByOrderStock(
             collect($rooms->items())
-                ->flatMap(fn (Room $room) => $room->orders->flatMap(
-                    fn (Order $order) => $order->items->pluck('instrument_stock_id')
-                ))
-                ->filter()
-                ->map(fn ($id) => (int) $id)
-                ->unique()
-                ->values()
-                ->all()
+                ->flatMap(fn (Room $room) => $room->orders->flatMap(fn (Order $order) => $order->items))
         );
 
         // Kelompokkan unit yang dipinjam per (order, katalog instrumen).
         // Order 5 unit katalog yang sama -> 1 baris qty 5; single item -> qty 1.
-        $rooms->getCollection()->transform(function (Room $room) use ($barcodeByStock) {
+        $rooms->getCollection()->transform(function (Room $room) use ($barcodeByOrderStock) {
             $groups = [];
             $unitCount = 0;
             $readyCount = 0; // unit pada order "digudang" (siap diantar, belum di ruangan)
@@ -85,7 +79,7 @@ class MonitoringController extends Controller
                     continue;
                 }
 
-                $built = $this->borrowedGroupsOfOrder($order, $barcodeByStock);
+                $built = $this->borrowedGroupsOfOrder($order, $barcodeByOrderStock);
                 $unitCount += $built['units'];
                 // Kunci grup sudah memuat id order, jadi tidak pernah bentrok antar
                 // order dalam satu ruangan.
@@ -127,10 +121,10 @@ class MonitoringController extends Controller
      * `units` = jumlah "unit dipinjam" versi tampilan: paket dihitung per SET, bukan
      * per unit fisik di dalamnya; instrumen satuan dihitung per unit.
      *
-     * @param  array<int,string>  $barcodeByStock
+     * @param  array<string,string>  $barcodeByOrderStock  "orderId|stockId" → nomor label
      * @return array{groups: array<string,array<string,mixed>>, units: int}
      */
-    private function borrowedGroupsOfOrder(Order $order, array $barcodeByStock): array
+    private function borrowedGroupsOfOrder(Order $order, array $barcodeByOrderStock): array
     {
         $groups = [];
         $unitCount = 0;
@@ -159,7 +153,7 @@ class MonitoringController extends Controller
             }
             $pkg = $item->package_name ?? 'Paket';
             $labelsByPackage[$pkg] ??= [];
-            if ($barcode = $barcodeByStock[(int) $item->instrument_stock_id] ?? null) {
+            if ($barcode = $barcodeByOrderStock[$order->id.'|'.(int) $item->instrument_stock_id] ?? null) {
                 $labelsByPackage[$pkg][$barcode] = true;
             }
         }
@@ -229,7 +223,7 @@ class MonitoringController extends Controller
                 'status' => $stock->status,
                 // Nomor label fisik bungkus steril unit ini (bisa null bila
                 // unit belum pernah melewati tahap packaging).
-                'barcode_no' => $barcodeByStock[(int) $stock->id] ?? null,
+                'barcode_no' => $barcodeByOrderStock[$order->id.'|'.(int) $stock->id] ?? null,
                 'condition' => $stock->condition
                     ? ['id' => $stock->condition->id, 'name' => $stock->condition->name]
                     : null,
@@ -240,9 +234,48 @@ class MonitoringController extends Controller
     }
 
     /**
-     * Nomor label fisik (`packaging_item.barcode_no`) TERBARU tiap unit, di-key oleh
-     * instrument_stock_id. Label yang sudah di-void (`disabled`) diabaikan. Satu unit
-     * bisa punya beberapa label lintas siklus, jadi diambil yang paling akhir.
+     * Nomor label kemasan tiap unit PADA SIKLUS ORDER-nya, di-key
+     * `"{order_id}|{instrument_stock_id}"` — dasar aturan "satu label = satu bungkus
+     * = satu set" di seluruh daftar monitoring & tracking.
+     *
+     * Sumbernya jejak gudang steril order tsb (lihat
+     * [InstrumentStorage::packagingBarcodeMapByOrders()]), BUKAN label terakhir milik
+     * unit: unit yang sudah dikemas ulang untuk order berikutnya membawa nomor label
+     * baru, dan itu memecah set order lama jadi dua bungkus di tampilan. Label
+     * terbaru ([barcodeNoByStock()]) tinggal cadangan untuk unit tanpa jejak gudang
+     * (data lama / pinjam-alih antar ruangan).
+     *
+     * @param  Collection<int,OrderItem>  $items  baris order — wajib memuat `order_id`
+     * @return array<string,string>
+     */
+    private function barcodeNoByOrderStock(Collection $items): array
+    {
+        $cycle = InstrumentStorage::packagingBarcodeMapByOrders(
+            $items->pluck('order_id')->filter()->map(fn ($id) => (int) $id)->unique()->values()->all()
+        );
+        $latest = $this->barcodeNoByStock($this->stockIdsOf($items));
+
+        $map = [];
+
+        foreach ($items as $item) {
+            $stockId = (int) $item->instrument_stock_id;
+            $key = $item->order_id.'|'.$stockId;
+            $barcode = $cycle[$key] ?? $latest[$stockId] ?? null;
+
+            if ($barcode !== null) {
+                $map[$key] = $barcode;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * CADANGAN label: nomor label (`packaging_item.barcode_no`) TERBARU tiap unit,
+     * di-key oleh instrument_stock_id. Label yang sudah di-void (`disabled`)
+     * diabaikan. Satu unit bisa punya beberapa label lintas siklus, jadi diambil yang
+     * paling akhir — karena itu jangan dipakai langsung untuk mengelompokkan unit
+     * sebuah order, lihat [barcodeNoByOrderStock()].
      *
      * @param  array<int,int>  $stockIds
      * @return array<int,string>
@@ -357,14 +390,8 @@ class MonitoringController extends Controller
 
         // Nomor label kemasan seluruh unit pada halaman ini — dasar hitung SET paket
         // (satu label = satu bungkus = satu set). Dikumpulkan sekali agar tidak N+1.
-        $barcodeByStock = $this->barcodeNoByStock(
-            collect($orders->items())
-                ->flatMap(fn (Order $order) => $order->items->pluck('instrument_stock_id'))
-                ->filter()
-                ->map(fn ($id) => (int) $id)
-                ->unique()
-                ->values()
-                ->all()
+        $barcodeByOrderStock = $this->barcodeNoByOrderStock(
+            collect($orders->items())->flatMap(fn (Order $order) => $order->items)
         );
 
         $setsFallback = $this->requestedSetsByOrder(
@@ -372,7 +399,7 @@ class MonitoringController extends Controller
         );
 
         $orders->getCollection()->transform(
-            fn (Order $order) => $this->returnedRowPayload($order, $barcodeByStock, $setsFallback)
+            fn (Order $order) => $this->returnedRowPayload($order, $barcodeByOrderStock, $setsFallback)
         );
 
         return $this->success('Data order dikembalikan berhasil diambil.', $orders);
@@ -383,15 +410,15 @@ class MonitoringController extends Controller
      * [returned()] dan [tracking()] supaya kartu riwayat di kedua endpoint tidak
      * pernah berbeda isinya.
      *
-     * @param  array<int,string>  $barcodeByStock
+     * @param  array<string,string>  $barcodeByOrderStock  "orderId|stockId" → nomor label
      * @param  array<int,array<string,int>>  $setsFallback
      * @return array<string,mixed>
      */
-    private function returnedRowPayload(Order $order, array $barcodeByStock, array $setsFallback): array
+    private function returnedRowPayload(Order $order, array $barcodeByOrderStock, array $setsFallback): array
     {
         // Ringkasan kartu: paket per SET, satuan per UNIT — aturan yang sama
         // dengan kartu order aktif & kartu statistik.
-        $counts = $this->countAsSetsAndUnits($order->items, $barcodeByStock, $setsFallback);
+        $counts = $this->countAsSetsAndUnits($order->items, $barcodeByOrderStock, $setsFallback);
 
         return [
             'id' => $order->id,
@@ -513,14 +540,8 @@ class MonitoringController extends Controller
 
         // Label kemasan seluruh unit pada halaman ini — sekali query untuk kedua
         // kelompok agar tidak N+1.
-        $barcodeByStock = $this->barcodeNoByStock(
-            $borrowedOrders->concat($returnedOrders)
-                ->flatMap(fn (Order $order) => $order->items->pluck('instrument_stock_id'))
-                ->filter()
-                ->map(fn ($id) => (int) $id)
-                ->unique()
-                ->values()
-                ->all()
+        $barcodeByOrderStock = $this->barcodeNoByOrderStock(
+            $borrowedOrders->concat($returnedOrders)->flatMap(fn (Order $order) => $order->items)
         );
 
         $setsFallback = $this->requestedSetsByOrder(
@@ -530,7 +551,7 @@ class MonitoringController extends Controller
         $rows = [];
 
         foreach ($borrowedOrders as $order) {
-            $built = $this->borrowedGroupsOfOrder($order, $barcodeByStock);
+            $built = $this->borrowedGroupsOfOrder($order, $barcodeByOrderStock);
 
             $rows[] = [
                 'kind' => 'borrowed',
@@ -551,7 +572,7 @@ class MonitoringController extends Controller
                 'kind' => 'returned',
                 'order_id' => $order->id,
                 'order_code' => $order->code,
-                'order' => $this->returnedRowPayload($order, $barcodeByStock, $setsFallback),
+                'order' => $this->returnedRowPayload($order, $barcodeByOrderStock, $setsFallback),
             ];
         }
 
@@ -665,7 +686,7 @@ class MonitoringController extends Controller
     public function roomsSummary(): JsonResponse
     {
         $items = $this->borrowedItems();
-        $barcodes = $this->barcodeNoByStock($this->stockIdsOf($items));
+        $barcodes = $this->barcodeNoByOrderStock($items);
         $fallback = $this->requestedSetsByOrder($items->pluck('order_id')->unique()->values()->all());
 
         $today = now()->startOfDay();
@@ -729,7 +750,7 @@ class MonitoringController extends Controller
     public function borrowedSummary(): JsonResponse
     {
         $items = $this->borrowedItems();
-        $barcodes = $this->barcodeNoByStock($this->stockIdsOf($items));
+        $barcodes = $this->barcodeNoByOrderStock($items);
         $fallback = $this->requestedSetsByOrder($items->pluck('order_id')->unique()->values()->all());
 
         $counts = $this->countAsSetsAndUnits($items, $barcodes, $fallback);
@@ -798,11 +819,11 @@ class MonitoringController extends Controller
      * jangan pernah ke jumlah unit, supaya isi set tidak dihitung satu per satu.
      *
      * @param  Collection<int,OrderItem>  $items
-     * @param  array<int,string>  $barcodeByStock  instrument_stock_id → nomor label
+     * @param  array<string,string>  $barcodeByOrderStock  "orderId|stockId" → nomor label
      * @param  array<string,int>  $setsFallback  "orderId|namaPaket" → jumlah set diminta
      * @return array{sets: int, units: int}
      */
-    private function countAsSetsAndUnits(Collection $items, array $barcodeByStock, array $setsFallback = []): array
+    private function countAsSetsAndUnits(Collection $items, array $barcodeByOrderStock, array $setsFallback = []): array
     {
         $units = 0;
         $labels = [];
@@ -816,7 +837,7 @@ class MonitoringController extends Controller
 
             $key = $item->order_id.'|'.($item->package_name ?? 'Paket');
             $labels[$key] ??= [];
-            if ($barcode = $barcodeByStock[(int) $item->instrument_stock_id] ?? null) {
+            if ($barcode = $barcodeByOrderStock[$item->order_id.'|'.(int) $item->instrument_stock_id] ?? null) {
                 $labels[$key][$barcode] = true;
             }
         }

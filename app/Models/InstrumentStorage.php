@@ -105,6 +105,69 @@ class InstrumentStorage extends Model
             ->all();
     }
 
+    /**
+     * Peta NOMOR LABEL kemasan tiap unit PADA SIKLUS ORDER-nya, di-key
+     * `"{order_id}|{instrument_stock_id}"`.
+     *
+     * Jejaknya: baris gudang steril yang direservasi/dikeluarkan untuk order itu
+     * (`instrument_storages.order_id`) → batch sterilisasi baris tsb → nomor label
+     * yang dibawa unitnya di batch itu (`sterilization_items.packaging_barcode`).
+     *
+     * Sengaja per-SIKLUS, bukan "label terakhir unit": satu unit fisik lewat pipeline
+     * berkali-kali dan tiap siklus punya labelnya sendiri. Mengambil label terbaru
+     * menempelkan label siklus BARU pada order lama — dan karena tampilan
+     * mengelompokkan instrumen per nomor label, satu set utuh lalu tampak terpecah
+     * jadi dua bungkus begitu sebagian isinya dikemas ulang untuk order berikutnya.
+     *
+     * @param  array<int,int>  $orderIds
+     * @return array<string,string>
+     */
+    public static function packagingBarcodeMapByOrders(array $orderIds): array
+    {
+        $orderIds = collect($orderIds)
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        if (empty($orderIds)) {
+            return [];
+        }
+
+        $map = [];
+
+        // Global scope dimatikan & `deleted_by` di-kualifikasi manual: dengan JOIN,
+        // kolom itu ada di kedua tabel (lihat HasAuditColumns yang tidak meng-alias).
+        static::withoutGlobalScopes()
+            ->join('sterilization_items', function ($join) {
+                $join->on('sterilization_items.sterilization_id', '=', 'instrument_storages.sterilization_id')
+                    ->on('sterilization_items.instrument_stock_id', '=', 'instrument_storages.instrument_stock_id')
+                    ->whereNull('sterilization_items.deleted_by');
+            })
+            ->whereIn('instrument_storages.order_id', $orderIds)
+            ->whereNull('instrument_storages.deleted_by')
+            ->whereNotNull('sterilization_items.packaging_barcode')
+            // Urut id ASC → bila satu unit punya beberapa baris gudang untuk order yang
+            // sama (mis. dialokasikan ulang sebelum didistribusikan), baris TERAKHIR —
+            // yang benar-benar dikeluarkan — yang menang.
+            ->orderBy('instrument_storages.id')
+            // toBase(): hasilnya baris mentah, bukan model. Alias kolom dari tabel
+            // sebelah tidak boleh melewati mapping atribut Eloquent (lihat catatan
+            // "SENGAJA TIDAK ADA accessor" di bawah).
+            ->toBase()
+            ->get([
+                'instrument_storages.order_id',
+                'instrument_storages.instrument_stock_id',
+                'sterilization_items.packaging_barcode',
+            ])
+            ->each(function ($row) use (&$map) {
+                $map[$row->order_id.'|'.$row->instrument_stock_id] = $row->packaging_barcode;
+            });
+
+        return $map;
+    }
+
     /** Baris batch produksi asal unit — sumber nama, kode, asal & nama paket. */
     public function productionItem()
     {
