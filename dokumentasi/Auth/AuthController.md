@@ -4,8 +4,9 @@
 
 > **Default credentials (seeder):**
 >
-> - No Pegawai (field `username`): `000001` | Password: `Admin@12345` → akses semua menu
-> - Operator dibuat tanpa user default — buat via endpoint register/user
+> - Username (field `username`): `admin` | Password: `Admin@12345` → otoritas "Administrator", akses semua menu
+>
+> Dibuat oleh `AuthoritySeeder` + `AdminUserSeeder` (`php artisan db:seed`). Otoritas & user lain dibuat lewat menu Otoritas/Pengguna setelah login, bukan lewat seeder.
 
 > **Multi-session:** Satu akun dapat login dari beberapa perangkat secara bersamaan. Setiap login menghasilkan token berbeda yang independen.
 

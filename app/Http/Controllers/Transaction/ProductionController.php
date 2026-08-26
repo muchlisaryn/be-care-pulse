@@ -259,7 +259,8 @@ class ProductionController extends Controller
     }
 
     /**
-     * Pool unit `tersedia` per instrumen (urut kode) untuk seluruh kebutuhan.
+     * Pool unit yang benar-benar bebas dipakai per instrumen (urut kode) untuk
+     * seluruh kebutuhan.
      *
      * @param  array<int,array{instrument_id:int}>  $requirements
      */
@@ -267,23 +268,74 @@ class ProductionController extends Controller
     {
         $instrumentIds = collect($requirements)->pluck('instrument_id')->unique()->values()->all();
 
-        // Ketersediaan produksi MENGIKUTI stok `tersedia` di Master (unit ber-badge
-        // "Tersedia"), termasuk unit yang masih tersimpan di gudang steril — bila unit
-        // gudang ikut dipilih, baris gudangnya ditutup saat batch dibuat (lihat
-        // closeStorageForReprocessed) agar tidak jadi stok steril ganda.
+        // Dua saringan, dua kondisi berbeda — keduanya wajib:
+        //
+        //  1. `status = tersedia` membuang unit yang SEDANG DIPINJAM (juga yang
+        //     sedang di tengah siklus produksi lain);
+        //  2. heldInRackStockIds() membuang unit yang FISIKNYA MASIH DI RAK.
+        //     Status saja tidak cukup: unit di rak — bahkan yang sudah
+        //     direservasi sebuah order — statusnya tetap `tersedia` sampai
+        //     ordernya benar-benar didistribusikan.
+        //
+        // Kalau unit rak ikut terambil, baris gudangnya ditutup diam-diam oleh
+        // closeStorageForReprocessed (petugas cuma memilih jenis + jumlah, bukan
+        // unit fisiknya) dan stoknya lenyap dari Gudang Steril tanpa pernah
+        // dipinjam. Untuk baris yang direservasi order, ordernya ikut kehilangan
+        // barang yang sudah dijanjikan.
+        //
+        // Yang TIDAK dibuang: unit rak yang sudah KEDALUWARSA — justru itu yang
+        // wajib diproses ulang, dan produksi satu-satunya jalan keluarnya dari
+        // rak (lihat InstrumentStorage::heldInRackStockIds()).
+        //
         // `instrument` ikut dimuat: namanya di-snapshot ke production_item.
         return InstrumentStock::with('instrument')
             ->whereIn('instrument_id', $instrumentIds)
             ->where('status', InstrumentStock::STATUS_TERSEDIA)
+            ->whereNotIn('id', InstrumentStorage::heldInRackStockIds())
             ->orderBy('code')
             ->get()
             ->groupBy('instrument_id');
     }
 
     /**
+     * Berapa unit per instrumen yang tidak bisa dipakai karena fisiknya masih di
+     * rak gudang steril. Hanya untuk memperjelas pesan kekurangan stok.
+     *
+     * @param  array<int,int>  $instrumentIds
+     * @return array<int,int> instrument_id => jumlah
+     */
+    private function heldInStorage(array $instrumentIds): array
+    {
+        $ids = InstrumentStorage::heldInRackStockIds();
+
+        if ($ids === []) {
+            return [];
+        }
+
+        return InstrumentStock::whereIn('id', $ids)
+            ->whereIn('instrument_id', $instrumentIds)
+            ->selectRaw('instrument_id, COUNT(*) as jumlah')
+            ->groupBy('instrument_id')
+            ->pluck('jumlah', 'instrument_id')
+            ->map(fn ($n) => (int) $n)
+            ->all();
+    }
+
+    /**
      * Tutup baris gudang steril (status `tersimpan` → `keluar`) untuk unit yang
      * ditarik kembali ke produksi. Mencegah unit terhitung ganda sebagai stok steril
      * dan mencegah baris gudang ganda saat unit disimpan lagi di akhir siklus baru.
+     *
+     * Tetap diperlukan meski stok steril yang masih berlaku sudah dikeluarkan dari
+     * kandidat produksi: unit KEDALUWARSA masih boleh diproduksi ulang, dan baris
+     * raknya wajib ditutup saat itu terjadi.
+     *
+     * Penyaringnya `removed_at IS NULL`, yaitu kondisi FISIK "barisnya belum diangkat
+     * dari rak" — sengaja BUKAN `status` (pernah menyimpang dari kolom audit, lihat
+     * InstrumentStorage::sterilePool()) dan BUKAN `sterilePool()` (scope itu
+     * mensyaratkan `order_id` NULL, sehingga baris yang direservasi order tidak ikut
+     * tertutup lalu hidup lagi saat reservasinya dilepas).
+     *
      * Bila unit itu bagian sebuah paket, paket tsb otomatis jadi tak lengkap
      * (available_sterile_sets berkurang) — konsekuensi wajar menarik komponennya.
      *
@@ -295,7 +347,7 @@ class ProductionController extends Controller
             return;
         }
 
-        InstrumentStorage::where('status', InstrumentStorage::STATUS_TERSIMPAN)
+        InstrumentStorage::whereNull('removed_at')
             ->whereIn('instrument_stock_id', $stockIds)
             ->update([
                 'status' => InstrumentStorage::STATUS_KELUAR,
@@ -320,12 +372,23 @@ class ProductionController extends Controller
         }
 
         $names = Instrument::whereIn('id', array_keys($neededByInstrument))->pluck('name', 'id');
+        // Angka di sini SELALU lebih kecil daripada jumlah bertanda "Tersedia" di
+        // Master > Katalog Instrumen, karena unit yang masih di rak ikut dibuang.
+        // Tanpa keterangan berikut, selisih itu tidak bisa dijelaskan petugas.
+        $diRak = $this->heldInStorage(array_keys($neededByInstrument));
 
         foreach ($neededByInstrument as $instrumentId => $needed) {
             $available = $pools->get($instrumentId)?->count() ?? 0;
             if ($available < $needed) {
                 $name = $names[$instrumentId] ?? "#$instrumentId";
-                throw new \RuntimeException("Stok \"{$name}\" tidak cukup: butuh {$needed}, tersedia {$available}.");
+                $tertahan = $diRak[$instrumentId] ?? 0;
+                $keterangan = $tertahan > 0
+                    ? " {$tertahan} unit lain masih tersimpan di rak gudang steril dan tidak bisa diproduksi ulang selama masih berlaku."
+                    : '';
+
+                throw new \RuntimeException(
+                    "Stok \"{$name}\" tidak cukup: butuh {$needed}, tersedia {$available}.".$keterangan
+                );
             }
         }
     }

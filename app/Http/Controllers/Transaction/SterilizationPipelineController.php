@@ -10,6 +10,7 @@ use App\Models\PackagingItem;
 use App\Models\PipelineEvent;
 use App\Models\Sterilization;
 use App\Models\SterilizationItem;
+use App\Traits\ReprocessesPackaging;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -27,6 +28,8 @@ use Illuminate\Validation\Rule;
  */
 class SterilizationPipelineController extends Controller
 {
+    use ReprocessesPackaging;
+
     /** Relasi rantai untuk memuat unit fisik sebuah packaging (→ washing → produksi). */
     private const CHAIN = [
         'washing.production.items.instrumentStock.instrument',
@@ -460,12 +463,10 @@ class SterilizationPipelineController extends Controller
 
     /**
      * Kembalikan unit yang GAGAL steril ke tahap Packaging untuk diproses ulang.
-     * Untuk tiap PKG yang memuat unit gagal:
-     *  - item unit gagal di-void (`disabled`), jadi isi PKG lama menyusut tinggal
-     *    unit yang lolos & tetap terlihat di History;
-     *  - PKG lama sendiri hanya di-void bila SELURUH unitnya gagal;
-     *  - dibuat record RPK baru (ronde berikutnya) berisi unit gagal saja, sehingga
-     *    muncul lagi di tab Packaging.
+     *
+     * Mekanismenya (void item PKG lama, void PKG bila habis, buka ronde RPK baru)
+     * tinggal di `ReprocessesPackaging` karena dipakai bersama halaman Alat
+     * Kedaluwarsa Steril — lihat trait itu untuk aturannya.
      *
      * Unit yang SUDAH berhasil (rilis/`tersedia`) tidak akan ikut diproses ulang
      * karena pembuatan batch berikutnya hanya mengambil unit non-`tersedia`.
@@ -474,67 +475,11 @@ class SterilizationPipelineController extends Controller
      */
     private function returnFailedUnitsToPackaging(Sterilization $sterilization, array $failedStockIds): void
     {
-        $failed = collect($failedStockIds)->map(fn ($v) => (int) $v)->unique();
-        $sterilization->loadMissing('packagings.washing.production.items');
-
-        foreach ($sterilization->packagings as $pkg) {
-            if ($pkg->disabled) {
-                continue;
-            }
-
-            // Isi ronde ini dibaca dari packaging_item (bukan seluruh unit produksi),
-            // supaya PKG yang isinya sudah menyusut karena re-proses sebelumnya
-            // tidak salah dinilai.
-            $pkgStockIds = $pkg->items()->where('disabled', false)
-                ->pluck('instrument_stock_id')->filter()->map(fn ($v) => (int) $v);
-
-            // Lewati PKG yang tidak memuat unit gagal (semua unitnya berhasil).
-            if ($pkgStockIds->intersect($failed)->isEmpty()) {
-                continue;
-            }
-
-            // Item unit yang gagal di-void (pelacakan per unit) — isi PKG lama otomatis
-            // menyusut tinggal unit yang lolos.
-            $pkg->items()
-                ->whereIn('instrument_stock_id', $failed->all())
-                ->update(['disabled' => true, 'disabled_at' => now(), 'updated_by' => auth()->user()?->name]);
-
-            // PKG lama hanya di-void bila SELURUH unitnya gagal. Pada kegagalan
-            // sebagian, recordnya dibiarkan tampil di History berisi unit yang lolos
-            // — kalau ikut di-void, jejak pengemasan unit yang berhasil hilang dari
-            // tampilan petugas.
-            if ($pkgStockIds->diff($failed)->isEmpty()) {
-                $pkg->disabled = true;
-                $pkg->disabled_at = now();
-                $pkg->save();
-            }
-
-            // PKG BARU untuk pengemasan ulang — hanya berisi unit yang GAGAL. Diberi
-            // prefix RPK (deret nomor sendiri) + `reprocess_of` yang menunjuk batch
-            // asal, sehingga rantai re-prosesnya terlacak eksplisit.
-            $newPkg = Packaging::create([
-                'prefix' => Packaging::PREFIX_REPROCESS,
-                'washing_code' => $pkg->washing_code,
-                'reprocess_of' => $pkg->id,
-                'round' => Packaging::nextRound($pkg->washing_code),
-                'status' => Packaging::STATUS_DIPROSES,
-            ]);
-            $failedProdItems = ($pkg->washing?->production?->items ?? collect())
-                ->whereIn('instrument_stock_id', $pkgStockIds->intersect($failed)->all());
-            foreach ($failedProdItems as $pi) {
-                $newPkg->items()->create([
-                    'instrument_stock_id' => $pi->instrument_stock_id,
-                    'source' => $pi->source,
-                    'package_name' => $pi->package_name,
-                    // Label baru: nomornya ikut kode RPK, bukan warisan PKG lama.
-                    'barcode_no' => $newPkg->barcodeNoFor($pi->package_no),
-                ]);
-            }
-
-            PipelineEvent::record(PipelineEvent::STAGE_PACKAGING, $newPkg->full_code, PipelineEvent::ACTION_DIBUAT, [
-                'note' => 'Pengemasan ulang — unit gagal steril '.$sterilization->code.' dikembalikan (PKG lama '.$pkg->full_code.' di-void)',
-            ]);
-        }
+        $this->openReprocessRound(
+            $sterilization,
+            $failedStockIds,
+            'unit gagal steril '.$sterilization->code.' dikembalikan'
+        );
     }
 
     /**

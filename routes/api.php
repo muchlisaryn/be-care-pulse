@@ -30,6 +30,9 @@ use App\Http\Controllers\Nafsul\PendidikanController;
 use App\Http\Controllers\Nafsul\StatusAnggotaController;
 use App\Http\Controllers\Nafsul\StatusNikahController;
 use App\Http\Controllers\Nafsul\TarifController;
+use App\Http\Controllers\Nafsul\TransaksiController;
+use App\Http\Controllers\Nafsul\TransaksiHeaderController;
+use App\Http\Controllers\Nafsul\TransaksiImportController;
 use App\Http\Controllers\Nafsul\WilayahController;
 use App\Http\Controllers\Transaction\CleaningController;
 use App\Http\Controllers\Transaction\DistributionController;
@@ -253,6 +256,14 @@ Route::middleware('auth:sanctum')->group(function () {
         // CRUD sterilisasi) untuk halaman /cssd/kedaluwarsa
         Route::get('sterile-expiry/summary', [SterileExpiryController::class, 'summary']);
         Route::get('sterile-expiry', [SterileExpiryController::class, 'index']);
+        // Rincian isi satu batch, dipecah per LABEL kemasan (dasar pilihan petugas).
+        // Parameternya id batch steril mentah — bukan route model binding: daftar
+        // memakai id 0 untuk baris gudang lama yang tak punya batch.
+        Route::get('sterile-expiry/{sterilization}/units', [SterileExpiryController::class, 'units'])
+            ->whereNumber('sterilization');
+        // Packaging Ulang: tarik label kedaluwarsa dari rak → ronde RPK baru.
+        Route::post('sterile-expiry/{sterilization}/repackage', [SterileExpiryController::class, 'repackage'])
+            ->whereNumber('sterilization');
 
         // Sterilisasi CSSD: batch/siklus sterilisasi + unit di dalamnya
         Route::get('sterilizations/expiring', [SterilizationController::class, 'expiring']);
@@ -335,6 +346,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('ketua-kelompok/import', [KetuaKelompokController::class, 'import']);
         Route::apiResource('ketua-kelompok', KetuaKelompokController::class)
             ->parameters(['ketua-kelompok' => 'groupLeader']);
+        // `*/import` selalu didaftarkan sebelum apiResource-nya, kalau tidak
+        // tertangkap sebagai parameter show (mis. `wilayah/{region}`).
+        Route::post('wilayah/import', [WilayahController::class, 'import']);
         Route::apiResource('wilayah', WilayahController::class)
             ->parameters(['wilayah' => 'region']);
         // `kota/import` didaftarkan sebelum apiResource agar tidak tertangkap
@@ -346,11 +360,43 @@ Route::middleware('auth:sanctum')->group(function () {
             ->parameters(['tarif' => 'rate']);
         Route::apiResource('status-anggota', StatusAnggotaController::class)
             ->parameters(['status-anggota' => 'memberStatus']);
+        Route::post('pendidikan/import', [PendidikanController::class, 'import']);
         Route::apiResource('pendidikan', PendidikanController::class)
             ->parameters(['pendidikan' => 'education']);
+        Route::post('pekerjaan/import', [PekerjaanController::class, 'import']);
         Route::apiResource('pekerjaan', PekerjaanController::class)
             ->parameters(['pekerjaan' => 'occupation']);
         Route::apiResource('status-nikah', StatusNikahController::class)
             ->parameters(['status-nikah' => 'maritalStatus']);
+
+        // Transaksi iuran anggota. `->parameters()` ditulis eksplisit: tanpa
+        // itu Laravel mensingularkan `transaksi` jadi `transaksus`, sedangkan
+        // controller mem-binding `Transaction $transaksi`.
+        // Header didaftarkan lebih dulu: `transaksi/header` harus dikenali
+        // sebagai rute tersendiri, bukan tertangkap `transaksi/{transaksi}`.
+        // Reset kuitansi: rincian dilepas jadi tagihan lagi, kuitansinya
+        // dihapus. Didaftarkan sebelum apiResource-nya agar tidak tertangkap
+        // sebagai `transaksi/header/{transaksiHeader}`.
+        Route::post('transaksi/header/{transaksiHeader}/reset', [TransaksiHeaderController::class, 'reset']);
+        // Validasi kuitansi: mengisi `validation_at` + `validation_by`. Sama
+        // seperti reset, harus di atas apiResource-nya.
+        Route::post('transaksi/header/{transaksiHeader}/validasi', [TransaksiHeaderController::class, 'validasi']);
+        // Buka kunci: `validation_at` & `validation_by` dikosongkan lagi.
+        Route::post('transaksi/header/{transaksiHeader}/batal-validasi', [TransaksiHeaderController::class, 'batalValidasi']);
+
+        Route::apiResource('transaksi/header', TransaksiHeaderController::class)
+            ->parameters(['header' => 'transaksiHeader'])
+            ->names('transaksi-header');
+
+        // Sama seperti `transaksi/header`: harus sebelum apiResource, kalau
+        // tidak tertangkap sebagai `transaksi/{transaksi}`.
+        Route::get('transaksi/rencana', [TransaksiController::class, 'rencana']);
+
+        // Impor Excel: satu baris file = satu rincian, digabung jadi kuitansi
+        // lewat kolom `kode_kuitansi`. Juga harus di atas apiResource.
+        Route::post('transaksi/import', [TransaksiImportController::class, 'import']);
+
+        Route::apiResource('transaksi', TransaksiController::class)
+            ->parameters(['transaksi' => 'transaksi']);
     });
 });

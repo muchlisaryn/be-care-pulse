@@ -27,6 +27,44 @@ mengalir lewat pipeline dan **kembali `tersedia`** saat sterilisasi selesai.
 Bila stok `tersedia` tidak mencukupi untuk salah satu instrumen, seluruh proses
 dibatalkan (rollback) dan mengembalikan **422** — tidak ada batch yang dibuat.
 
+### Unit yang dipinjam atau masih di rak DIKECUALIKAN
+
+Kandidat produksi disaring dua kali, dan keduanya wajib:
+
+| Saringan | Membuang | Kenapa status saja tidak cukup |
+|---|---|---|
+| `instrument_stocks.status = tersedia` | Unit yang sedang **dipinjam**, sedang di tengah siklus produksi lain, atau baru dikembalikan | — |
+| `InstrumentStorage::heldInRackStockIds()` | Unit yang **fisiknya masih di rak** gudang steril: `deleted_by` NULL + `removed_at` NULL | Unit di rak statusnya TETAP `tersedia` sampai benar-benar didistribusikan — termasuk yang sudah direservasi sebuah order |
+
+Kalau unit rak ikut terambil, baris gudangnya ditutup diam-diam oleh
+`closeStorageForReprocessed` — petugas hanya memilih **jenis + jumlah**, bukan unit
+fisiknya — dan stoknya **lenyap dari halaman Gudang Steril tanpa pernah dipinjam**.
+Untuk baris yang sudah direservasi order, ordernya ikut kehilangan barang yang
+sudah dijanjikan ke pemesan.
+
+`heldInRackStockIds()` sengaja **bukan** turunan `sterilePool()`: scope itu
+mensyaratkan `order_id` NULL, sehingga baris yang direservasi order justru lolos
+dari saringan — padahal barangnya jelas masih menempati rak.
+
+**Pengecualiannya: unit yang sudah KEDALUWARSA tetap boleh diproduksi ulang.**
+Justru itulah yang wajib diproses. Kalau ikut dilindungi, unitnya terjebak
+permanen — distribusi menolaknya lewat `blockedPackagingBarcodes()`, sedangkan
+halaman Kedaluwarsa (`SterileExpiryController`) hanya punya `index` & `summary`:
+memantau, tanpa aksi menarik unit dari rak. Produksi adalah satu-satunya jalan
+keluar unit kedaluwarsa dari gudang. Baris raknya ditutup
+`closeStorageForReprocessed` (`status` → `keluar`, `removed_at` diisi) saat unit
+ditarik.
+
+> **Tidak ada constraint database yang menjaga aturan ini** — index unik
+> `active_stock_id` sempat dirancang lalu dibatalkan, karena memasangnya pada
+> data yang sudah berjalan berisiko gagal di tengah jalan. Aturannya sepenuhnya
+> hidup di kode, jadi pemeriksaan di `StorageController` (unit harus berstatus
+> `tersedia` sebelum masuk rak) bersifat baca-lalu-tulis: dua petugas yang
+> menyimpan batch yang sama pada detik yang sama secara teori masih bisa
+> lolos berdua. `UniqueConstraintViolationException` tetap ditangkap di kedua
+> jalur penyimpanan sebagai jaring pengaman untuk database yang memasang
+> constraint-nya sendiri.
+
 ### Headers
 | Key | Value | Required |
 |-----|-------|----------|
@@ -97,6 +135,19 @@ dibatalkan (rollback) dan mengembalikan **422** — tidak ada batch yang dibuat.
 {
   "status": false,
   "message": "Stok \"Gunting Bedah\" tidak cukup: butuh 5, tersedia 2."
+}
+```
+
+**Angka `tersedia` di pesan ini SELALU lebih kecil** daripada jumlah bertanda
+"Tersedia" di Master › Katalog Instrumen, karena unit yang masih menempati rak
+ikut dibuang (lihat bagian "Unit yang dipinjam atau masih di rak dikecualikan").
+Supaya selisih itu bisa dijelaskan petugas, pesannya menyebutkan berapa yang
+tertahan:
+
+```json
+{
+  "status": false,
+  "message": "Stok \"Gunting Bedah\" tidak cukup: butuh 5, tersedia 2. 3 unit lain masih tersimpan di rak gudang steril dan tidak bisa diproduksi ulang selama masih berlaku."
 }
 ```
 

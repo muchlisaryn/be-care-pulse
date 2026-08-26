@@ -27,6 +27,12 @@ class TarifController extends Controller
             $query->where('category', $kategori);
         }
 
+        // Halaman Transaksi hanya butuh tarif berulang; halaman master tetap
+        // memanggil tanpa filter ini dan menerima keduanya.
+        if ($feeType = $request->query('fee_type')) {
+            $query->where('fee_type', $feeType);
+        }
+
         if ($search = $request->query('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('code', 'like', "%{$search}%")
@@ -47,6 +53,9 @@ class TarifController extends Controller
         $data = $request->validate([
             'kode' => ['required', 'string', 'max:50', Rule::unique('rates', 'code')->whereNull('deleted_by')],
             'kategori' => ['nullable', 'string', 'max:50'],
+            // Kolom baru, jadi tidak punya padanan nama lama — dikirim & dibaca
+            // apa adanya sebagai `fee_type`.
+            'fee_type' => ['nullable', Rule::in(Rate::FEE_TYPES)],
             'grup_tarif' => ['nullable', 'string', 'max:50'],
             'nama_grup' => ['nullable', 'string', 'max:255'],
             'nama' => ['required', 'string', 'max:255'],
@@ -68,6 +77,7 @@ class TarifController extends Controller
     public function update(Request $request, Rate $rate)
     {
         $data = $request->validate([
+            'fee_type' => ['nullable', Rule::in(Rate::FEE_TYPES)],
             'grup_tarif' => ['nullable', 'string', 'max:50'],
             'nama_grup' => ['nullable', 'string', 'max:255'],
             'nama' => ['required', 'string', 'max:255'],

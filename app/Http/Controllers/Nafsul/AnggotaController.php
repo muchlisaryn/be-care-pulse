@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -61,6 +62,23 @@ class AnggotaController extends Controller
             $query->whereHas('groupLeader', fn ($q) => $q->where('code', $ketua));
         }
 
+        /**
+         * Sembunyikan anggota tertentu dari hasil.
+         *
+         * Dipakai form transaksi: anggota yang sudah masuk daftar rincian tidak
+         * ditawarkan lagi di dropdown. Penyaringannya di server, bukan di
+         * browser, karena daftar ini berpaginasi — membuang baris setelah
+         * diterima akan menyisakan halaman yang lebih pendek dari `per_page`
+         * dan bisa tampak kosong padahal masih ada anggota lain di belakangnya.
+         */
+        if ($kecuali = $request->query('exclude_ids')) {
+            $ids = array_filter(array_map('intval', explode(',', (string) $kecuali)));
+
+            if ($ids !== []) {
+                $query->whereNotIn('id', $ids);
+            }
+        }
+
         $tipe = $request->query('tipe');
         if (in_array($tipe, ['pribadi', 'kelompok'], true)) {
             $this->filterTipe($query, $tipe);
@@ -83,6 +101,21 @@ class AnggotaController extends Controller
             $sort = 'nama';
         }
         $query->orderBy(Member::kolomBaru($sort), $dir);
+
+        /**
+         * `all=1` → seluruh baris tanpa paginasi, sebagai ARRAY polos.
+         *
+         * Dipakai pengisi sheet referensi di impor transaksi: file template
+         * memuat daftar No. Anggota ↔ nama supaya petugas tidak perlu menebak
+         * nomornya. Sama dengan master Nafsul lain yang sudah punya `all`.
+         *
+         * Tanpa ini, pemanggil yang mengirim `all=1` tetap menerima OBJEK
+         * paginasi — bentuk yang tidak bisa di-`map` dan bikin pemanggilnya
+         * gagal dengan galat yang tidak menyebut sebabnya.
+         */
+        if ($request->boolean('all')) {
+            return response()->json($query->get());
+        }
 
         return response()->json($query->paginate($request->integer('per_page', 25)));
     }
@@ -157,7 +190,7 @@ class AnggotaController extends Controller
 
     public function update(Request $request, Member $member)
     {
-        $data = $this->validateData($request);
+        $data = $this->validateData($request, $member);
         $keluarga = $data['keluarga'] ?? null;
         unset($data['keluarga']);
 
@@ -416,19 +449,21 @@ class AnggotaController extends Controller
     }
 
     /**
-     * Nomor anggota = 2 digit tahun + 2 digit bulan (dari tgl_aktif / sekarang)
-     * + 3 digit urut yang dihitung ulang tiap bulan.
-     * Contoh: Agustus 2026 anggota ke-1 → "2608001".
+     * Nomor anggota = 2 digit tahun + 2 digit bulan + 2 digit tanggal
+     * (diambil dari tgl_aktif, atau hari ini bila kosong) + urut 2 digit yang
+     * dihitung ulang setiap hari.
+     *
+     * Contoh: 21 Agustus 2026, anggota pertama hari itu → "26082101".
      */
     private function generateNoAnggota(?string $tglAktif): string
     {
-        $prefix = ($tglAktif ? Carbon::parse($tglAktif) : now())->format('ym');
+        $prefix = ($tglAktif ? Carbon::parse($tglAktif) : now())->format('ymd');
 
-        // Nomor terbesar di bulan yang sama. `withTrashed()` agar nomor yang
-        // sudah dipakai record terhapus tidak dipakai ulang anggota baru.
+        // Nomor terbesar di tanggal yang sama. `withTrashed()` agar nomor milik
+        // record terhapus tidak dipakai ulang anggota baru.
         //
-        // Urut per panjang dulu, baru per nilai: kalau satu bulan pernah tembus
-        // 999 anggota, "26081000" harus dianggap lebih besar dari "2608999" —
+        // Urut per panjang dulu, baru per nilai: kalau satu hari tembus 99
+        // anggota, "260821100" harus dianggap lebih besar dari "26082199" —
         // perbandingan teks saja akan membalik keduanya.
         $max = Member::withTrashed()
             ->where('member_number', 'like', $prefix.'%')
@@ -436,14 +471,24 @@ class AnggotaController extends Controller
             ->orderBy('member_number', 'desc')
             ->value('member_number');
 
-        $seq = $max ? ((int) substr($max, 4)) + 1 : 1;
+        $seq = $max ? ((int) substr($max, 6)) + 1 : 1;
 
-        return $prefix.str_pad((string) $seq, 3, '0', STR_PAD_LEFT);
+        // Nomor yang dihasilkan tetap diperiksa satu per satu sebelum dipakai.
+        // Data lama memakai format lain (YYMM + 3 digit), dan nomor seperti
+        // "2608211" ikut tertangkap pola LIKE di atas lalu terbaca sebagai urut
+        // yang keliru. Tanpa pemeriksaan ini, impor bisa menabrak index unik
+        // `members.member_number` dan gagal dengan galat database mentah.
+        do {
+            $kandidat = $prefix.str_pad((string) $seq, 2, '0', STR_PAD_LEFT);
+            $seq++;
+        } while (Member::withTrashed()->where('member_number', $kandidat)->exists());
+
+        return $kandidat;
     }
 
     /**
      * Beri no_anggota otomatis ke tiap anggota keluarga, mengikuti nomor
-     * anggota utama + urutan. Contoh utama "2608001" → "2608001-01", "2608001-02".
+     * anggota utama + urutan. Contoh utama "26082101" → "26082101-01", "26082101-02".
      *
      * Baris dikirim dengan nama field API, jadi diterjemahkan ke kolom database
      * sebelum disimpan.
@@ -459,13 +504,26 @@ class AnggotaController extends Controller
         }, $keluarga, array_keys($keluarga));
     }
 
-    private function validateData(Request $request): array
+    /**
+     * `$member` diisi saat update supaya barisnya sendiri tidak dihitung
+     * sebagai bentrokan nomor.
+     */
+    private function validateData(Request $request, ?Member $member = null): array
     {
         return $request->validate([
             'kode_wilayah' => ['nullable', 'string', 'exists:regions,code'],
             'noketua' => ['nullable', 'string', 'exists:group_leaders,code'],
             'nokk' => ['nullable', 'string', 'max:50'],
-            'no_anggota' => ['nullable', 'string', 'max:50'],
+            // Dicek lewat query tabel langsung (bukan Eloquent), jadi baris
+            // yang sudah di-soft-delete ikut terhitung — sama persis dengan
+            // cakupan index unik di database, supaya validasi tidak meloloskan
+            // nomor yang justru ditolak saat disimpan.
+            'no_anggota' => [
+                'nullable',
+                'string',
+                'max:50',
+                Rule::unique('members', 'member_number')->ignore($member?->id),
+            ],
             'nama' => ['required', 'string', 'max:255'],
             'tgl_lahir' => ['nullable', 'date'],
             'kode_kota_lahir' => ['nullable', 'string', 'exists:cities,code'],
@@ -494,6 +552,8 @@ class AnggotaController extends Controller
             'keluarga.*.tgl_lahir' => ['nullable', 'date'],
             'keluarga.*.jenis_kelamin' => ['nullable', 'in:L,P'],
             'keluarga.*.pendidikan' => ['nullable', 'string', 'max:100'],
+        ], [
+            'no_anggota.unique' => 'No. Anggota :input sudah dipakai anggota lain.',
         ]);
     }
 }

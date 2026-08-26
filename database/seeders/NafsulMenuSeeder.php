@@ -23,12 +23,12 @@ use Illuminate\Support\Facades\DB;
  * Menu dicari berdasarkan `url` (untuk link) atau `name` + `title_menu_id`
  * (untuk grup, yang url-nya null).
  *
- * Urutan di DatabaseSeeder: SEBELUM AuthoritySeeder. Pada DB baru belum ada
- * authority, sehingga attach dilewati dan AuthoritySeeder-lah yang memberi
- * seluruh menu ke "Administrator". Pada DB lama yang authority-nya sudah ada,
- * menu baru di-attach ke "Administrator" SAJA — authority lain (mis. Operator)
- * sengaja tidak diberi akses otomatis agar hak aksesnya tidak melebar diam-diam.
- * Pemberian akses ke authority lain dilakukan manual lewat menu Otoritas.
+ * Satu-satunya seeder menu yang tersisa; seeder menu, otoritas, dan pengguna
+ * CSSD sudah dihapus dari repo ini. Menu baru di-attach ke authority
+ * "Administrator" SAJA bila authority itu memang sudah ada di DB — authority
+ * lain (mis. Operator) sengaja tidak diberi akses otomatis agar hak aksesnya
+ * tidak melebar diam-diam. Pada DB yang tabel authorities-nya masih kosong,
+ * attach dilewati: buat authority-nya dulu lewat menu Otoritas.
  *
  * Jalankan manual: php artisan db:seed --class=NafsulMenuSeeder
  */
@@ -57,14 +57,17 @@ class NafsulMenuSeeder extends Seeder
     {
         $this->renameUrls();
 
-        // Grup "Master Nafsul" ditempatkan di dalam title "Master Data" (bergabung
-        // dengan Master CSSD, Medis, dll) — bukan di title "Nafsul". Urutannya
-        // tepat setelah "Master CSSD" (sort_order 3); Medis & Clinical Pathway
-        // sudah digeser ke 4 & 5 di MenuSeeder.
-        $masterData = TitleMenus::where('title', 'Master Data')->first();
+        // Grup "Master Nafsul" menempel di title "Master Data" bila title itu ada
+        // (DB lama, bergabung dengan Master CSSD & Medis; sort_order 3 menaruhnya
+        // tepat setelah "Master CSSD"). TitleMenuSeeder sudah dihapus, jadi di DB
+        // baru title itu tidak pernah dibuat — di situ grupnya jatuh ke title
+        // "Nafsul" yang dibuat migrasi add_nafsul_transaksi_menu. Tanpa fallback
+        // ini title_menu_id-nya null dan grupnya nongkrong tanpa judul di sidebar.
+        $masterData = TitleMenus::where('title', 'Master Data')->first()
+            ?? TitleMenus::where('title', 'Nafsul')->first();
 
         if (! $masterData) {
-            $this->command?->warn('Title "Master Data" belum ada. Jalankan TitleMenuSeeder & MenuSeeder dulu.');
+            $this->command?->warn('Title "Master Data" maupun "Nafsul" tidak ada di tabel title_menuses — menu Nafsul dibuat tanpa judul grup.');
         }
 
         // Setiap grup: title tujuan + daftar anak.
@@ -117,15 +120,29 @@ class NafsulMenuSeeder extends Seeder
         }
     }
 
-    /** Grup menu (url null) — dicari berdasarkan nama + title, karena url tidak bisa jadi kunci. */
+    /**
+     * Grup menu (url null) — dicari berdasarkan nama, karena url tidak bisa jadi kunci.
+     *
+     * Sengaja TIDAK menyaring `title_menu_id`: title tujuan bisa berpindah antar
+     * eksekusi ("Master Data" di DB lama, "Nafsul" di DB baru). Kalau title ikut
+     * jadi kunci pencarian, grup yang sudah ada tidak ketemu dan seeder membuat
+     * "Master Nafsul" kedua — anak-anaknya lalu terbelah di dua grup. Title grup
+     * yang sudah ada justru diselaraskan ulang di sini.
+     */
     private function ensureGroup(array $group): Menu
     {
         $menu = Menu::where('name', $group['name'])
-            ->where('title_menu_id', $group['title_id'])
             ->whereNull('parent_id')
             ->first();
 
         if ($menu) {
+            $menu->title_menu_id = $group['title_id'];
+
+            if ($menu->isDirty()) {
+                $menu->save();
+                $this->command?->info("Grup \"{$menu->name}\" dipindahkan ke title id ".($group['title_id'] ?? 'null').'.');
+            }
+
             return $menu;
         }
 
@@ -192,10 +209,11 @@ class NafsulMenuSeeder extends Seeder
     /**
      * Beri akses menu baru ke authority "Administrator" saja.
      *
-     * Pada DB baru tabel authorities masih kosong, jadi ini tidak melakukan
-     * apa-apa dan pembagian akses diserahkan ke AuthoritySeeder. Authority lain
-     * sengaja dilewati: menambah menu tidak boleh diam-diam memperluas hak akses
-     * peran yang dibatasi.
+     * Pada DB yang tabel authorities-nya masih kosong ini tidak melakukan apa-apa,
+     * dan tidak ada lagi AuthoritySeeder yang menyusul — aksesnya diatur lewat menu
+     * Otoritas setelah authority dibuat. Authority selain Administrator sengaja
+     * dilewati: menambah menu tidak boleh diam-diam memperluas hak akses peran
+     * yang dibatasi.
      */
     private function grantToExistingAuthorities(): void
     {
@@ -208,7 +226,7 @@ class NafsulMenuSeeder extends Seeder
         $administratorId = DB::table('authorities')->where('name', 'Administrator')->value('id');
 
         if ($administratorId === null) {
-            $this->command?->info(count($this->createdMenuIds).' menu Nafsul dibuat (akses diatur AuthoritySeeder).');
+            $this->command?->info(count($this->createdMenuIds).' menu Nafsul dibuat. Authority "Administrator" belum ada — atur aksesnya lewat menu Otoritas.');
 
             return;
         }
