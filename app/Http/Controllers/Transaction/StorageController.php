@@ -202,10 +202,13 @@ class StorageController extends Controller
         ])
             // Scope BERSAMA dengan penyusun kandidat distribusi
             // (OrderController::distributionCandidates) — daftar ini dan yang bisa
-            // didistribusikan wajib berangkat dari baris yang sama. Termasuk
-            // `status = tersimpan`: baris unit yang sudah ditarik kembali ke produksi
-            // dulu tetap terpajang di sini sebagai stok, padahal fisiknya bukan lagi
-            // isi rak.
+            // didistribusikan wajib berangkat dari baris yang sama.
+            //
+            // Sengaja TIDAK membaca kolom `status`: syaratnya kolom audit
+            // (`removed_at`/`disabled_at`/`order_id`/`deleted_by`), lihat
+            // InstrumentStorage::sterilePool(). Dulu penarikan unit ke produksi
+            // sempat hanya menulis `status` tanpa `removed_at`, sehingga unit yang
+            // sudah tidak di rak tetap terpajang di sini sebagai stok.
             ->sterilePool()
             ->when(
                 $request->search,

@@ -22,3 +22,7 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Seeder tidak ikut ke GitHub — berisi kredensial bawaan & data contoh,
+# cukup dijalankan dari salinan lokal.
+/database/seeders

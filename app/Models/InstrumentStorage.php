@@ -113,7 +113,7 @@ class InstrumentStorage extends Model
     }
 
     /**
-     * Unit yang fisiknya MASIH MENEMPATI RAK dan stok sterilnya masih layak.
+     * Unit yang fisiknya MASIH MENEMPATI RAK — TANPA kecuali.
      *
      * Dipakai ProductionController untuk MENGELUARKAN unit ini dari kandidat
      * produksi. Stok steril yang sudah jadi tidak boleh ditarik ulang: petugas
@@ -129,13 +129,21 @@ class InstrumentStorage extends Model
      * terlihat sama saja dengan unit bebas dan bisa tertarik ke produksi —
      * membatalkan janji ke pemesan tanpa ada yang tahu.
      *
-     * "Masih layak" = punya tanggal kedaluwarsa dan belum lewat. Unit yang SUDAH
-     * kedaluwarsa (atau tersimpan tanpa tanggal) sengaja TIDAK ikut dilindungi —
-     * justru itulah yang wajib diproses ulang. Kalau ikut dikecualikan, unitnya
-     * terjebak PERMANEN: distribusi menolaknya lewat blockedPackagingBarcodes(),
-     * dan halaman Kedaluwarsa (`SterileExpiryController`) cuma punya `index` &
-     * `summary` — memantau, tanpa aksi menarik unit dari rak. Produksi adalah
-     * satu-satunya jalan keluar unit kedaluwarsa dari gudang.
+     * TANGGAL KEDALUWARSA TIDAK IKUT DISARING. Apa pun isi `expiry_date` — masih
+     * berlaku, sudah lewat, atau kosong — selama barisnya masih di rak, unitnya
+     * tidak boleh tertarik ke produksi. Produksi hanya menerima jenis + jumlah,
+     * bukan unit fisiknya, jadi tiap unit rak yang lolos ke sini baris gudangnya
+     * ditutup diam-diam oleh ProductionController::closeStorageForReprocessed()
+     * tanpa petugas pernah memilihnya: stoknya lenyap dari Gudang Steril, dan
+     * bungkus steril yang tersisa di rak berubah jadi set tak lengkap.
+     *
+     * Dulu unit kedaluwarsa sengaja DIBIARKAN lolos, karena produksi satu-satunya
+     * jalan keluarnya dari rak — halaman Kedaluwarsa waktu itu cuma `index` &
+     * `summary`, memantau tanpa aksi. Alasan itu sudah gugur: Packaging Ulang
+     * (`SterileExpiryController::repackage`) kini menarik label kedaluwarsa dari
+     * rak secara eksplisit — petugas memilih barisnya sendiri, satu label utuh
+     * sekaligus, dan baris raknya di-void. Jadi unit kedaluwarsa punya pintu
+     * keluar yang benar dan tidak perlu lagi menumpang jalur produksi.
      *
      * @return array<int,int> instrument_stock_id
      */
@@ -143,8 +151,6 @@ class InstrumentStorage extends Model
     {
         return static::withoutGlobalScopes()
             ->stillInRack()
-            ->whereNotNull('expiry_date')
-            ->whereDate('expiry_date', '>=', now()->toDateString())
             ->distinct()
             ->pluck('instrument_stock_id')
             ->map(fn ($id) => (int) $id)

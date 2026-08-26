@@ -283,9 +283,11 @@ class ProductionController extends Controller
         // dipinjam. Untuk baris yang direservasi order, ordernya ikut kehilangan
         // barang yang sudah dijanjikan.
         //
-        // Yang TIDAK dibuang: unit rak yang sudah KEDALUWARSA — justru itu yang
-        // wajib diproses ulang, dan produksi satu-satunya jalan keluarnya dari
-        // rak (lihat InstrumentStorage::heldInRackStockIds()).
+        // Saringan kedua itu TIDAK mengenal pengecualian: unit rak yang sudah
+        // kedaluwarsa pun ikut dibuang. Jalan keluarnya dari rak adalah Packaging
+        // Ulang di halaman Alat Kedaluwarsa Steril — di sana petugas memilih baris
+        // raknya sendiri — bukan produksi, yang cuma menerima jenis + jumlah
+        // (lihat InstrumentStorage::heldInRackStockIds()).
         //
         // `instrument` ikut dimuat: namanya di-snapshot ke production_item.
         return InstrumentStock::with('instrument')
@@ -326,9 +328,11 @@ class ProductionController extends Controller
      * ditarik kembali ke produksi. Mencegah unit terhitung ganda sebagai stok steril
      * dan mencegah baris gudang ganda saat unit disimpan lagi di akhir siklus baru.
      *
-     * Tetap diperlukan meski stok steril yang masih berlaku sudah dikeluarkan dari
-     * kandidat produksi: unit KEDALUWARSA masih boleh diproduksi ulang, dan baris
-     * raknya wajib ditutup saat itu terjadi.
+     * Sejak heldInRackStockIds() membuang SELURUH isi rak, jalur normal tidak lagi
+     * memilih unit yang punya baris rak terbuka, jadi method ini praktis tidak
+     * kena apa-apa. Ditinggal sebagai jaring pengaman untuk baris warisan yang
+     * penandanya tidak konsisten — menutup baris yang seharusnya sudah tertutup
+     * jauh lebih murah daripada satu unit terhitung ganda sebagai stok steril.
      *
      * Penyaringnya `removed_at IS NULL`, yaitu kondisi FISIK "barisnya belum diangkat
      * dari rak" — sengaja BUKAN `status` (pernah menyimpang dari kolom audit, lihat
