@@ -68,6 +68,17 @@ class TransaksiImportController extends Controller
     private const MAKS_BARIS = 200;
 
     /**
+     * Nama sheet, dikirim ikut tiap baris hasil.
+     *
+     * Frontend memakainya untuk memisahkan galat ke sheet yang benar saat
+     * menulis file "gagal impor" — kesalahan sheet Kuitansi harus mendarat di
+     * sheet Kuitansi, bukan tercampur ke daftar rincian.
+     */
+    private const SHEET_KUITANSI = 'Kuitansi';
+
+    private const SHEET_RINCIAN = 'Rincian';
+
+    /**
      * Kolom sheet "Kuitansi" → kolom tabel `transaction_headers`.
      *
      * `potongan_ketua` diisi PERSENTASE (10 = 10%), bukan rupiah. Nominalnya —
@@ -99,20 +110,64 @@ class TransaksiImportController extends Controller
             'headers.*' => ['array'],
         ]);
 
-        $kuitansi = $this->petakanKuitansi($payload['headers'] ?? []);
+        // TAHAP 1 — SHEET KUITANSI.
+        //
+        // Seluruh induk divalidasi lebih dulu, sebelum satu pun baris rincian
+        // disentuh. Dua alasannya:
+        //
+        //  - galat sheet Kuitansi jadi bisa ditunjuk ke BARIS SHEET KUITANSI-nya
+        //    sendiri. Sebelumnya validasi induk menumpang di dalam pemrosesan
+        //    grup, jadi kesalahan ketik di sheet Kuitansi dilaporkan sebagai
+        //    kegagalan baris Rincian — petugas membetulkan sheet yang salah;
+        //  - kuitansi yang isinya tidak sah tidak perlu lagi membuka transaksi
+        //    database untuk rinciannya.
+        $kuitansi = $this->siapkanKuitansi($payload['headers'] ?? []);
 
         $hasil = [];
 
-        foreach ($this->kelompokkan($payload['rows']) as $kode => $grup) {
+        // TAHAP 2 — SHEET RINCIAN, memakai induk yang sudah lolos tahap 1.
+        $grupRincian = $this->kelompokkan($payload['rows']);
+
+        foreach ($grupRincian as $kode => $grup) {
             foreach ($this->prosesGrup($kode, $grup, $kuitansi) as $baris) {
                 $hasil[] = $baris;
             }
         }
 
-        // Urutan hasil dikembalikan mengikuti nomor baris di file, bukan urutan
-        // pemrosesan per grup — daftar galat di layar harus bisa ditelusuri
-        // turun sejajar dengan filenya.
-        usort($hasil, fn ($a, $b) => $a['baris'] <=> $b['baris']);
+        // Galat sheet Kuitansi dilaporkan sebagai barisnya SENDIRI, bukan hanya
+        // menempel pada rinciannya: yang perlu dibetulkan petugas ada di sheet
+        // itu, dan tanpa baris ini file "gagal impor" tidak punya tempat untuk
+        // menuliskan alasannya.
+        //
+        // Yang dilaporkan hanya kuitansi yang DIPAKAI baris rincian permintaan
+        // ini, ditambah baris tanpa Kode Kuitansi — baris itu tidak mungkin
+        // dipakai siapa pun, tapi tetap harus dibetulkan. Saringannya perlu
+        // karena sheet Kuitansi dikirim UTUH di tiap batch: tanpa itu satu
+        // kuitansi salah dilaporkan berulang, sekali per batch, dan angka
+        // `gagal` menggelembung sebanyak jumlah batchnya.
+        foreach ($kuitansi['galat'] as $galat) {
+            if ($galat['kode'] !== '' && ! isset($grupRincian[$galat['kode']])) {
+                continue;
+            }
+
+            $hasil[] = [
+                'sheet' => self::SHEET_KUITANSI,
+                'baris' => $galat['baris'],
+                'status' => 'gagal',
+                'nama' => $galat['kode'],
+                'pesan' => $galat['pesan'],
+            ];
+        }
+
+        // Urutan hasil mengikuti nomor baris di file, bukan urutan pemrosesan
+        // per grup — daftar galat di layar harus bisa ditelusuri turun sejajar
+        // dengan filenya. Sheet Kuitansi ditaruh lebih dulu karena itu pula
+        // urutan pengerjaannya: betulkan induknya, baru rinciannya.
+        usort($hasil, function ($a, $b) {
+            $urutan = fn ($h) => $h['sheet'] === self::SHEET_KUITANSI ? 0 : 1;
+
+            return [$urutan($a), $a['baris']] <=> [$urutan($b), $b['baris']];
+        });
 
         $berhasil = count(array_filter($hasil, fn ($h) => $h['status'] === 'ok'));
 
@@ -124,32 +179,73 @@ class TransaksiImportController extends Controller
     }
 
     /**
-     * Sheet "Kuitansi" → peta kode kuitansi ⇒ baris mentahnya.
+     * TAHAP 1 — sheet "Kuitansi" divalidasi seluruhnya, sebelum rincian.
      *
-     * Validasi isinya sengaja ditunda sampai grup rinciannya diproses: kuitansi
-     * yang tidak dipakai baris mana pun tidak perlu dipersoalkan, dan galatnya
-     * baru berguna kalau bisa ditunjuk ke baris rincian yang gagal.
+     * Hasilnya dua peta yang sama-sama dikunci kode kuitansi:
+     *
+     *  - `siap`  — kolom `transaction_headers` yang sudah lolos validasi;
+     *  - `galat` — kuitansi yang ditolak, beserta NOMOR BARISNYA di sheet
+     *    Kuitansi dan alasannya.
+     *
+     * Kuitansi yang masuk `galat` tidak pernah sampai ke tahap rincian: seluruh
+     * rinciannya ikut dibatalkan dengan pesan yang menunjuk balik ke baris sheet
+     * Kuitansi yang harus dibetulkan.
      *
      * @param  array<int, array<string, mixed>>  $headers
-     * @return array<string, array<string, mixed>>
+     * @return array{siap: array<string, array<string, mixed>>, galat: array<string, array{kode: string, baris: int, pesan: string}>}
      */
-    private function petakanKuitansi(array $headers): array
+    private function siapkanKuitansi(array $headers): array
     {
-        $peta = [];
+        $siap = [];
+        $galat = [];
+        $barisKode = [];
 
-        foreach ($headers as $row) {
+        foreach ($headers as $i => $row) {
+            $baris = (int) ($row['baris'] ?? $i + 2);
             $kode = trim((string) ($row['kode_kuitansi'] ?? ''));
 
-            if ($kode !== '') {
-                // Kode kembar: yang pertama dipakai. Menolaknya di sini akan
-                // menjatuhkan seluruh impor gara-gara satu baris sheet induk;
-                // kuitansi kedua yang berbeda isinya akan ketahuan sendiri saat
-                // totalnya tidak cocok.
-                $peta[$kode] ??= $row;
+            if ($kode === '') {
+                $galat['#baris'.$baris] = [
+                    'kode' => '',
+                    'baris' => $baris,
+                    'pesan' => 'Kode Kuitansi wajib diisi — kolom itu yang menghubungkan kuitansi ini ke sheet Rincian.',
+                ];
+
+                continue;
+            }
+
+            // Kode kembar DITOLAK, tidak lagi diam-diam memakai yang pertama.
+            //
+            // Dulu yang kedua dibuang tanpa suara supaya satu baris induk tidak
+            // menjatuhkan seluruh impor. Sekarang kegagalannya bisa dibatasi ke
+            // kuitansi itu saja, jadi tidak ada alasan menyembunyikannya: dua
+            // baris berkode sama berarti salah satunya salah ketik, dan yang
+            // terbuang akan hilang tanpa jejak kalau tidak dilaporkan.
+            if (isset($barisKode[$kode])) {
+                $galat[$kode] = [
+                    'kode' => $kode,
+                    'baris' => $baris,
+                    'pesan' => "Kode Kuitansi \"{$kode}\" dipakai dua kali di sheet Kuitansi (baris {$barisKode[$kode]} dan {$baris}). Beri kode yang berbeda.",
+                ];
+                unset($siap[$kode]);
+
+                continue;
+            }
+
+            $barisKode[$kode] = $baris;
+
+            try {
+                $siap[$kode] = $this->headerDariSheet($row);
+            } catch (ValidationException $e) {
+                $galat[$kode] = [
+                    'kode' => $kode,
+                    'baris' => $baris,
+                    'pesan' => collect($e->errors())->flatten()->first() ?? $e->getMessage(),
+                ];
             }
         }
 
-        return $peta;
+        return ['siap' => $siap, 'galat' => $galat];
     }
 
     /**
@@ -188,13 +284,24 @@ class TransaksiImportController extends Controller
                 ]);
             }
 
-            if (! isset($kuitansi[$kode])) {
+            // Induknya sudah ditolak di tahap 1. Pesannya menunjuk balik ke
+            // baris sheet Kuitansi supaya petugas membetulkan sheet yang benar —
+            // rincian ini sendiri boleh jadi tidak ada salahnya sama sekali.
+            if (isset($kuitansi['galat'][$kode])) {
+                $galat = $kuitansi['galat'][$kode];
+
+                throw ValidationException::withMessages([
+                    'kode_kuitansi' => "sheet Kuitansi baris {$galat['baris']} ditolak: {$galat['pesan']}",
+                ]);
+            }
+
+            if (! isset($kuitansi['siap'][$kode])) {
                 throw ValidationException::withMessages([
                     'kode_kuitansi' => "Kode Kuitansi \"{$kode}\" tidak ada di sheet Kuitansi.",
                 ]);
             }
 
-            $header = $this->headerDariSheet($kuitansi[$kode]);
+            $header = $kuitansi['siap'][$kode];
             $rincian = array_map(fn ($row) => $this->rincianDariBaris($row), $grup);
 
             $this->periksaDuplikatDalamGrup($grup, $rincian);
@@ -227,6 +334,7 @@ class TransaksiImportController extends Controller
             });
 
             return array_map(fn ($row) => [
+                'sheet' => self::SHEET_RINCIAN,
                 'baris' => $row['baris'],
                 'status' => 'ok',
                 'nama' => $this->labelBaris($row),
@@ -258,6 +366,7 @@ class TransaksiImportController extends Controller
 
         return array_map(function ($row) use ($pesan, $kode, $satuBaris) {
             return [
+                'sheet' => self::SHEET_RINCIAN,
                 'baris' => $row['baris'],
                 'status' => 'gagal',
                 'nama' => $this->labelBaris($row),
