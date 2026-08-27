@@ -26,3 +26,7 @@ Thumbs.db
 # Seeder tidak ikut ke GitHub — berisi kredensial bawaan & data contoh,
 # cukup dijalankan dari salinan lokal.
 /database/seeders
+
+# Instruksi & dokumentasi internal — dipakai lokal, tidak perlu ikut ke GitHub.
+/CLAUDE.md
+/dokumentasi
