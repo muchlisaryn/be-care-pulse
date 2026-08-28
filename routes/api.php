@@ -339,6 +339,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // sebagai `anggota/{anggota}`.
         Route::post('anggota/import', [AnggotaController::class, 'import']);
         Route::get('anggota/statistik', [AnggotaController::class, 'statistik']);
+        // Riwayat iuran satu anggota, untuk modal di master anggota. Di atas
+        // apiResource agar tidak tertangkap sebagai `anggota/{anggota}`.
+        Route::get('anggota/{member}/riwayat-transaksi', [AnggotaController::class, 'riwayatTransaksi']);
+        // Ringkasan satu angka untuk form transaksi; lihat pembayaranTerakhir().
+        Route::get('anggota/{member}/pembayaran-terakhir', [AnggotaController::class, 'pembayaranTerakhir']);
         Route::apiResource('anggota', AnggotaController::class)
             ->parameters(['anggota' => 'member']);
 
@@ -383,6 +388,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('transaksi/header/{transaksiHeader}/validasi', [TransaksiHeaderController::class, 'validasi']);
         // Buka kunci: `validation_at` & `validation_by` dikosongkan lagi.
         Route::post('transaksi/header/{transaksiHeader}/batal-validasi', [TransaksiHeaderController::class, 'batalValidasi']);
+        // Cetak biling (PDF). Sama seperti dua rute di atas, harus mendahului
+        // apiResource-nya. Hanya kuitansi yang sudah divalidasi yang dilayani.
+        Route::get('transaksi/header/{transaksiHeader}/biling', [TransaksiHeaderController::class, 'biling']);
 
         Route::apiResource('transaksi/header', TransaksiHeaderController::class)
             ->parameters(['header' => 'transaksiHeader'])

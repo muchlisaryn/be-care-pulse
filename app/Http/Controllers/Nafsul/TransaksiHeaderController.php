@@ -3,13 +3,18 @@
 namespace App\Http\Controllers\Nafsul;
 
 use App\Http\Controllers\Controller;
+use App\Models\Transaction;
 use App\Models\TransactionHeader;
 use App\Traits\HandlesTransactionRows;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 /**
  * Header transaksi iuran Nafsul — satu baris = satu kuitansi pembayaran.
@@ -617,6 +622,220 @@ class TransaksiHeaderController extends Controller
                 'member_deduction' => 'Potongan anggota + potongan ketua kelompok tidak boleh melebihi total.',
             ]);
         }
+    }
+
+    /**
+     * Cetak biling kuitansi ke PDF.
+     *
+     * Dikembalikan inline (`stream`), bukan sebagai unduhan: frontend
+     * menampilkannya di iframe sebagai pratinjau dan menyediakan tombol unduh
+     * sendiri — pola yang sama dengan cetak asesmen clinical pathway.
+     *
+     * HANYA untuk kuitansi yang sudah divalidasi. Biling adalah dokumen final
+     * yang dipegang anggota; kuitansi yang belum diperiksa masih bisa berubah
+     * isinya, dan lembar tercetak yang tidak lagi cocok dengan datanya justru
+     * lebih merepotkan daripada tidak punya lembar sama sekali. Pemeriksaan ini
+     * ada di server, bukan cuma menyembunyikan tombolnya di frontend: URL-nya
+     * bisa ditebak dari nomor kuitansi mana pun.
+     */
+    public function biling(TransactionHeader $transaksiHeader): Response|JsonResponse
+    {
+        if ($transaksiHeader->validation_at === null) {
+            return response()->json([
+                'message' => 'Kuitansi ini belum divalidasi, jadi bilingnya belum bisa dicetak.',
+            ], 422);
+        }
+
+        $rincian = $transaksiHeader->transactions()
+            ->with(['member:id,member_number,name'])
+            ->get();
+
+        $rupiah = fn ($n) => 'Rp '.number_format((float) $n, 0, ',', '.');
+
+        $baris = $this->barisBilingPerAnggota($transaksiHeader, $rincian);
+
+        $tagihan = (float) $transaksiHeader->total
+            - (float) $transaksiHeader->member_deduction
+            - (float) $transaksiHeader->group_leader_deduction;
+
+        $selisih = round((float) $transaksiHeader->balance, 2);
+
+        $qr = null;
+
+        if ($transaksiHeader->validation_by) {
+            // `encoding('UTF-8')` wajib: bawaannya ISO-8859-1, dan nama pemeriksa
+            // yang memuat satu saja huruf di luar Latin-1 membuat encoder-nya
+            // melempar WriterException — cetak biling gagal total gara-gara QR.
+            //
+            // Data URI: dompdf tidak bisa mengambil berkas dari luar dokumen.
+            $svg = QrCode::format('svg')
+                ->encoding('UTF-8')
+                ->size(90)
+                ->margin(0)
+                ->generate(
+                    "Kuitansi {$transaksiHeader->transaction_number} - diverifikasi oleh {$transaksiHeader->validation_by}"
+                );
+            $qr = 'data:image/svg+xml;base64,'.base64_encode($svg);
+        }
+
+        $pdf = Pdf::loadView('pdf.nafsul_biling', [
+            'header' => $transaksiHeader,
+            'tanggal' => optional($transaksiHeader->date)->translatedFormat('d F Y') ?? '—',
+            'divalidasi' => optional($transaksiHeader->validation_at)->translatedFormat('d F Y H:i') ?? '—',
+            'qr' => $qr,
+            'baris' => $baris,
+            'uang' => [
+                'total' => $rupiah($transaksiHeader->total),
+                'member_deduction' => $rupiah($transaksiHeader->member_deduction),
+                'group_leader_deduction' => $rupiah($transaksiHeader->group_leader_deduction),
+                // Yang seharusnya diterima setelah potongan. Dihitung ulang di
+                // sini dengan rumus yang sama dengan `balance`, karena accessor
+                // itu langsung mengembalikan SELISIHNYA terhadap `payment` —
+                // angka antaranya tidak pernah keluar.
+                'tagihan' => $rupiah($tagihan),
+                'payment' => $rupiah($transaksiHeader->payment),
+            ],
+            // `balance` = seharusnya − dibayar. Positif berarti masih kurang
+            // bayar, negatif berarti lebih bayar; nol tidak ditampilkan sama
+            // sekali karena tidak ada yang perlu diberitahukan.
+            'selisih' => [
+                'nilai' => $selisih,
+                'label' => $selisih > 0 ? 'Kurang Bayar' : 'Lebih Bayar',
+                'rupiah' => $rupiah(abs($selisih)),
+            ],
+        ])->setPaper('a4', 'portrait');
+
+        return $pdf->stream('biling-'.$transaksiHeader->transaction_number.'.pdf');
+    }
+
+    /**
+     * Rincian kuitansi → SATU BARIS PER ANGGOTA untuk lembar biling.
+     *
+     * Biling adalah lembar yang dipegang penyetor, bukan salinan basis data:
+     * seorang anggota yang membayar 12 bulan sekaligus cukup ditulis satu baris
+     * "01/2026 – 12/2026", bukan dua belas baris yang isinya berulang. Rincian
+     * per bulan tetap ada di aplikasi bagi yang perlu menelusurinya.
+     *
+     * @param  Collection<int, Transaction>  $rincian
+     * @return array<int, array<string, mixed>>
+     */
+    private function barisBilingPerAnggota(TransactionHeader $header, $rincian): array
+    {
+        $perAnggota = $rincian->groupBy('member_id');
+        $idAnggota = $perAnggota->keys()->all();
+
+        if ($idAnggota === []) {
+            return [];
+        }
+
+        /**
+         * Periode PALING AWAL yang pernah tercatat atas nama tiap anggota —
+         * seluruh riwayatnya, bukan hanya kuitansi ini.
+         *
+         * Dipakai menentukan kolom Kunjungan: "B" bila kuitansi inilah yang
+         * memuat iuran paling awal anggota itu, "L" bila ia sudah punya iuran
+         * yang lebih dulu. Dasarnya sengaja periode TERAWAL, bukan sekadar
+         * "punya transaksi lain": kalau pakai yang kedua, memasukkan iuran bulan
+         * berikutnya akan mengubah lembar yang sudah tercetak dari B jadi L.
+         */
+        $awalGlobal = Transaction::whereIn('member_id', $idAnggota)
+            ->whereNotNull('month')
+            ->selectRaw('member_id, MIN(year * 100 + month) AS awal')
+            ->groupBy('member_id')
+            ->pluck('awal', 'member_id');
+
+        // Cadangan untuk anggota yang seluruh iurannya tarif sekali bayar:
+        // mereka tidak punya periode sama sekali, jadi tidak ada yang bisa
+        // dibandingkan — yang tersisa cuma "punya iuran di luar kuitansi ini".
+        $adaDiLuar = Transaction::whereIn('member_id', $idAnggota)
+            ->where(fn ($q) => $q->whereNull('transaction_header_id')
+                ->orWhere('transaction_header_id', '!=', $header->id))
+            ->selectRaw('member_id, COUNT(*) AS jml')
+            ->groupBy('member_id')
+            ->pluck('jml', 'member_id');
+
+        $baris = [];
+
+        foreach ($perAnggota as $memberId => $milik) {
+            $periode = $milik->filter(fn ($t) => $t->month !== null)
+                ->map(fn ($t) => (int) $t->year * 100 + (int) $t->month)
+                ->sort()
+                ->values();
+
+            if ($periode->isEmpty()) {
+                $baru = ((int) ($adaDiLuar[$memberId] ?? 0)) === 0;
+            } else {
+                $baru = (int) ($awalGlobal[$memberId] ?? PHP_INT_MAX) >= $periode->first();
+            }
+
+            $anggota = $milik->first()->member;
+
+            $baris[] = [
+                'no_anggota' => $anggota?->member_number,
+                'nama' => $anggota?->name ?? '—',
+                'periode' => $this->rentangPeriode($periode->first(), $periode->last()),
+                'kunjungan' => $baru ? 'B' : 'L',
+                'jumlah_nilai' => $milik->sum(fn ($t) => (float) $t->total),
+            ];
+        }
+
+        return $this->bagiPotongan($baris, (float) $header->member_deduction);
+    }
+
+    /** `202601`, `202612` → `"01/2026 – 12/2026"`. Sama → satu periode saja. */
+    private function rentangPeriode(?int $awal, ?int $akhir): string
+    {
+        if ($awal === null) {
+            return 'sekali bayar';
+        }
+
+        $tulis = fn (int $p) => str_pad((string) ($p % 100), 2, '0', STR_PAD_LEFT).'/'.intdiv($p, 100);
+
+        return $awal === $akhir ? $tulis($awal) : $tulis($awal).' – '.$tulis($akhir);
+    }
+
+    /**
+     * Bagi potongan anggota — satu angka di tingkat kuitansi — ke baris-barisnya,
+     * sebanding dengan jumlah masing-masing.
+     *
+     * `member_deduction` memang tersimpan per KUITANSI, bukan per anggota, jadi
+     * angka per baris di sini adalah pembagian, bukan data tersimpan. Sisa
+     * pembulatannya ditimpakan ke baris terakhir supaya kolomnya berjumlah
+     * PERSIS sama dengan potongan di ringkasan — lembar biling yang kolomnya
+     * tidak menjumlah adalah lembar yang akan dipertanyakan.
+     *
+     * Dibagi dalam RUPIAH BULAT, bukan dua desimal. Lembar ini mencetak rupiah
+     * bulat, jadi pembagian sen hanya akan hilang di pembulatan tampilan dan
+     * membuat kolomnya meleset justru karena sisanya sudah "diselesaikan" pada
+     * angka yang tidak pernah tercetak.
+     *
+     * @param  array<int, array<string, mixed>>  $baris
+     * @return array<int, array<string, mixed>>
+     */
+    private function bagiPotongan(array $baris, float $potongan): array
+    {
+        $rupiah = fn ($n) => 'Rp '.number_format((float) $n, 0, ',', '.');
+        $total = array_sum(array_column($baris, 'jumlah_nilai'));
+        $sasaran = (int) round($potongan);
+        $terbagi = 0;
+        $akhir = count($baris) - 1;
+
+        foreach ($baris as $i => $b) {
+            // Baris terakhir menerima SISANYA, bukan hasil hitungnya sendiri.
+            // Itu juga yang menyelamatkan keadaan total nol: tanpa ini seluruh
+            // baris jadi nol dan potongannya hilang dari lembar.
+            $bagian = $i === $akhir
+                ? $sasaran - $terbagi
+                : ($total > 0 ? (int) round($sasaran * $b['jumlah_nilai'] / $total) : 0);
+
+            $terbagi += $bagian;
+
+            $baris[$i]['jumlah'] = $rupiah($b['jumlah_nilai']);
+            $baris[$i]['potongan'] = $rupiah($bagian);
+            unset($baris[$i]['jumlah_nilai']);
+        }
+
+        return $baris;
     }
 
     /**

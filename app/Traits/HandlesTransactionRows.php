@@ -41,7 +41,7 @@ trait HandlesTransactionRows
      *
      * | `fee_type` tarif      | `payment_period` | Hasil                  |
      * | --------------------- | ---------------- | ---------------------- |
-     * | `one_time`            | harus kosong     | `month`/`year` = null  |
+     * | `one_time`            | diabaikan        | `month`/`year` = null  |
      * | `recurring` atau NULL | wajib diisi      | `month`/`year` terisi  |
      *
      * `fee_type` yang masih NULL diperlakukan sebagai `recurring`: itu keadaan
@@ -51,15 +51,40 @@ trait HandlesTransactionRows
      */
     protected function periodeUntukTarif(?string $periode, int $rateId, string $field): array
     {
-        $sekaliBayar = Rate::whereKey($rateId)->value('fee_type') === Rate::FEE_TYPE_ONE_TIME;
+        return $this->periodeUntukSifatTarif(
+            $periode,
+            Rate::whereKey($rateId)->value('fee_type'),
+            $field
+        );
+    }
 
+    /**
+     * Sama dengan `periodeUntukTarif()`, tapi sifat tarifnya DIBERIKAN, bukan
+     * dibaca ulang dari database.
+     *
+     * Dipakai impor massal, yang sudah memuat seluruh tarif rujukan satu kali di
+     * awal permintaan. Lewat `periodeUntukTarif()` setiap baris menambah satu
+     * query hanya untuk mengambil kolom yang sudah ada di tangan — pada file
+     * ratusan ribu baris, biaya itu saja sudah lebih besar daripada seluruh
+     * penyimpanannya.
+     *
+     * Aturannya sengaja tetap di sini, bukan disalin ke pemanggilnya: baris yang
+     * ditolak lewat form satuan harus juga ditolak lewat impor.
+     */
+    protected function periodeUntukSifatTarif(?string $periode, ?string $feeType, string $field): array
+    {
+        $sekaliBayar = $feeType === Rate::FEE_TYPE_ONE_TIME;
+
+        // Periode pada tarif sekali bayar DIKOSONGKAN, bukan ditolak.
+        //
+        // Dulu ini melempar "Tarif sekali bayar tidak memakai periode". Yang
+        // ditolaknya bukan data yang salah, melainkan data yang berlebih: kolom
+        // itu memang tidak punya arti untuk pungutan sekali bayar, dan sudah ada
+        // jawaban yang benar untuknya — null. Menolak justru memaksa pengirimnya
+        // mengosongkan sel satu per satu untuk sampai ke hasil yang sama, dan
+        // pada file migrasi (sistem lama mencatat periode pada SEMUA baris) itu
+        // berarti ratusan ribu baris ditolak tanpa satu pun benar-benar salah.
         if ($sekaliBayar) {
-            if (filled($periode)) {
-                throw ValidationException::withMessages([
-                    $field => 'Tarif sekali bayar tidak memakai periode.',
-                ]);
-            }
-
             return ['month' => null, 'year' => null];
         }
 
@@ -115,10 +140,34 @@ trait HandlesTransactionRows
             ->exists();
 
         if ($bentrok) {
-            throw ValidationException::withMessages([
-                $field => 'Anggota ini sudah punya transaksi untuk tarif dan periode tersebut.',
-            ]);
+            throw ValidationException::withMessages([$field => $this->pesanDuplikatPeriode()]);
         }
+    }
+
+    /**
+     * Kunci gabungan anggota + tarif + periode — bentuk yang sama dengan index
+     * unik `transactions_unik` di database.
+     *
+     * Impor massal memakainya untuk memeriksa bentrok lewat daftar yang sudah
+     * dimuat di memori, tanpa satu query per baris. Bentuknya diletakkan di sini
+     * supaya pemeriksaan itu tidak bisa memakai kunci yang berbeda dari yang
+     * dipakai `periksaDuplikatDalamGrup()`.
+     */
+    protected function kunciPeriode(array $baris): string
+    {
+        return $baris['member_id'].'-'.$baris['rate_id'].'-'.$baris['month'].'-'.$baris['year'];
+    }
+
+    /**
+     * Satu kalimat penolakan untuk periode yang sudah terpakai.
+     *
+     * Dipakai bersama jalur DB (`periksaDuplikatPeriode`) dan jalur memori di
+     * impor massal — dua pemeriksaan yang sama harus menolak dengan kalimat yang
+     * sama, kalau tidak petugas mengira keduanya masalah berbeda.
+     */
+    protected function pesanDuplikatPeriode(): string
+    {
+        return 'Anggota ini sudah punya transaksi untuk tarif dan periode tersebut.';
     }
 
     /** Total satu baris setelah potongan, tidak pernah negatif. */

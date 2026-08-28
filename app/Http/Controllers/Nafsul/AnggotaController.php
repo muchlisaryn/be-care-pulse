@@ -11,6 +11,7 @@ use App\Models\MemberFamily;
 use App\Models\MemberStatus;
 use App\Models\Occupation;
 use App\Models\Region;
+use App\Models\Transaction;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -117,7 +118,163 @@ class AnggotaController extends Controller
             return response()->json($query->get());
         }
 
-        return response()->json($query->paginate($request->integer('per_page', 25)));
+        /**
+         * Periode iuran TERAKHIR yang sudah dibayar tiap anggota.
+         *
+         * Subquery berkorelasi, bukan `withMax`: periodenya tersimpan di DUA
+         * kolom (`month` + `year`), dan yang terbesar bukan bulan terbesar
+         * melainkan pasangan tahun-bulan terbesar — 01/2026 lebih baru daripada
+         * 12/2025. `year * 100 + month` mengurutkan keduanya sekaligus sebagai
+         * satu bilangan.
+         *
+         * Ditambahkan SETELAH cabang `all`: pemanggil `all=1` menarik seluruh
+         * anggota untuk mengisi dropdown, dan subquery per baris di sana berarti
+         * puluhan ribu subquery untuk kolom yang tidak pernah ditampilkannya.
+         *
+         * `select('members.*')` wajib disebut: begitu `addSelect` dipanggil pada
+         * query yang belum memilih kolom apa pun, `*`-nya hilang dan yang
+         * terkirim hanya subquery-nya.
+         */
+        $query->select('members.*')->addSelect([
+            'periode_terakhir_raw' => Transaction::selectRaw('MAX(year * 100 + month)')
+                ->whereColumn('member_id', 'members.id')
+                ->whereNotNull('month'),
+        ]);
+
+        $halaman = $query->paginate($request->integer('per_page', 25));
+
+        // Angka gabungan tadi diterjemahkan ke bentuk yang dipakai di layar
+        // ("MM/YYYY"), dan bentuk mentahnya dibuang supaya tidak ikut terkirim —
+        // 202601 tidak berarti apa-apa bagi pemanggilnya.
+        $halaman->through(function (Member $anggota) {
+            $anggota->periode_terakhir_bayar = self::formatPeriode($anggota->periode_terakhir_raw);
+            unset($anggota->periode_terakhir_raw);
+
+            return $anggota;
+        });
+
+        return response()->json($halaman);
+    }
+
+    /** `202601` → `"01/2026"`. Null tetap null: anggota itu belum pernah bayar. */
+    private static function formatPeriode(int|string|null $gabungan): ?string
+    {
+        if ($gabungan === null || $gabungan === '') {
+            return null;
+        }
+
+        $angka = (int) $gabungan;
+
+        return str_pad((string) ($angka % 100), 2, '0', STR_PAD_LEFT).'/'.intdiv($angka, 100);
+    }
+
+    /**
+     * Periode iuran terakhir seorang anggota, beserta berapa bulan ia
+     * tertinggal dari bulan berjalan.
+     *
+     * Terpisah dari `riwayatTransaksi()` walau jawabannya ada di sana juga.
+     * Yang ini dipanggil form transaksi SETIAP KALI anggota dipilih, dan
+     * riwayat menarik seluruh barisnya — pada anggota terlama di data ini 187
+     * baris — hanya untuk membaca satu angka di ujungnya. Di sini cukup satu
+     * agregat, tanpa satu pun baris ikut terkirim.
+     *
+     * `bulan_tertinggal` dihitung di server terhadap bulan berjalan, bukan
+     * diserahkan ke peramban: jam peramban bisa meleset atau disetel zona lain,
+     * dan angka tunggakan yang berbeda-beda tergantung mesin petugas adalah
+     * angka yang tidak bisa dipakai berdebat.
+     */
+    public function pembayaranTerakhir(Member $member)
+    {
+        $gabungan = Transaction::where('member_id', $member->id)
+            ->whereNotNull('month')
+            ->selectRaw('MAX(year * 100 + month) AS v')
+            ->value('v');
+
+        if ($gabungan === null) {
+            return response()->json([
+                'periode_terakhir' => null,
+                'bulan_tertinggal' => null,
+                'pernah_bayar' => false,
+            ]);
+        }
+
+        $terakhir = (int) $gabungan;
+        $sekarang = now();
+
+        // Selisih dihitung sebagai jarak BULAN, bukan selisih hari: iuran
+        // menandai bulan, dan "05/2026 ke Agustus" adalah tiga bulan entah
+        // tanggal berapa pun hari ini.
+        $tertinggal = ($sekarang->year * 12 + $sekarang->month)
+            - (intdiv($terakhir, 100) * 12 + $terakhir % 100);
+
+        return response()->json([
+            'periode_terakhir' => self::formatPeriode($terakhir),
+            // Negatif berarti anggotanya justru sudah membayar di muka —
+            // dilaporkan apa adanya, biar pemanggilnya yang memutuskan.
+            'bulan_tertinggal' => $tertinggal,
+            'pernah_bayar' => true,
+        ]);
+    }
+
+    /**
+     * Riwayat iuran seorang anggota — seluruh rincian yang pernah tercatat
+     * atas namanya, terbaru lebih dulu.
+     *
+     * Dipakai modal di master anggota, yang terbuka saat kolom "Periode Terakhir
+     * Bayar" diklik. Berdiri sendiri, tidak menumpang `show`: `show` dipakai form
+     * ubah anggota dan tidak ada gunanya ikut menyeret ratusan baris iuran ke
+     * sana setiap kali form itu dibuka.
+     *
+     * Baris tanpa kuitansi (`transaction_header_id` null) ikut ditampilkan —
+     * itulah tagihan yang sudah dicatat tapi belum dibayar, dan justru itu yang
+     * dicari orang saat membuka riwayat.
+     */
+    public function riwayatTransaksi(Member $member)
+    {
+        $baris = Transaction::where('member_id', $member->id)
+            ->with(['rate:id,code,name', 'header:id,transaction_number,date,payment_method,validation_at'])
+            // Yang belum berperiode (tarif sekali bayar) ditaruh paling bawah:
+            // ia tidak punya tempat dalam urutan kronologis periode.
+            ->orderByRaw('(year IS NULL) asc')
+            ->orderByDesc('year')
+            ->orderByDesc('month')
+            ->orderByDesc('id')
+            ->get();
+
+        return response()->json([
+            'anggota' => [
+                'id' => $member->id,
+                'no_anggota' => $member->member_number,
+                'nama' => $member->name,
+            ],
+            'ringkasan' => [
+                'jumlah_baris' => $baris->count(),
+                'total_dibayar' => number_format(
+                    $baris->sum(fn ($t) => (float) $t->total), 2, '.', ''
+                ),
+                'periode_terakhir' => self::formatPeriode(
+                    $baris->filter(fn ($t) => $t->month !== null)
+                        ->map(fn ($t) => (int) $t->year * 100 + (int) $t->month)
+                        ->max()
+                ),
+            ],
+            'riwayat' => $baris->map(fn ($t) => [
+                'id' => $t->id,
+                'uuid' => $t->uuid,
+                'periode' => $t->payment_period,
+                'tarif' => $t->rate?->name,
+                'kode_tarif' => $t->rate?->code,
+                'nominal' => $t->amount,
+                'diskon' => $t->discount,
+                'total' => $t->total,
+                // Null = rincian ini belum masuk kuitansi mana pun, alias belum
+                // dibayar. Frontend membedakannya lewat kolom ini.
+                'no_kuitansi' => $t->header?->transaction_number,
+                'tanggal' => optional($t->header?->date)->toDateString(),
+                'metode' => $t->header?->payment_method,
+                'divalidasi' => $t->header?->validation_at !== null,
+            ]),
+        ]);
     }
 
     /**
