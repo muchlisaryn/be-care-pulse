@@ -490,7 +490,7 @@ class AnggotaController extends Controller
         // otomatis mengikuti nomor terakhir, sama seperti pendaftaran manual.
         if (empty($data['no_anggota'])) {
             $data['no_anggota'] = $this->generateNoAnggota($data['tgl_aktif'] ?? null);
-        } elseif (Member::withTrashed()->where('member_number', $data['no_anggota'])->exists()) {
+        } elseif (Member::withTrashed()->withDisabled()->where('member_number', $data['no_anggota'])->exists()) {
             throw ValidationException::withMessages([
                 'no_anggota' => "No. Anggota {$data['no_anggota']} sudah dipakai anggota lain.",
             ]);
@@ -622,7 +622,7 @@ class AnggotaController extends Controller
         // Urut per panjang dulu, baru per nilai: kalau satu hari tembus 99
         // anggota, "260821100" harus dianggap lebih besar dari "26082199" —
         // perbandingan teks saja akan membalik keduanya.
-        $max = Member::withTrashed()
+        $max = Member::withTrashed()->withDisabled()
             ->where('member_number', 'like', $prefix.'%')
             ->orderByRaw('LENGTH(member_number) DESC')
             ->orderBy('member_number', 'desc')
@@ -638,7 +638,7 @@ class AnggotaController extends Controller
         do {
             $kandidat = $prefix.str_pad((string) $seq, 2, '0', STR_PAD_LEFT);
             $seq++;
-        } while (Member::withTrashed()->where('member_number', $kandidat)->exists());
+        } while (Member::withTrashed()->withDisabled()->where('member_number', $kandidat)->exists());
 
         return $kandidat;
     }
