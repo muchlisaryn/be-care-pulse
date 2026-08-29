@@ -32,6 +32,18 @@ class TransaksiController extends Controller
 
     private const RELATIONS = ['member:id,member_number,name', 'rate:id,code,name,price', 'header:id,transaction_number'];
 
+    /**
+     * Tunggakan (dalam bulan, dihitung SAMPAI bulan berjalan) yang membatalkan
+     * bonus bulan gratis.
+     *
+     * Tiga, karena aturannya "menunggak LEBIH DARI 2 bulan terhitung bulan ini":
+     * anggota yang bulan berjalannya adalah bulan ketiga yang belum terbayar
+     * sudah melewati batas itu. Angkanya sama dengan BATAS_TUNGGAKAN di halaman
+     * transaksi baru — peringatan kuning yang dilihat petugas dan hilangnya
+     * bonus karenanya selalu muncul bersamaan, bukan di dua ambang berbeda.
+     */
+    private const BATAS_TUNGGAKAN = 3;
+
     public function index(Request $request)
     {
         $query = Transaction::query()->with(self::RELATIONS);
@@ -118,6 +130,11 @@ class TransaksiController extends Controller
      * - Anggota yang belum pernah membayar dimulai dari bulan berjalan.
      * - Tiap kelipatan 12 bulan memberi 1 bulan gratis, dikenakan pada
      *   bulan-bulan terakhir dalam rencana (diskon = nominal penuh).
+     * - KECUALI bila anggotanya menunggak lebih dari 2 bulan terhitung bulan
+     *   ini: bonusnya hangus seluruhnya, berapa pun bulan yang dibayar. Bonus
+     *   itu penghargaan untuk yang membayar rutin di muka, jadi menunggak dulu
+     *   lalu melunasi 12 bulan sekaligus tidak boleh berujung lebih murah
+     *   daripada membayar tepat waktu.
      *
      * Tidak menyimpan apa pun — hasilnya dipakai frontend untuk mengisi form.
      */
@@ -162,7 +179,15 @@ class TransaksiController extends Controller
 
         // Tiap genap 12 bulan dapat 1 bulan gratis; 11 bulan tidak dapat apa-apa,
         // 24 bulan dapat 2, dan seterusnya.
-        $gratis = intdiv($bulan, 12);
+        //
+        // Bonus itu hangus seluruhnya bagi penunggak: yang membayar 12 bulan
+        // sekaligus SETELAH menunggak tidak boleh mendapat harga lebih murah
+        // daripada yang membayar rutin. Dinolkan, bukan dikurangi bertahap —
+        // aturannya "tidak dapat potongan", bukan "potongannya berkurang".
+        $tertinggal = $this->bulanTertinggal($mulai);
+        $bonusHangus = $tertinggal >= self::BATAS_TUNGGAKAN;
+
+        $gratis = $bonusHangus ? 0 : intdiv($bulan, 12);
         $indeksGratisMulai = $bulan - $gratis;
 
         $baris = [];
@@ -186,6 +211,12 @@ class TransaksiController extends Controller
             'rate_id' => (int) $data['rate_id'],
             'months' => $bulan,
             'free_months' => $gratis,
+            // Dua field ini ada supaya frontend bisa MENERANGKAN hilangnya bonus,
+            // bukan sekadar menampilkan "0 bulan gratis". Petugas yang tidak tahu
+            // sebabnya akan mengira aplikasinya salah hitung dan mengakalinya
+            // lewat potongan manual.
+            'arrear_months' => $tertinggal,
+            'discount_blocked' => $bonusHangus,
             'start_period' => $mulai->format('m/Y'),
             'end_period' => $mulai->copy()->addMonths($bulan - 1)->format('m/Y'),
             'total' => number_format(array_sum(array_map(
@@ -221,6 +252,31 @@ class TransaksiController extends Controller
     }
 
     /**
+     * Berapa bulan seorang anggota tertinggal pada satu tarif, terhitung SAMPAI
+     * bulan berjalan.
+     *
+     * Dihitung dari bulan pertama yang belum terbayar (`$mulai`), bukan dari
+     * pembayaran terakhir lintas tarif seperti AnggotaController::pembayaranTerakhir():
+     * bonus melekat pada jadwal satu tarif, jadi tunggakan tarif lain tidak boleh
+     * ikut menghanguskannya. Untuk iuran bulanan yang tarifnya cuma satu, kedua
+     * cara itu menghasilkan angka yang sama.
+     *
+     * Bulan berjalan IKUT dihitung — "01/2026 saat ini Maret" berarti tertinggal
+     * tiga bulan (Jan, Feb, Mar), sesuai kalimat "terhitung bulan ini". Anggota
+     * yang belum pernah membayar mulai dari bulan berjalan, jadi nilainya 1: ia
+     * bukan penunggak, hanya belum punya riwayat. Yang membayar di muka
+     * menghasilkan nilai nol atau negatif, dan itu dilaporkan apa adanya.
+     */
+    private function bulanTertinggal(Carbon $mulai): int
+    {
+        $sekarang = now();
+
+        return ($sekarang->year * 12 + $sekarang->month)
+            - ($mulai->year * 12 + $mulai->month)
+            + 1;
+    }
+
+    /**
      * Rencana untuk tarif sekali bayar: satu baris, tanpa periode.
      *
      * `payment_period` sengaja dikirim `null`, bukan dihilangkan dari struktur —
@@ -238,6 +294,11 @@ class TransaksiController extends Controller
             'rate_id' => (int) $data['rate_id'],
             'months' => 0,
             'free_months' => 0,
+            // Tarif sekali bayar tidak punya jadwal periode, jadi tidak ada
+            // tunggakan yang bisa dihitung — tapi field-nya tetap dikirim supaya
+            // frontend membaca bentuk yang sama untuk kedua jenis tarif.
+            'arrear_months' => null,
+            'discount_blocked' => false,
             'start_period' => null,
             'end_period' => null,
             'total' => $nominalTeks,
