@@ -578,15 +578,23 @@ class TransaksiHeaderController extends Controller
     }
 
     /**
-     * Turunkan potongan & jasa ketua kelompok dari persentasenya.
+     * Turunkan jasa ketua kelompok dari persentasenya.
      *
-     * Ketua kelompok menahan komisinya dari uang yang ia kumpulkan, jadi satu
-     * angka yang sama dicatat dua kali dengan peran berbeda: `group_leader_deduction`
-     * MENGURANGI setoran, `group_leader_fee` merekam HAK ketua untuk keperluan
-     * laporan/pembayaran komisi.
-     *
-     * Hanya yang pertama masuk hitungan `balance` — lihat
+     * Jasa ketua adalah CATATAN HAK ketua — dipakai laporan & pembayaran komisi
+     * — dan TIDAK mengurangi setoran yang harus diterima. Karena itu
+     * `group_leader_fee` diisi nominalnya sedangkan `group_leader_deduction`
+     * dinolkan; hanya yang kedua yang masuk hitungan `balance`, lihat
      * TransactionHeader::getBalanceAttribute().
+     *
+     * Sebelumnya keduanya diisi nominal yang sama sehingga komisi ketua ikut
+     * memotong setoran. Itu diubah bersamaan dengan dipisahkannya potongan ketua
+     * ke bagiannya sendiri di form transaksi: yang disetorkan anggota tidak
+     * berkurang hanya karena ketua berhak atas komisi, dan komisinya dibayarkan
+     * lewat kas — bukan dengan menahan uang setoran.
+     *
+     * Kolomnya sengaja tetap diisi 0 dan bukan dihapus: kuitansi LAMA masih
+     * menyimpan nominal di sana, dan `balance` mereka harus tetap terbaca seperti
+     * saat dibuat.
      *
      * Dihitung di server dari `total` final — bukan diterima dari klien —
      * supaya nominalnya tidak bisa berselisih dengan persentase yang tercatat
@@ -599,7 +607,7 @@ class TransaksiHeaderController extends Controller
     {
         $nominal = round((float) $data['total'] * (float) $data['group_leader_fee_percent'] / 100, 2);
 
-        $data['group_leader_deduction'] = $nominal;
+        $data['group_leader_deduction'] = 0;
         $data['group_leader_fee'] = $nominal;
 
         return $data;
