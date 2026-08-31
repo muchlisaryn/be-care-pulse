@@ -44,9 +44,6 @@ class TransactionHeader extends Model
     /** Jenis kuitansi yang diterima. */
     public const TRANSACTION_TYPES = ['kelompok', 'pribadi'];
 
-    /** Cara mengisi potongan anggota: rupiah atau persen dari total rincian. */
-    public const DEDUCTION_TYPES = ['amount', 'percent'];
-
     protected $fillable = [
         'transaction_number',
         // Tanggal uang DITERIMA — bukan kapan barisnya dibuat (`created_at`).
@@ -55,8 +52,6 @@ class TransactionHeader extends Model
         'transaction_type',
         'total',
         'member_deduction',
-        'member_deduction_type',
-        'member_deduction_input',
         'group_leader_deduction',
         'group_leader_fee_percent',
         'group_leader_fee',
@@ -72,7 +67,6 @@ class TransactionHeader extends Model
         'validation_at' => 'datetime',
         'total' => 'decimal:2',
         'member_deduction' => 'decimal:2',
-        'member_deduction_input' => 'decimal:4',
         'group_leader_deduction' => 'decimal:2',
         'group_leader_fee' => 'decimal:2',
         'group_leader_fee_percent' => 'decimal:2',

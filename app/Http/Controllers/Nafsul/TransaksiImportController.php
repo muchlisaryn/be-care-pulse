@@ -34,7 +34,7 @@ use Illuminate\Validation\ValidationException;
  * Kolom WAJIB sheet `Kuitansi`: `transaction_number`, `date`, `transaction_type`,
  * `payment`, `payment_method`. Sisanya boleh kosong dan diperlakukan sebagai
  * nol — kecuali `group_leader_fee`, yang bila dikosongkan justru DIHITUNG dari
- * `group_leader_fee_percent` × total rincian.
+ * `group_leader_fee_percent` × total kuitansi (`payment` − `member_deduction`).
  *
  * Kolom WAJIB sheet `Rincian`: `transaction_number`, `member_number`, `rate_code`.
  * `amount` boleh kosong — server memakai harga tarifnya, supaya petugas tidak
@@ -129,6 +129,8 @@ class TransaksiImportController extends Controller
         'dibayar' => 'payment',
         'metode' => 'payment_method',
         'potongan_anggota' => 'member_deduction',
+        // Boleh kosong; lihat siapkanGrup() untuk aturan kosong vs terisi.
+        'total' => 'total',
         'potongan_ketua' => 'group_leader_fee_percent',
         // Boleh kosong; lihat siapkanGrup() untuk aturan kosong vs terisi.
         'jasa_ketua' => 'group_leader_fee',
@@ -555,10 +557,27 @@ class TransaksiImportController extends Controller
         }
 
         // Belum ada sama sekali: kuitansi baru, jalur biasa.
-        $header['total'] = array_sum(array_map(
-            fn ($b) => $this->totalBaris($b['data']),
-            $belum
-        ));
+        //
+        // Total kuitansi hasil IMPOR diambil dari `payment - member_deduction`,
+        // bukan dari jumlah rincian seperti jalur form.
+        //
+        // Alasannya data migrasi: yang dipercaya di file lama adalah uang yang
+        // benar-benar diterima beserta potongannya, sedangkan baris rinciannya
+        // kerap tidak lengkap — nominalnya dikosongkan (server memakai harga
+        // tarif hari ini) atau periodenya dipadatkan. Menurunkan total dari
+        // rincian karenanya menghasilkan angka yang tidak sama dengan lembar
+        // kuitansi yang sudah tercetak.
+        //
+        // `member_deduction` selalu rupiah — templatnya memang tidak punya
+        // kolom satuan.
+        //
+        // Kolom `total` di file dipakai apa adanya bila DIISI, dengan alasan
+        // yang sama seperti `group_leader_fee`: angka yang sudah tercetak di
+        // kuitansi lama tidak boleh digeser hitungan hari ini.
+        $header['total'] = $header['total'] ?? round(
+            (float) $header['payment'] - (float) $header['member_deduction'],
+            2
+        );
 
         // Ketua kelompok menahan komisinya dari uang yang ia kumpulkan: satu
         // nominal yang sama dicatat sebagai potongan (mengurangi setoran)
@@ -774,6 +793,10 @@ class TransaksiImportController extends Controller
             'payment' => ['required', 'numeric', 'min:0', 'max:999999999999.99'],
             'payment_method' => ['required', Rule::in(TransactionHeader::PAYMENT_METHODS)],
             'member_deduction' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
+            // Sengaja TIDAK diberi nilai bawaan: `null` (kolom dikosongkan)
+            // berarti "hitung dari payment − potongan", sedangkan nol yang
+            // DIKETIK tetap nol. Yang membedakannya siapkanGrup().
+            'total' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
             'group_leader_fee_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
             // Sengaja TIDAK diberi nilai bawaan di sini: `null` (kolom
             // dikosongkan) dan `0` (nol yang diketik) punya arti berbeda, dan
@@ -813,6 +836,7 @@ class TransaksiImportController extends Controller
             'payment' => 'payment',
             'payment_method' => 'payment_method',
             'member_deduction' => 'member_deduction',
+            'total' => 'total',
             'group_leader_fee_percent' => 'group_leader_fee_percent',
             'group_leader_fee' => 'group_leader_fee',
             'transaction_number' => 'transaction_number',
@@ -823,13 +847,6 @@ class TransaksiImportController extends Controller
 
         $data['member_deduction'] = $data['member_deduction'] ?? 0;
         $data['group_leader_fee_percent'] = $data['group_leader_fee_percent'] ?? 0;
-
-        // Kolom Excel `potongan_anggota` selalu rupiah — tidak ada kolom satuan
-        // di templatnya. Nilai ketiknya ikut diisi supaya kuitansi hasil impor
-        // menampilkan potongan yang benar saat dibuka di form; tanpa ini
-        // isiannya tampil 0 padahal nominalnya tidak nol.
-        $data['member_deduction_type'] = 'amount';
-        $data['member_deduction_input'] = $data['member_deduction'];
 
         // Sama dengan jalur simpan biasa: potongan & jasa ketua kelompok hanya
         // berlaku pada setoran kelompok, jadi dinolkan pada kuitansi pribadi
