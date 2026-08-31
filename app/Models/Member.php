@@ -36,7 +36,68 @@ class Member extends Model
         'active_date' => 'date',
         'inactive_date' => 'date',
         'updated_date' => 'date',
+        'merged_at' => 'datetime',
+        'disabled' => 'boolean',
     ];
+
+    /**
+     * `disabled`, `merged_at`, dan `merged_to_member_id` SENGAJA tidak ada di
+     * `$fillable`.
+     *
+     * `disabled` diturunkan event `saving` di bawah — kalau ia bisa ditumpangi
+     * mass assignment dari request, ia bisa berselisih dengan sebab yang
+     * sebenarnya. Dua kolom lainnya hanya boleh disentuh `GabungAnggotaController`
+     * di dalam satu transaksi database bersama pemindahan transaksinya; diisi
+     * dari form biasa, anggota bisa tampak "sudah digabungkan" tanpa satu pun
+     * transaksi benar-benar berpindah.
+     */
+    protected static function booted(): void
+    {
+        parent::booted();
+
+        // Anggota yang tidak boleh muncul lagi di mana pun: sudah dihapus, atau
+        // seluruh transaksinya sudah dipindahkan lewat Gabung Anggota.
+        //
+        // Ditulis lewat `saving` supaya JALUR APA PUN yang menyimpan model
+        // meninggalkannya konsisten — pola yang sama dengan
+        // `MarksDisabledWhenDeleted` pada tabel transaksi.
+        static::saving(function (self $model) {
+            $model->disabled = $model->deleted_by !== null || $model->merged_at !== null;
+        });
+
+        // Anggota nonaktif tidak pernah ikut query mana pun kecuali diminta
+        // eksplisit lewat `withDisabled()`. Ini yang memenuhi janji "yang muncul
+        // di aplikasi hanya anggota yang disabled-nya false" di SATU tempat,
+        // alih-alih menitipkannya ke tiap pemanggil — yang cepat atau lambat
+        // ada satu yang lupa.
+        static::addGlobalScope('enabled', function ($query) {
+            $query->where($query->qualifyColumn('disabled'), false);
+        });
+    }
+
+    /**
+     * Ikutkan anggota nonaktif.
+     *
+     * WAJIB dipakai di tiga tempat, dan ketiganya bukan "menampilkan di
+     * aplikasi" melainkan menjaga keutuhan data:
+     *
+     *  1. pemeriksaan keunikan & pembuatan `member_number` — nomor anggota
+     *     nonaktif tetap terpakai di database, dan mengabaikannya berarti
+     *     penyimpanan berikutnya menabrak index unik;
+     *  2. relasi riwayat penggabungan — yang justru menunjuk anggota nonaktif;
+     *  3. Gabung Anggota itu sendiri, saat membaca kembali anggota asal.
+     */
+    public function scopeWithDisabled($query)
+    {
+        return $query->withoutGlobalScope('enabled');
+    }
+
+    /** Hanya anggota nonaktif — dipakai layar riwayat penggabungan. */
+    public function scopeOnlyDisabled($query)
+    {
+        return $query->withoutGlobalScope('enabled')
+            ->where($query->qualifyColumn('disabled'), true);
+    }
 
     /** Nama field API (lama) → kolom database (baru). */
     protected static array $legacyAttributes = [
@@ -111,5 +172,28 @@ class Member extends Model
     public function families(): HasMany
     {
         return $this->hasMany(MemberFamily::class, 'member_id');
+    }
+
+    /** Penggabungan yang MENGAMBIL transaksi anggota ini. */
+    public function mergesAsSource(): HasMany
+    {
+        return $this->hasMany(MemberMerge::class, 'source_member_id');
+    }
+
+    /** Penggabungan yang MENERIMA transaksi anggota lain ke anggota ini. */
+    public function mergesAsTarget(): HasMany
+    {
+        return $this->hasMany(MemberMerge::class, 'target_member_id');
+    }
+
+    /** Anggota tujuan tempat seluruh transaksinya kini berada, bila pernah digabungkan. */
+    public function mergedTo(): BelongsTo
+    {
+        return $this->belongsTo(Member::class, 'merged_to_member_id')->withDisabled();
+    }
+
+    public function transactions(): HasMany
+    {
+        return $this->hasMany(Transaction::class, 'member_id');
     }
 }

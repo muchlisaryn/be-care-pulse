@@ -7,6 +7,8 @@ use App\Http\Controllers\ClinicalPathway\CategoriClinicalPathwayController;
 use App\Http\Controllers\ClinicalPathway\PointClinicalPathwayController;
 use App\Http\Controllers\ClinicalPathway\TemplateClinicalPathwayController;
 use App\Http\Controllers\ClinicalPathway\VarianClinicalPathwayController;
+use App\Http\Controllers\Dashboard\CssdDashboardController;
+use App\Http\Controllers\Dashboard\NurseDashboardController;
 use App\Http\Controllers\Master\BmhpController;
 use App\Http\Controllers\Master\ConditionController;
 use App\Http\Controllers\Master\Icd10Controller;
@@ -23,6 +25,8 @@ use App\Http\Controllers\Master\TitleMenuController;
 use App\Http\Controllers\Master\UserController;
 use App\Http\Controllers\Master\WasherMachineController;
 use App\Http\Controllers\Nafsul\AnggotaController;
+use App\Http\Controllers\Nafsul\DashboardController as NafsulDashboardController;
+use App\Http\Controllers\Nafsul\GabungAnggotaController;
 use App\Http\Controllers\Nafsul\KetuaKelompokController;
 use App\Http\Controllers\Nafsul\KotaController;
 use App\Http\Controllers\Nafsul\PekerjaanController;
@@ -70,6 +74,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('sessions/{id}', 'revokeSession');
         Route::delete('sessions', 'revokeAllSessions');
     });
+
+    // Dashboard per peran. Masing-masing satu endpoint saja — seluruh kartu &
+    // grafik satu layar datang dalam SATU respons, supaya angkanya dipotret pada
+    // detik yang sama. Kalau tiap kartu memanggil endpointnya sendiri, order yang
+    // didistribusikan di sela-sela permintaan membuat "sedang dipinjam" dan
+    // "belum dikembalikan" di layar yang sama saling bertentangan.
+    Route::get('cssd/dashboard', [CssdDashboardController::class, 'index']);
+    Route::get('nurse/dashboard', [NurseDashboardController::class, 'index']);
 
     Route::prefix('master')->group(function () {
         Route::apiResource('authorities', AuthorityController::class);
@@ -335,6 +347,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // mensingularkan nama resource Inggris (mis. `kota` → `kotum`), sedangkan
     // controller mem-binding `Kota $kota`.
     Route::prefix('nafsul')->group(function () {
+        // Ringkasan pendapatan iuran — satu respons untuk seluruh layar dashboard,
+        // alasannya sama dengan dashboard CSSD & perawat di atas.
+        Route::get('dashboard', [NafsulDashboardController::class, 'index']);
+
         // `anggota/import` didaftarkan sebelum apiResource agar tidak tertangkap
         // sebagai `anggota/{anggota}`.
         Route::post('anggota/import', [AnggotaController::class, 'import']);
@@ -346,6 +362,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('anggota/{member}/pembayaran-terakhir', [AnggotaController::class, 'pembayaranTerakhir']);
         Route::apiResource('anggota', AnggotaController::class)
             ->parameters(['anggota' => 'member']);
+
+        // Gabung Anggota — pindahkan transaksi seorang anggota ke anggota lain.
+        //
+        // `gabung-anggota/anggota/{member}/transaksi` didaftarkan SEBELUM
+        // apiResource-nya, kalau tidak `anggota` tertangkap sebagai
+        // `gabung-anggota/{gabung}`.
+        Route::get('gabung-anggota/anggota/{member}/transaksi', [GabungAnggotaController::class, 'transaksi']);
+        Route::get('gabung-anggota', [GabungAnggotaController::class, 'index']);
+        Route::post('gabung-anggota', [GabungAnggotaController::class, 'store']);
+        Route::get('gabung-anggota/{gabung}', [GabungAnggotaController::class, 'show']);
 
         // Master Nafsul
         Route::post('ketua-kelompok/import', [KetuaKelompokController::class, 'import']);
