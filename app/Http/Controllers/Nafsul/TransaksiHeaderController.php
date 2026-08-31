@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Nafsul;
 
 use App\Http\Controllers\Controller;
 use App\Models\GroupLeader;
+use App\Models\Member;
 use App\Models\Transaction;
 use App\Models\TransactionHeader;
 use App\Traits\HandlesTransactionRows;
@@ -38,7 +39,12 @@ class TransaksiHeaderController extends Controller
         $query = TransactionHeader::query()
             ->select('transaction_headers.*')
             ->withCount('transactions')
-            ->addSelect(['group_leader_name' => $this->subqueryNamaKetua()]);
+            ->addSelect(['group_leader_name' => $this->subqueryNamaKetua()])
+            // Kuitansi PRIBADI tidak punya ketua kelompok yang berarti, jadi
+            // kolom "Nama" di daftar memakai nama anggota pertamanya beserta
+            // banyaknya anggota lain pada kuitansi yang sama.
+            ->addSelect(['member_name' => $this->subqueryNamaAnggota()])
+            ->addSelect(['members_count' => $this->subqueryJumlahAnggota()]);
 
         if ($search = $request->query('search')) {
             $query->where('transaction_number', 'like', "%{$search}%");
@@ -901,6 +907,45 @@ class TransaksiHeaderController extends Controller
             ->limit(1);
     }
 
+    /**
+     * Nama anggota pada rincian PERTAMA kuitansi, sebagai subquery berkorelasi.
+     *
+     * Dipakai kolom "Nama" untuk kuitansi PRIBADI, yang tidak punya ketua
+     * kelompok yang berarti. Subquery dengan alasan yang sama seperti
+     * subqueryNamaKetua(): menyeret seluruh rincian tiap kuitansi ke memori
+     * hanya untuk membaca satu nama itu pemborosan.
+     */
+    private function subqueryNamaAnggota()
+    {
+        return Member::query()
+            ->select('members.name')
+            ->join('transactions', 'transactions.member_id', '=', 'members.id')
+            ->whereColumn('transactions.transaction_header_id', 'transaction_headers.id')
+            ->whereNull('transactions.deleted_by')
+            ->whereNull('members.deleted_by')
+            // Sama seperti subqueryNamaKetua(): global scope `active` menulis
+            // `deleted_by` TANPA nama tabel, jadi ambigu begitu ada join.
+            ->withoutGlobalScope('active')
+            ->orderBy('transactions.id')
+            ->limit(1);
+    }
+
+    /**
+     * Banyaknya anggota BERBEDA di dalam satu kuitansi.
+     *
+     * Bukan `transactions_count`: satu anggota bisa punya beberapa baris rincian
+     * (beberapa periode sekaligus), dan yang dihitung di sini orangnya, bukan
+     * barisnya.
+     */
+    private function subqueryJumlahAnggota()
+    {
+        return Transaction::query()
+            ->selectRaw('COUNT(DISTINCT transactions.member_id)')
+            ->whereColumn('transactions.transaction_header_id', 'transaction_headers.id')
+            ->whereNull('transactions.deleted_by')
+            ->withoutGlobalScope('active');
+    }
+
     private function transform(TransactionHeader $row, bool $denganRincian = false): array
     {
         $hasil = [
@@ -916,6 +961,11 @@ class TransaksiHeaderController extends Controller
             // subquery-nya (mis. `show`), dan pada kuitansi yang belum punya
             // rincian sama sekali.
             'group_leader_name' => $row->group_leader_name ?? null,
+            // Nama anggota pertama & jumlah anggota berbeda pada kuitansi ini —
+            // dipakai kolom "Nama" untuk kuitansi PRIBADI. Keduanya null/0 pada
+            // pemanggilan yang tidak menyertakan subquery-nya (mis. `show`).
+            'member_name' => $row->member_name ?? null,
+            'members_count' => (int) ($row->members_count ?? 0),
             'total' => $row->total,
             'member_deduction' => $row->member_deduction,
             'member_deduction_type' => $row->member_deduction_type,

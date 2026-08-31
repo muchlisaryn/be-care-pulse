@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Dashboard;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
-use App\Traits\SummarizesOrders;
+use App\Services\Dashboard\NurseLoanFigures;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,16 +17,28 @@ use Illuminate\Http\Request;
  * masih dipegang, dan berapa yang belum dikembalikan. Isi gudang steril dan
  * peringkat ruangan adalah urusan petugas CSSD.
  *
- * Angkanya diambil dari `SummarizesOrders`, trait yang sama dengan Dashboard
- * CSSD — dua layar ini menjawab pertanyaan yang sama dari sisi berbeda, jadi
- * angkanya tidak boleh berbeda.
+ * API-nya BERDIRI SENDIRI: seluruh angkanya datang dari
+ * [NurseLoanFigures] yang tidak dipakai layar lain, bukan dari trait
+ * `SummarizesOrders` yang dibagi dengan Dashboard CSSD. Sebelumnya keduanya
+ * berbagi satu perhitungan, sehingga memperbaiki "belum dikembalikan" di layar
+ * ini otomatis menggeser angka di layar sebelah tanpa ada yang memintanya.
  */
 class NurseDashboardController extends Controller
 {
-    use SummarizesOrders;
+    /**
+     * Banyaknya ruangan yang tampil sebagai seri warna sendiri pada grafik. Sisanya
+     * dilipat jadi satu seri "Lainnya".
+     *
+     * Empat, bukan lebih: itu batas jumlah warna kategori yang masih bisa dibedakan
+     * satu sama lain — termasuk oleh pembaca dengan buta warna — saat dipakai sebagai
+     * potongan batang bertumpuk yang bisa bersebelahan dalam kombinasi apa pun.
+     */
+    private const MAX_SERI_RUANGAN = 4;
 
-    /** Banyaknya peminjaman terbuka yang ditampilkan di daftar tindak lanjut. */
-    private const LIMIT_DAFTAR = 8;
+    /** Kunci seri penampung ruangan di luar peringkat atas. */
+    private const KUNCI_LAINNYA = 'lainnya';
+
+    public function __construct(private readonly NurseLoanFigures $angka) {}
 
     /**
      * GET /api/nurse/dashboard
@@ -37,10 +49,17 @@ class NurseDashboardController extends Controller
      * Kartu "sedang dipinjam" dan "belum dikembalikan" SELALU keadaan saat ini:
      * alat yang dipinjam bulan lalu dan belum kembali justru yang paling perlu
      * terlihat, dan menyaringnya per bulan akan menyembunyikannya.
+     *
+     * Semua kartu & grafik satu layar datang dalam SATU respons supaya angkanya
+     * dipotret pada detik yang sama. Kalau tiap kartu memanggil endpointnya
+     * sendiri, order yang didistribusikan di sela-sela permintaan membuat "sedang
+     * dipinjam" dan "belum dikembalikan" di layar yang sama saling bertentangan.
      */
     public function index(Request $request): JsonResponse
     {
         [$dari, $sampai] = $this->rentangTanggal($request);
+
+        $belum = $this->angka->belumDikembalikan();
 
         return $this->success('Dashboard perawat berhasil diambil.', [
             'date_from' => $dari->format('Y-m-d'),
@@ -48,13 +67,60 @@ class NurseDashboardController extends Controller
             'summary' => [
                 'period_orders' => (int) $this->orderRentang($dari, $sampai)->count(),
                 'period_items' => $this->unitPeriode($dari, $sampai),
-                'currently_borrowed' => $this->sedangDipinjam(),
-                'not_returned' => $this->belumDikembalikan(),
-                'overdue' => $this->terlambatKembali(),
+                'currently_borrowed' => $this->angka->sedangDipinjam(),
+                // Angka kartu = set paket + unit satuan. Rinciannya ikut dikirim
+                // karena "8" saja tidak memberi tahu apakah itu 8 bungkus paket
+                // atau 8 gunting lepas.
+                'not_returned' => $belum['total'],
+                'not_returned_sets' => $belum['sets'],
+                'not_returned_units' => $belum['units'],
+                'overdue' => $this->angka->terlambatKembali(),
             ],
-            'borrow_chart' => $this->grafikHarian($dari, $sampai),
-            'open_loans' => $this->peminjamanTerbuka(),
+            'room_chart' => $this->grafikRuanganHarian($dari, $sampai),
+            'open_loans' => $this->angka->peminjamanTerbuka(),
         ]);
+    }
+
+    /**
+     * Rentang tanggal dari query string, bawaan BULAN BERJALAN.
+     *
+     * Rentang terbalik ditukar diam-diam alih-alih ditolak — hasilnya sudah pasti
+     * yang dimaksud pengguna, dan galat validasi untuk hal ini cuma menghalangi.
+     *
+     * @return array{0: CarbonImmutable, 1: CarbonImmutable}
+     */
+    private function rentangTanggal(Request $request): array
+    {
+        $request->validate([
+            'date_from' => 'nullable|date',
+            'date_to' => 'nullable|date',
+        ]);
+
+        $now = CarbonImmutable::now();
+
+        $dari = $request->filled('date_from')
+            ? CarbonImmutable::parse($request->input('date_from'))->startOfDay()
+            : $now->startOfMonth();
+
+        $sampai = $request->filled('date_to')
+            ? CarbonImmutable::parse($request->input('date_to'))->startOfDay()
+            : $now->endOfMonth()->startOfDay();
+
+        return $dari->lte($sampai) ? [$dari, $sampai] : [$sampai, $dari];
+    }
+
+    /**
+     * Order peminjaman dalam rentang tanggal, tanpa yang dibatalkan.
+     *
+     * Disaring lewat `order_date` (kapan alatnya dipinjam), bukan `created_at`:
+     * order kerap dicatat menyusul, dan yang dilaporkan adalah kejadiannya.
+     */
+    private function orderRentang(CarbonImmutable $dari, CarbonImmutable $sampai)
+    {
+        return Order::query()
+            ->whereNull('canceled_at')
+            ->whereDate('order_date', '>=', $dari->format('Y-m-d'))
+            ->whereDate('order_date', '<=', $sampai->format('Y-m-d'));
     }
 
     /**
@@ -72,41 +138,109 @@ class NurseDashboardController extends Controller
     }
 
     /**
-     * Peminjaman yang alatnya masih di ruangan, yang paling lama dulu.
+     * Peminjaman per HARI, dipecah per RUANGAN — bahan grafik batang bertumpuk.
      *
-     * Diurutkan dari tanggal pinjam TERLAMA, bukan terbaru: daftar ini untuk
-     * ditindaklanjuti, dan yang paling lama menggantung adalah yang paling
-     * mendesak. Order yang terlambat ditandai `is_overdue` agar layar tidak perlu
-     * membandingkan tanggal sendiri — aturannya harus sama dengan
-     * `terlambatKembali()`.
+     * Menggantikan grafik harian satu seri yang lama. Total per hari tetap terbaca
+     * (tinggi seluruh batang), tapi sekarang juga terjawab pertanyaan yang
+     * sebenarnya ditanyakan orang saat melihat lonjakan: RUANGAN MANA. Satu batang
+     * per hari, bukan batang berdampingan per ruangan, karena dengan 31 hari ×
+     * beberapa ruangan batang berdampingan menjadi terlalu tipis untuk diarahkan
+     * kursor.
+     *
+     * Hari tanpa peminjaman tetap dikirim bernilai 0 supaya sumbu waktunya jujur:
+     * akhir pekan yang kosong harus terlihat sebagai jeda, bukan hilang.
+     *
+     * Hanya [MAX_SERI_RUANGAN] ruangan teratas yang jadi seri sendiri; sisanya
+     * dilipat ke "Lainnya" — bukan karena datanya tidak muat, tapi karena legenda
+     * dengan belasan warna sudah tidak bisa dibaca dan warnanya sendiri tidak lagi
+     * bisa dibedakan.
+     *
+     * Urutan serinya TETAP menurut total periode ini dan dikirim dari sini, bukan
+     * disusun ulang di layar: warna mengikuti ruangan, dan kalau layar mengurutkan
+     * sendiri, dua kartu di halaman yang sama bisa mengecat ruangan yang sama
+     * dengan warna berbeda.
+     *
+     * @return array{rooms: array<int,array<string,mixed>>, points: array<int,array<string,mixed>>}
      */
-    private function peminjamanTerbuka(): array
+    private function grafikRuanganHarian(CarbonImmutable $dari, CarbonImmutable $sampai): array
     {
-        $hariIni = CarbonImmutable::now()->startOfDay();
-
-        return Order::query()
-            ->whereDerivedStatus(Order::STATUS_DIPINJAM)
+        $baris = $this->orderRentang($dari, $sampai)
             ->with('room:id,name,code')
-            ->withCount([
-                'items',
-                'items as unreturned_items_count' => fn ($q) => $q->where('is_returned', false),
-            ])
-            ->orderBy('order_date')
-            ->orderBy('id')
-            ->limit(self::LIMIT_DAFTAR)
-            ->get()
-            ->map(fn ($o) => [
-                'id' => $o->id,
-                'code' => $o->code,
-                'room' => $o->room?->name,
-                'borrowed_by' => $o->borrowed_by,
-                'order_date' => $o->order_date?->format('Y-m-d'),
-                'return_plan_date' => $o->return_plan_date?->format('Y-m-d'),
-                'total_items' => (int) $o->items_count,
-                'unreturned_items' => (int) $o->unreturned_items_count,
-                'is_overdue' => $o->return_plan_date !== null
-                    && $o->return_plan_date->startOfDay()->lt($hariIni),
+            ->get(['id', 'room_id', 'order_date']);
+
+        // Peringkat ruangan dihitung dari SELURUH periode, bukan per hari: seri
+        // yang muncul-hilang tiap hari akan mengganti warna di tengah grafik.
+        $totalRuangan = [];
+        foreach ($baris as $order) {
+            $kunci = $order->room_id === null ? self::KUNCI_LAINNYA : 'r'.$order->room_id;
+            $totalRuangan[$kunci] = ($totalRuangan[$kunci] ?? 0) + 1;
+        }
+        arsort($totalRuangan);
+
+        $namaRuangan = $baris
+            ->pluck('room')
+            ->filter()
+            ->keyBy(fn ($r) => 'r'.$r->id)
+            ->map(fn ($r) => $r->name)
+            ->all();
+
+        // Order tanpa ruangan langsung masuk "Lainnya" — jangan diberi seri sendiri
+        // yang tak bernama.
+        $teratas = collect($totalRuangan)
+            ->reject(fn ($_, $kunci) => $kunci === self::KUNCI_LAINNYA)
+            ->take(self::MAX_SERI_RUANGAN)
+            ->keys()
+            ->all();
+
+        $adaLainnya = count($totalRuangan) > count($teratas);
+
+        $seri = collect($teratas)
+            ->map(fn ($kunci) => [
+                'key' => $kunci,
+                'name' => $namaRuangan[$kunci] ?? 'Ruangan',
+                'total' => (int) $totalRuangan[$kunci],
             ])
             ->all();
+
+        if ($adaLainnya) {
+            $sisa = collect($totalRuangan)->except($teratas)->sum();
+            $seri[] = ['key' => self::KUNCI_LAINNYA, 'name' => 'Lainnya', 'total' => (int) $sisa];
+        }
+
+        $kunciSeri = array_column($seri, 'key');
+
+        // Hitung per hari, lalu tuang ke kerangka tanggal yang lengkap.
+        $perHari = [];
+        foreach ($baris as $order) {
+            $tanggal = $order->order_date?->format('Y-m-d');
+            if ($tanggal === null) {
+                continue;
+            }
+
+            $kunci = $order->room_id === null ? self::KUNCI_LAINNYA : 'r'.$order->room_id;
+            if (! in_array($kunci, $kunciSeri, true)) {
+                $kunci = self::KUNCI_LAINNYA;
+            }
+
+            $perHari[$tanggal][$kunci] = ($perHari[$tanggal][$kunci] ?? 0) + 1;
+        }
+
+        $points = [];
+        for ($hari = $dari; $hari->lte($sampai); $hari = $hari->addDay()) {
+            $tanggal = $hari->format('Y-m-d');
+            $nilai = [];
+            foreach ($kunciSeri as $kunci) {
+                $nilai[$kunci] = (int) ($perHari[$tanggal][$kunci] ?? 0);
+            }
+
+            $points[] = [
+                'date' => $tanggal,
+                'day' => $hari->day,
+                'total' => array_sum($nilai),
+                'values' => $nilai,
+            ];
+        }
+
+        return ['rooms' => $seri, 'points' => $points];
     }
 }
