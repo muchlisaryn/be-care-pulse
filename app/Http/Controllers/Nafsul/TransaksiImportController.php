@@ -39,9 +39,9 @@ use Illuminate\Validation\ValidationException;
  *
  * Kolom WAJIB sheet `Rincian`: `kode_kuitansi`, `member_number`, `rate_code`.
  * `amount` boleh kosong — server memakai harga tarifnya, supaya petugas tidak
- * perlu menyalin angka yang sama ratusan kali. `payment_period` mengikuti sifat
- * tarifnya: wajib untuk tarif berulang, dan DIABAIKAN untuk tarif sekali bayar —
- * diisi atau tidak, yang tersimpan tetap kosong.
+ * perlu menyalin angka yang sama ratusan kali. `payment_period` mengikuti FILE,
+ * bukan `fee_type` tarifnya: diisi → tersimpan, dikosongkan → kosong. Lihat
+ * rincianDariBaris() untuk alasan klasifikasi master tidak dipakai di sini.
  *
  * Keduanya dihubungkan kolom `kode_kuitansi`. Kode itu hanya berlaku di dalam
  * file — dipakai untuk merangkai, bukan disimpan; nomor kuitansi yang sebenarnya
@@ -950,12 +950,39 @@ class TransaksiImportController extends Controller
         $periode = $this->bersihkan($row['periode'] ?? null);
         $periode = ($periode === null || $periode === '') ? null : (string) $periode;
 
+        /**
+         * Periode diambil APA ADANYA dari file. `fee_type` tarifnya TIDAK
+         * dilihat sama sekali di jalur impor.
+         *
+         * Dulu di sini berlaku aturan master: tarif `one_time` periodenya
+         * dibuang, tarif berulang wajib berperiode. Yang jadi masalah adalah
+         * cabang pertamanya. Satu tarif salah klasifikasi di master sudah cukup
+         * untuk membuang periode SELURUH barisnya, dan begitu periodenya hilang
+         * kunci pembandingnya menyusut jadi "anggota-tarif" saja — dua belas
+         * baris bulanan seorang anggota mengerucut jadi satu, sebelas sisanya
+         * dilaporkan "sudah ada, dilewati". Tidak ada galat, tidak ada tanda:
+         * datanya lenyap diam-diam dan baru ketahuan saat jumlahnya kurang.
+         *
+         * File migrasi tahu periode tiap barisnya; klasifikasi di master belum
+         * tentu benar untuk data bertahun-tahun ke belakang. Yang dipercaya
+         * karena itu file, bukan master.
+         *
+         * Bentuk "MM/YYYY" tetap diperiksa `pecahPeriode()` — itu pemeriksaan
+         * FORMAT, bukan klasifikasi tarif. Periode salah ketik harus tetap
+         * dilaporkan, bukan diam-diam disimpan sebagai kosong.
+         *
+         * Jalur simpan lewat form TIDAK berubah: di sana `fee_type` menentukan
+         * field periodenya muncul atau tidak, dan aturannya masih dijaga
+         * `periodeUntukTarif()` di trait.
+         */
         $data = [
             'member_id' => (int) $memberId,
             'amount' => $angka['amount'],
             'discount' => $angka['discount'],
             'rate_id' => (int) $rate->id,
-        ] + $this->periodeUntukSifatTarif($periode, $rate->fee_type, $field);
+        ] + ($periode === null
+            ? ['month' => null, 'year' => null]
+            : $this->pecahPeriode($periode, $field));
 
         $this->periksaDiskon($data, $field);
 
@@ -1007,7 +1034,12 @@ class TransaksiImportController extends Controller
         // Lewati nomor yang sudah dipegang permintaan ini — praktisnya nomor
         // yang dibawa file untuk kuitansi lain di tanggal yang sama.
         do {
-            $kandidat = $prefix.str_pad((string) $penomoran['urut'][$prefix], 3, '0', STR_PAD_LEFT);
+            $kandidat = $prefix.str_pad(
+                (string) $penomoran['urut'][$prefix],
+                TransactionHeader::PANJANG_URUT,
+                '0',
+                STR_PAD_LEFT
+            );
 
             if (! isset($penomoran['dipakai'][$kandidat])) {
                 break;
@@ -1069,7 +1101,7 @@ class TransaksiImportController extends Controller
         $tarif = $kodeTarif === []
             ? []
             : Rate::whereIn('code', array_keys($kodeTarif))
-                ->get(['id', 'code', 'price', 'fee_type'])
+                ->get(['id', 'code', 'price'])
                 ->keyBy('code')
                 ->all();
 

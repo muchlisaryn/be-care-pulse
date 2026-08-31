@@ -701,7 +701,19 @@ class TransaksiHeaderController extends Controller
             'selisih' => [
                 'nilai' => $selisih,
                 'label' => $selisih > 0 ? 'Kurang Bayar' : 'Lebih Bayar',
-                'rupiah' => $rupiah(abs($selisih)),
+                // Kurang bayar ditulis DALAM KURUNG, mengikuti lazimnya
+                // pembukuan: kurung menandai angka yang mengurangi.
+                //
+                // Perannya jadi penting sejak lembar ini hitam putih — dulu
+                // kekurangan bayar ditandai warna merah, dan begitu warnanya
+                // hilang tidak ada lagi yang membedakannya dari angka biasa
+                // selain tulisan "Kurang Bayar" di sebelahnya.
+                //
+                // Lebih bayar TIDAK dikurung: kurung berarti kurang, dan
+                // memakainya untuk kelebihan justru membalik artinya.
+                'rupiah' => $selisih > 0
+                    ? '('.$rupiah(abs($selisih)).')'
+                    : $rupiah(abs($selisih)),
             ],
         ])->setPaper('a4', 'portrait');
 

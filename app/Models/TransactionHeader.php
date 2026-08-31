@@ -117,6 +117,25 @@ class TransactionHeader extends Model
      * berformat lain yang ikut tertangkap pola prefix — tanpa pemeriksaan ini,
      * penyimpanan bisa menabrak index unik dan gagal dengan galat SQL mentah.
      */
+    /**
+     * Banyak digit bagian urut pada nomor transaksi — YYMMDD + urut.
+     *
+     * Empat, jadi nomornya 10 karakter (mis. `2608260003`). Tidak ada validasi
+     * lain yang memaksakan panjang ini: kolomnya `varchar(50)` unik, dan nomor
+     * berapa pun panjangnya akan diterima. Angka di sinilah satu-satunya yang
+     * menentukan bentuknya.
+     *
+     * Konstanta, bukan angka yang ditulis ulang di tiap pemanggil: impor massal
+     * punya penomorannya sendiri (TransaksiImportController::nomorBerikut), dan
+     * dua tempat yang memadatkan dengan lebar berbeda akan menghasilkan dua
+     * bentuk nomor untuk hari yang sama.
+     *
+     * Nomor lama yang terlanjur 3 digit (`260826002`) TIDAK ikut berubah, dan
+     * tidak perlu: pembacaan urut memakai `substr($nomor, 6)` yang tidak peduli
+     * panjangnya, dan pengurutan di bawah sudah mendahulukan yang lebih panjang.
+     */
+    public const PANJANG_URUT = 4;
+
     public static function generateNumber(?string $tanggal = null): string
     {
         $prefix = ($tanggal ? Carbon::parse($tanggal) : now())->format('ymd');
@@ -133,7 +152,7 @@ class TransactionHeader extends Model
         $urut = $max ? ((int) substr($max, 6)) + 1 : 1;
 
         do {
-            $kandidat = $prefix.str_pad((string) $urut, 3, '0', STR_PAD_LEFT);
+            $kandidat = $prefix.str_pad((string) $urut, self::PANJANG_URUT, '0', STR_PAD_LEFT);
             $urut++;
         } while (static::withTrashed()->where('transaction_number', $kandidat)->exists());
 
