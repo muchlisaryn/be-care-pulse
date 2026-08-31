@@ -243,7 +243,24 @@ class GabungAnggotaController extends Controller
 
                 $dipindah = $this->pilihTransaksi($asal, $data);
 
-                if ($dipindah->isEmpty()) {
+                /**
+                 * Tidak ada yang dipindahkan — dua keadaan yang berbeda jauh,
+                 * dan hanya satu yang boleh lewat.
+                 *
+                 *  - Anggota asal memang BELUM PUNYA transaksi sama sekali.
+                 *    Penggabungannya tetap sah dan justru inti persoalannya:
+                 *    anggota ganda yang belum sempat menyetor apa pun tetap
+                 *    harus bisa dilebur ke kartu yang benar, dan yang kosong
+                 *    dinonaktifkan. Menolaknya berarti data ganda paling
+                 *    sepele malah satu-satunya yang tidak bisa dibereskan.
+                 *
+                 *  - Anggota asal PUNYA transaksi, tapi tidak satu pun yang
+                 *    terpilih. Itu salah pakai, dan tetap ditolak: yang terjadi
+                 *    cuma satu baris riwayat penggabungan kosong yang terbaca
+                 *    seperti pekerjaan sudah beres, padahal transaksinya masih
+                 *    tertinggal di kartu lama.
+                 */
+                if ($dipindah->isEmpty() && Transaction::where('member_id', $asal->id)->exists()) {
                     throw ValidationException::withMessages([
                         'transaction_header_ids' => 'Tidak ada transaksi yang cocok untuk dipindahkan.',
                     ]);
@@ -343,9 +360,16 @@ class GabungAnggotaController extends Controller
                 // Rincian yang dinonaktifkan SELALU disebut di pesannya. Ia
                 // menghapus catatan setoran, jadi tidak boleh berlalu diam-diam
                 // hanya karena penggabungannya sendiri berhasil.
-                $pesan = $sisa === 0
-                    ? 'Seluruh transaksi berhasil dipindahkan. Anggota asal dinonaktifkan.'
-                    : 'Transaksi terpilih berhasil dipindahkan.';
+                // Anggota tanpa transaksi tidak boleh dilaporkan "seluruh
+                // transaksi berhasil dipindahkan" — kalimat itu menyiratkan ada
+                // yang berpindah, dan petugas akan mencari-cari di kartu tujuan.
+                if ($dipindah->isEmpty()) {
+                    $pesan = 'Anggota asal tidak punya transaksi, jadi tidak ada yang dipindahkan. Anggota asal dinonaktifkan.';
+                } elseif ($sisa === 0) {
+                    $pesan = 'Seluruh transaksi berhasil dipindahkan. Anggota asal dinonaktifkan.';
+                } else {
+                    $pesan = 'Transaksi terpilih berhasil dipindahkan.';
+                }
 
                 if ($bentrok->isNotEmpty()) {
                     $pesan .= ' '.$bentrok->count().' rincian yang periodenya bentrok dinonaktifkan, '

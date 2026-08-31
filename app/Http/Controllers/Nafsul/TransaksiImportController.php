@@ -9,7 +9,6 @@ use App\Models\Transaction;
 use App\Models\TransactionHeader;
 use App\Traits\HandlesTransactionRows;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -32,20 +31,29 @@ use Illuminate\Validation\ValidationException;
  * Kunci payload yang diterima endpoint ini TIDAK ikut berubah (`tanggal`,
  * `dibayar`, …): frontend yang menerjemahkan judul kolom ke kunci itu.
  *
- * Kolom WAJIB sheet `Kuitansi`: `kode_kuitansi`, `date`, `transaction_type`,
+ * Kolom WAJIB sheet `Kuitansi`: `transaction_number`, `date`, `transaction_type`,
  * `payment`, `payment_method`. Sisanya boleh kosong dan diperlakukan sebagai
  * nol — kecuali `group_leader_fee`, yang bila dikosongkan justru DIHITUNG dari
  * `group_leader_fee_percent` × total rincian.
  *
- * Kolom WAJIB sheet `Rincian`: `kode_kuitansi`, `member_number`, `rate_code`.
+ * Kolom WAJIB sheet `Rincian`: `transaction_number`, `member_number`, `rate_code`.
  * `amount` boleh kosong — server memakai harga tarifnya, supaya petugas tidak
  * perlu menyalin angka yang sama ratusan kali. `payment_period` mengikuti FILE,
  * bukan `fee_type` tarifnya: diisi → tersimpan, dikosongkan → kosong. Lihat
  * rincianDariBaris() untuk alasan klasifikasi master tidak dipakai di sini.
  *
- * Keduanya dihubungkan kolom `kode_kuitansi`. Kode itu hanya berlaku di dalam
- * file — dipakai untuk merangkai, bukan disimpan; nomor kuitansi yang sebenarnya
- * tetap dibuat server (`generateNumber`).
+ * Keduanya dihubungkan kolom `transaction_number`, yang WAJIB diisi dan wajib
+ * unik. Nomor itu sekaligus yang tersimpan sebagai nomor kuitansinya.
+ *
+ * Dulu ada kolom terpisah `kode_kuitansi` sebagai perekat, dan `transaction_number`
+ * boleh dikosongkan agar server yang membuatkan. Dua kolom untuk satu peran
+ * ternyata cuma jebakan: nomor lama diisikan ke kolom perekat yang memang selalu
+ * dibuang, lalu kuitansinya tersimpan dengan nomor buatan server — tanpa galat,
+ * dan tanpa jalan menelusuri balik ke arsip kertasnya.
+ *
+ * Karena impor selalu membawa nomornya sendiri, tidak ada lagi penomoran otomatis
+ * di jalur ini. `TransactionHeader::generateNumber()` tetap dipakai jalur simpan
+ * lewat form, tempat nomor memang belum ada saat kuitansinya dibuat.
  *
  * Bentuk dua sheet dipilih daripada satu sheet yang mengulang kolom kuitansi di
  * tiap baris rincian: pengulangan itu membuat satu kuitansi bisa menyebut dua
@@ -164,29 +172,12 @@ class TransaksiImportController extends Controller
         // untuk permintaan ini, bukan per baris. Lihat muatRujukan().
         $rujukan = $this->muatRujukan($payload['rows']);
 
-        // Penomoran untuk permintaan ini; lihat nomorBerikut().
-        //
-        // `dipakai` memuat SELURUH nomor yang sudah dipegang permintaan ini —
-        // termasuk yang dibawa file. Tanpa itu, nomor buatan server bisa jatuh
-        // persis pada nomor yang file bawa untuk kuitansi lain, dan bentroknya
-        // baru ketahuan saat penyimpanan massal, ketika ia menjatuhkan seluruh
-        // batch alih-alih satu kuitansi.
-        $penomoran = [
-            'urut' => [],
-            'dipakai' => collect($kuitansi['siap'])
-                ->pluck('transaction_number')
-                ->filter()
-                ->flip()
-                ->map(fn () => true)
-                ->all(),
-        ];
-
         // TAHAP 3 — seluruh grup divalidasi lebih dulu, tanpa satu pun penulisan.
         $siap = [];
 
         foreach ($grupRincian as $kode => $grup) {
             try {
-                $siap[] = $this->siapkanGrup($kode, $grup, $kuitansi, $rujukan, $penomoran);
+                $siap[] = $this->siapkanGrup($kode, $grup, $kuitansi, $rujukan);
             } catch (ValidationException $e) {
                 $pesan = collect($e->errors())->flatten()->first() ?? $e->getMessage();
                 $hasil = array_merge($hasil, $this->gagalkanGrup($grup, $pesan));
@@ -202,17 +193,27 @@ class TransaksiImportController extends Controller
                 $this->simpanSemua($siap);
 
                 foreach ($siap as $s) {
-                    // Baris yang sudah ada sebelumnya: bukan berhasil, bukan
-                    // gagal. Menyebutnya gagal membuat unggah ulang tampak rusak
-                    // padahal justru bekerja; menyebutnya berhasil mengaburkan
-                    // berapa yang benar-benar baru masuk.
+                    /**
+                     * Baris yang sudah ada sebelumnya dilaporkan GAGAL.
+                     *
+                     * Secara mekanis ia bukan kegagalan — tidak ada yang perlu
+                     * dibetulkan, dan datanya memang sudah tersimpan. Tapi
+                     * pelaporannya sengaja disatukan ke `gagal` supaya setiap
+                     * baris yang TIDAK ikut tertulis pada unggahan ini muncul di
+                     * satu daftar yang sama, bisa diekspor, dan tidak ada yang
+                     * lolos dari perhatian karena warnanya lebih lunak.
+                     *
+                     * Pesannya karena itu harus menyebut bahwa datanya aman —
+                     * kalau tidak, unggah ulang akan terbaca seperti impor yang
+                     * rusak, padahal justru bekerja sebagaimana mestinya.
+                     */
                     foreach ($s['lewati'] as $row) {
                         $hasil[] = [
                             'sheet' => self::SHEET_RINCIAN,
                             'baris' => $row['baris'],
-                            'status' => 'lewati',
+                            'status' => 'gagal',
                             'nama' => $this->labelBaris($row),
-                            'pesan' => 'sudah ada, dilewati.',
+                            'pesan' => 'tidak ditulis ulang — baris ini sudah ada di aplikasi.',
                         ];
                     }
 
@@ -268,6 +269,23 @@ class TransaksiImportController extends Controller
             ];
         }
 
+        // Baris kuitansi kembar. Isinya tidak terpakai, jadi ia masuk daftar
+        // gagal bersama baris lain yang tidak tertulis — sekalipun impornya
+        // sendiri tetap berhasil untuk kuitansi itu lewat baris kembarannya.
+        foreach ($kuitansi['abaikan'] as $abai) {
+            if (! isset($grupRincian[$abai['kode']])) {
+                continue;
+            }
+
+            $hasil[] = [
+                'sheet' => self::SHEET_KUITANSI,
+                'baris' => $abai['baris'],
+                'status' => 'gagal',
+                'nama' => $abai['kode'],
+                'pesan' => $abai['pesan'],
+            ];
+        }
+
         // Urutan hasil mengikuti nomor baris di file, bukan urutan pemrosesan
         // per grup — daftar galat di layar harus bisa ditelusuri turun sejajar
         // dengan filenya. Sheet Kuitansi ditaruh lebih dulu karena itu pula
@@ -280,9 +298,11 @@ class TransaksiImportController extends Controller
 
         $jumlah = array_count_values(array_column($hasil, 'status'));
 
+        // Dua angka saja. Sempat ada `dilewati` sebagai golongan ketiga; kini
+        // baris yang tidak tertulis seluruhnya masuk `gagal`, supaya tidak ada
+        // yang tersembunyi di golongan yang lebih mudah diabaikan.
         return response()->json([
             'berhasil' => $jumlah['ok'] ?? 0,
-            'dilewati' => $jumlah['lewati'] ?? 0,
             'gagal' => $jumlah['gagal'] ?? 0,
             'hasil' => $hasil,
         ]);
@@ -302,42 +322,50 @@ class TransaksiImportController extends Controller
      * Kuitansi yang harus dibetulkan.
      *
      * @param  array<int, array<string, mixed>>  $headers
-     * @return array{siap: array<string, array<string, mixed>>, galat: array<string, array{kode: string, baris: int, pesan: string}>}
+     * @return array{siap: array<string, array<string, mixed>>, galat: array<string, array{kode: string, baris: int, pesan: string}>, abaikan: array<int, array{kode: string, baris: int, pesan: string}>, adaDiDb: array<string, int>}
      */
     private function siapkanKuitansi(array $headers): array
     {
         $siap = [];
         $galat = [];
+        $abaikan = [];
         $barisKode = [];
 
         foreach ($headers as $i => $row) {
             $baris = (int) ($row['baris'] ?? $i + 2);
-            $kode = trim((string) ($row['kode_kuitansi'] ?? ''));
+            // Nomor kuitansi sekaligus kunci perekat ke sheet Rincian.
+            $kode = trim((string) ($row['no_kuitansi'] ?? ''));
 
             if ($kode === '') {
                 $galat['#baris'.$baris] = [
                     'kode' => '',
                     'baris' => $baris,
-                    'pesan' => 'kode_kuitansi wajib diisi — kolom itu yang menghubungkan kuitansi ini ke sheet Rincian.',
+                    'pesan' => 'transaction_number wajib diisi — nomor itu yang menghubungkan kuitansi ini ke sheet Rincian, sekaligus tersimpan sebagai nomor kuitansinya.',
                 ];
 
                 continue;
             }
 
-            // Kode kembar DITOLAK, tidak lagi diam-diam memakai yang pertama.
-            //
-            // Dulu yang kedua dibuang tanpa suara supaya satu baris induk tidak
-            // menjatuhkan seluruh impor. Sekarang kegagalannya bisa dibatasi ke
-            // kuitansi itu saja, jadi tidak ada alasan menyembunyikannya: dua
-            // baris berkode sama berarti salah satunya salah ketik, dan yang
-            // terbuang akan hilang tanpa jejak kalau tidak dilaporkan.
+            /**
+             * Nomor kembar di sheet Kuitansi: yang PERTAMA dipakai, sisanya
+             * dilewati — bukan ditolak.
+             *
+             * File migrasi lazim memuat baris kuitansi yang tertulis dua kali,
+             * dan menolaknya berarti satu baris kembar menjatuhkan seluruh
+             * kuitansi itu berikut semua rinciannya. Nomornya toh sama, jadi
+             * yang dituju rinciannya tetap kuitansi yang sama.
+             *
+             * Dilewati dengan LAPORAN, bukan diam-diam. Dua baris bernomor sama
+             * bisa saja berbeda isi — tanggal atau nominal yang tidak sama — dan
+             * yang terbuang harus tetap terlihat supaya bisa diperiksa kalau
+             * angkanya nanti tidak cocok.
+             */
             if (isset($barisKode[$kode])) {
-                $galat[$kode] = [
+                $abaikan[] = [
                     'kode' => $kode,
                     'baris' => $baris,
-                    'pesan' => "kode_kuitansi \"{$kode}\" dipakai dua kali di sheet Kuitansi (baris {$barisKode[$kode]} dan {$baris}). Beri kode yang berbeda.",
+                    'pesan' => "transaction_number \"{$kode}\" sudah dipakai baris {$barisKode[$kode]} di sheet Kuitansi. Baris ini dilewati; isian baris {$barisKode[$kode]} yang dipakai.",
                 ];
-                unset($siap[$kode]);
 
                 continue;
             }
@@ -355,96 +383,50 @@ class TransaksiImportController extends Controller
             }
         }
 
-        return $this->periksaNomorKuitansi($siap, $galat, $barisKode);
+        return [
+            'siap' => $siap,
+            'galat' => $galat,
+            // Baris kuitansi kembar yang isinya tidak terpakai. Impornya sendiri
+            // tetap jalan lewat baris kembarannya; ini cuma bahan laporan.
+            'abaikan' => $abaikan,
+            // Nomor yang sudah tersimpan → id kuitansinya. Lihat kuitansiYangSudahAda().
+            'adaDiDb' => $this->kuitansiYangSudahAda($siap),
+        ];
     }
 
     /**
-     * Nomor kuitansi yang DIBAWA FILE harus benar-benar belum terpakai.
+     * Cocokkan nomor kuitansi dari file dengan yang SUDAH ADA di database.
      *
-     * Dua bentrok yang mungkin, dan keduanya harus ditolak sebelum satu baris
-     * pun ditulis — index unik `transaction_number` akan menolaknya juga, tapi
-     * di tengah penyimpanan massal, dan di sana kegagalannya menjatuhkan seluruh
-     * batch alih-alih satu kuitansi:
+     * Nomor yang sudah ada BUKAN bentrok — ia kuitansi yang sama. Sejak nomor
+     * itu wajib, unik, dan dibawa file, ia jadi identitas kuitansi yang berlaku
+     * lintas unggahan: mengunggah ulang file yang sama harus menemukan kembali
+     * kuitansi yang sudah tersimpan, bukan menolaknya sebagai nomor terpakai.
      *
-     *  - **kembar di dalam file** — dua baris sheet Kuitansi bernomor sama;
-     *  - **sudah ada di database** — nomor itu sudah dipakai kuitansi lain.
-     *    Dicek `withTrashed()` supaya cakupannya sama dengan index uniknya;
-     *    kuitansi yang dihapus pun masih memegang nomornya.
+     * Yang dikembalikan peta `nomor => id kuitansi`. Grup yang nomornya ada di
+     * peta itu tidak dibuat ulang; rincian yang belum masuk ditempelkan ke
+     * kuitansi lamanya, yang sudah ada dilewati.
      *
-     * Pemeriksaan database dilakukan SEKALI untuk seluruh nomor di permintaan
-     * ini, bukan satu query per baris.
+     * `withTrashed()` supaya cakupannya sama dengan index unik
+     * `transaction_number` — kuitansi yang dihapus pun masih memegang nomornya,
+     * dan menyisipkan nomor yang sama akan ditolak database.
      *
-     * @param  array<string, array<string, mixed>>  $siap
-     * @param  array<string, array{kode: string, baris: int, pesan: string}>  $galat
-     * @param  array<string, int>  $barisKode
-     * @return array{siap: array<string, array<string, mixed>>, galat: array<string, array{kode: string, baris: int, pesan: string}>}
+     * @param  array<string, array<string, mixed>>  $siap  dikunci nomor kuitansi
+     * @return array<string, int>
      */
-    private function periksaNomorKuitansi(array $siap, array $galat, array $barisKode): array
+    private function kuitansiYangSudahAda(array $siap): array
     {
-        $nomor = [];
-
-        foreach ($siap as $kode => $header) {
-            $n = trim((string) ($header['transaction_number'] ?? ''));
-
-            if ($n !== '') {
-                $nomor[$kode] = $n;
-            }
+        if ($siap === []) {
+            return [];
         }
 
-        if ($nomor === []) {
-            return ['siap' => $siap, 'galat' => $galat];
-        }
-
-        $tolak = function (string $kode, string $pesan) use (&$siap, &$galat, $barisKode) {
-            $galat[$kode] = [
-                'kode' => $kode,
-                'baris' => $barisKode[$kode] ?? 0,
-                'pesan' => $pesan,
-            ];
-            unset($siap[$kode]);
-        };
-
-        // Kembar di dalam file. KEDUANYA ditolak, bukan hanya yang belakangan:
-        // tidak ada dasar untuk memutuskan mana yang benar, dan memilih salah
-        // satu diam-diam berarti satu kuitansi tersimpan dengan nomor yang boleh
-        // jadi milik kuitansi yang lain.
-        $pemilik = [];
-
-        foreach ($nomor as $kode => $n) {
-            $pemilik[$n][] = $kode;
-        }
-
-        foreach ($pemilik as $n => $kodeSama) {
-            if (count($kodeSama) < 2) {
-                continue;
-            }
-
-            foreach ($kodeSama as $kode) {
-                $tolak($kode, "transaction_number \"{$n}\" dipakai lebih dari satu kuitansi di file ini. Betulkan supaya tiap kuitansi bernomor unik.");
-                unset($nomor[$kode]);
-            }
-        }
-
-        if ($nomor === []) {
-            return ['siap' => $siap, 'galat' => $galat];
-        }
-
-        $sudahAda = TransactionHeader::withTrashed()
-            ->whereIn('transaction_number', array_values($nomor))
-            ->pluck('transaction_number')
-            ->flip();
-
-        foreach ($nomor as $kode => $n) {
-            if ($sudahAda->has($n)) {
-                $tolak($kode, "transaction_number \"{$n}\" sudah dipakai kuitansi lain di aplikasi.");
-            }
-        }
-
-        return ['siap' => $siap, 'galat' => $galat];
+        return TransactionHeader::withTrashed()
+            ->whereIn('transaction_number', array_keys($siap))
+            ->pluck('id', 'transaction_number')
+            ->all();
     }
 
     /**
-     * Kelompokkan rincian berdasarkan `kode_kuitansi`.
+     * Kelompokkan rincian berdasarkan `transaction_number`.
      *
      * @param  array<int, array<string, mixed>>  $rows
      * @return array<string, array<int, array<string, mixed>>>
@@ -455,7 +437,7 @@ class TransaksiImportController extends Controller
 
         foreach ($rows as $i => $row) {
             $row['baris'] = (int) ($row['baris'] ?? $i + 1);
-            $kode = trim((string) ($row['kode_kuitansi'] ?? ''));
+            $kode = trim((string) ($row['no_kuitansi'] ?? ''));
 
             $grup[$kode][] = $row;
         }
@@ -488,7 +470,6 @@ class TransaksiImportController extends Controller
      * @param  array<int, array<string, mixed>>  $grup
      * @param  array<string, array<string, mixed>>  $kuitansi
      * @param  array{anggota: array<string, int>, tarif: array<string, object>, terpakai: array<string, int|string|null>}  $rujukan
-     * @param  array{urut: array<string, int>, dipakai: array<string, true>}  $penomoran
      * @return array{kode: string, nomor: ?string, headerId: ?int, header: ?array<string, mixed>, rincian: array<int, array{data: array<string, mixed>, row: array<string, mixed>}>, lewati: array<int, array<string, mixed>>, grup: array<int, array<string, mixed>>}
      *
      * @throws ValidationException
@@ -497,12 +478,11 @@ class TransaksiImportController extends Controller
         string $kode,
         array $grup,
         array $kuitansi,
-        array &$rujukan,
-        array &$penomoran
+        array &$rujukan
     ): array {
         if ($kode === '') {
             throw ValidationException::withMessages([
-                'kode_kuitansi' => 'kode_kuitansi wajib diisi — kolom itu yang menghubungkan rincian ke sheet Kuitansi.',
+                'transaction_number' => 'transaction_number wajib diisi — nomor itu yang menghubungkan rincian ke barisnya di sheet Kuitansi.',
             ]);
         }
 
@@ -513,13 +493,13 @@ class TransaksiImportController extends Controller
             $galat = $kuitansi['galat'][$kode];
 
             throw ValidationException::withMessages([
-                'kode_kuitansi' => "sheet Kuitansi baris {$galat['baris']} ditolak: {$galat['pesan']}",
+                'transaction_number' => "sheet Kuitansi baris {$galat['baris']} ditolak: {$galat['pesan']}",
             ]);
         }
 
         if (! isset($kuitansi['siap'][$kode])) {
             throw ValidationException::withMessages([
-                'kode_kuitansi' => "kode_kuitansi \"{$kode}\" tidak ada di sheet Kuitansi.",
+                'transaction_number' => "transaction_number \"{$kode}\" tidak ada di sheet Kuitansi.",
             ]);
         }
 
@@ -528,32 +508,27 @@ class TransaksiImportController extends Controller
 
         $this->periksaDuplikatDalamGrup($grup, $rincian);
 
-        // Pisahkan yang sudah ada dari yang belum. `array_key_exists`, bukan
-        // `isset`: nilainya boleh null — rincian yang tercatat tanpa kuitansi
-        // (tagihan yang belum dibayar) tetap terhitung "sudah ada".
+        // Kuitansi ini sudah tersimpan? Nomornya yang menjawab — bukan tebakan
+        // dari rincian mana yang kebetulan sudah ada. Lihat kuitansiYangSudahAda().
+        $headerLama = $kuitansi['adaDiDb'][$kode] ?? null;
+
+        // Pisahkan rincian yang sudah ada dari yang belum. `array_key_exists`,
+        // bukan `isset`: nilainya boleh null — rincian yang tercatat tanpa
+        // kuitansi (tagihan yang belum dibayar) tetap terhitung "sudah ada".
         $belum = [];
         $lewati = [];
-        $idKuitansiLama = [];
 
         foreach ($rincian as $i => $data) {
-            $kunci = $this->kunciPeriode($data);
-
-            if (! array_key_exists($kunci, $rujukan['terpakai'])) {
-                $belum[] = ['data' => $data, 'row' => $grup[$i]];
+            if (array_key_exists($this->kunciPeriode($data), $rujukan['terpakai'])) {
+                $lewati[] = $grup[$i];
 
                 continue;
             }
 
-            $lewati[] = $grup[$i];
-            $pemilik = $rujukan['terpakai'][$kunci];
-
-            if ($pemilik !== null && $pemilik !== self::BARU) {
-                $idKuitansiLama[$pemilik] = true;
-            }
+            $belum[] = ['data' => $data, 'row' => $grup[$i]];
         }
 
-        // Seluruhnya sudah ada: tidak ada yang ditulis, dan yang terpenting
-        // kuitansinya TIDAK dibuat ulang.
+        // Tidak ada yang perlu ditulis. Kuitansinya TIDAK dibuat ulang.
         if ($belum === []) {
             return [
                 'kode' => $kode, 'nomor' => null, 'headerId' => null, 'header' => null,
@@ -561,22 +536,20 @@ class TransaksiImportController extends Controller
             ];
         }
 
-        // Sebagian sudah ada: sisanya menempel ke kuitansi milik baris itu.
-        if ($lewati !== []) {
-            $id = array_keys($idKuitansiLama);
-
-            if (count($id) !== 1) {
-                throw ValidationException::withMessages([
-                    'kode_kuitansi' => $id === []
-                        ? 'sebagian rincian kuitansi ini sudah ada tapi belum terkait ke kuitansi mana pun, jadi sisanya tidak bisa ditempelkan. Betulkan lewat aplikasi, bukan lewat impor.'
-                        : 'sebagian rincian kuitansi ini sudah ada dan tersebar di '.count($id).' kuitansi berbeda, jadi sisanya tidak bisa ditempelkan. Betulkan lewat aplikasi, bukan lewat impor.',
-                ]);
-            }
-
+        /**
+         * Kuitansinya sudah ada, rinciannya belum lengkap.
+         *
+         * Terjadi saat unggahan sebelumnya terputus di tengah, atau saat file
+         * yang sama diunggah ulang setelah ditambahi baris. Sisanya ditempelkan
+         * ke kuitansi yang ITU — bukan dibuatkan kuitansi kedua berisi sisanya,
+         * yang akan mencatat satu pembayaran sebagai dua lembar dan dua-duanya
+         * tidak cocok dengan aslinya.
+         */
+        if ($headerLama !== null) {
             $this->catatTerpakai($belum, $rujukan);
 
             return [
-                'kode' => $kode, 'nomor' => null, 'headerId' => (int) $id[0], 'header' => null,
+                'kode' => $kode, 'nomor' => null, 'headerId' => (int) $headerLama, 'header' => null,
                 'rincian' => $belum, 'lewati' => $lewati, 'grup' => $grup,
             ];
         }
@@ -610,23 +583,19 @@ class TransaksiImportController extends Controller
 
         $this->catatTerpakai($belum, $rujukan);
 
-        // Nomor dari file dipakai apa adanya; yang kosong dibuatkan server.
-        // Keabsahannya (kembar / sudah terpakai) sudah dijaring
-        // periksaNomorKuitansi() sebelum grup mana pun sampai ke sini.
-        $nomor = trim((string) ($header['transaction_number'] ?? ''));
-
-        if ($nomor === '') {
-            $nomor = $this->nomorBerikut($header['date'], $penomoran);
-        }
-
-        // Dilepas dari $header supaya penomoran punya satu jalur saja: kolom
-        // `transaction_number` dipasang simpanSemua() dari `nomor`, bukan
-        // menumpang lewat dua tempat yang bisa berselisih.
+        // $kode ADALAH nomor kuitansinya — kunci perekat dan nomor tersimpan kini
+        // satu kolom yang sama. Keabsahannya (kosong, kembar di file, sudah ada
+        // di database) seluruhnya dijaring siapkanKuitansi() sebelum grup mana
+        // pun sampai ke sini.
+        //
+        // Dilepas dari $header supaya penomoran punya satu jalur: kolomnya
+        // dipasang simpanSemua() dari `nomor`, bukan menumpang lewat dua tempat
+        // yang bisa berselisih.
         unset($header['transaction_number']);
 
         return [
             'kode' => $kode,
-            'nomor' => $nomor,
+            'nomor' => $kode,
             'headerId' => null,
             'header' => $header,
             'rincian' => $belum,
@@ -750,7 +719,7 @@ class TransaksiImportController extends Controller
      */
     private function gagalkanGrup(array $grup, string $pesan): array
     {
-        $kode = trim((string) ($grup[0]['kode_kuitansi'] ?? ''));
+        $kode = trim((string) ($grup[0]['no_kuitansi'] ?? ''));
         $satuBaris = count($grup) === 1 || $kode === '';
 
         return array_map(function ($row) use ($pesan, $kode, $satuBaris) {
@@ -811,18 +780,17 @@ class TransaksiImportController extends Controller
             // yang membedakannya adalah siapkanGrup().
             'group_leader_fee' => ['nullable', 'numeric', 'min:0', 'max:999999999999.99'],
             /**
-             * Nomor kuitansi dari file — DIPAKAI APA ADANYA bila diisi.
+             * Nomor kuitansi dari file — WAJIB, dipakai apa adanya.
              *
-             * Ada supaya kuitansi hasil migrasi tetap memakai nomor yang tertulis
-             * di lembar & arsip lamanya. Tanpa kolom ini nomornya selalu dibuat
-             * ulang oleh server, dan tidak ada lagi jalan menelusuri balik dari
-             * arsip kertas ke barisnya di aplikasi.
+             * Wajib karena ia merangkap dua peran: nomor yang tersimpan, DAN
+             * kunci yang menyambungkan kuitansi ini ke baris-barisnya di sheet
+             * Rincian. Yang kosong tidak punya apa pun untuk disambungkan.
              *
              * Bentuknya tidak dipaksa mengikuti YYMMDD + urut: nomor lama adalah
              * fakta yang sudah terjadi, dan aturan penomoran hari ini tidak
              * berlaku surut untuknya. Yang dijaga cuma panjang kolomnya.
              */
-            'transaction_number' => ['nullable', 'string', 'max:50'],
+            'transaction_number' => ['required', 'string', 'max:50'],
         ], [
             'date.required' => 'date wajib diisi (format YYYY-MM-DD, mis. 2026-08-23).',
             'date.date' => 'date tidak dikenali. Pakai format YYYY-MM-DD, mis. 2026-08-23.',
@@ -991,66 +959,6 @@ class TransaksiImportController extends Controller
         // baris yang sudah masuk pada unggahan sebelumnya — siapkanGrup() yang
         // memisahkannya sebagai "dilewati".
         return $data;
-    }
-
-    /**
-     * Nomor kuitansi berikutnya untuk satu tanggal, dijatah di dalam permintaan.
-     *
-     * Dua hal yang diperbaiki dibanding memanggil `generateNumber()` langsung:
-     *
-     *  - **tanggalnya**. Tanpa argumen, `generateNumber()` memakai `now()`,
-     *    sehingga seluruh kuitansi hasil impor bernomor tanggal HARI IMPOR —
-     *    padahal nomor itu berformat YYMMDD tanggal transaksinya, dan data
-     *    migrasi justru berisi kuitansi bertahun-tahun ke belakang. Yang dipakai
-     *    di sini `date` milik kuitansinya sendiri;
-     *  - **biayanya**. `generateNumber()` memindai seluruh baris berprefiks sama
-     *    (`LIKE 'ymd%'` + `ORDER BY LENGTH(...)`, yang tidak bisa memakai index)
-     *    lalu memeriksa keberadaan kandidatnya. Dipanggil sekali per kuitansi
-     *    pada impor ratusan ribu baris, pemindaian itu tumbuh seiring baris yang
-     *    baru saja dimasukkannya sendiri — makin jauh impor berjalan, makin
-     *    lambat. Di sini ia dipanggil sekali per TANGGAL per permintaan, sisanya
-     *    dihitung di memori.
-     *
-     * Yang tidak ditangani: dua impor berjalan bersamaan untuk tanggal yang sama
-     * bisa menjatah nomor kembar, dan yang kalah ditolak index unik
-     * `transaction_number` — kegagalannya terbatas pada kuitansi itu saja.
-     * Perlombaan yang sama sudah ada pada `generateNumber()` (ia pun memeriksa
-     * lalu menyisipkan tanpa kunci), jadi ini tidak menambah keadaan baru.
-     *
-     * @param  array{urut: array<string, int>, dipakai: array<string, true>}  $penomoran
-     */
-    private function nomorBerikut(string $tanggal, array &$penomoran): string
-    {
-        $prefix = Carbon::parse($tanggal)->format('ymd');
-
-        if (isset($penomoran['urut'][$prefix])) {
-            $penomoran['urut'][$prefix]++;
-        } else {
-            // Sekali per tanggal: `generateNumber()` sudah mengembalikan nomor
-            // bebas pertama, tinggal diambil bagian urutnya.
-            $penomoran['urut'][$prefix] = (int) substr(TransactionHeader::generateNumber($tanggal), 6);
-        }
-
-        // Lewati nomor yang sudah dipegang permintaan ini — praktisnya nomor
-        // yang dibawa file untuk kuitansi lain di tanggal yang sama.
-        do {
-            $kandidat = $prefix.str_pad(
-                (string) $penomoran['urut'][$prefix],
-                TransactionHeader::PANJANG_URUT,
-                '0',
-                STR_PAD_LEFT
-            );
-
-            if (! isset($penomoran['dipakai'][$kandidat])) {
-                break;
-            }
-
-            $penomoran['urut'][$prefix]++;
-        } while (true);
-
-        $penomoran['dipakai'][$kandidat] = true;
-
-        return $kandidat;
     }
 
     /**
