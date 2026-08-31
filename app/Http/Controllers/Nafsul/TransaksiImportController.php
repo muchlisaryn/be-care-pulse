@@ -845,19 +845,17 @@ class TransaksiImportController extends Controller
         $validator->stopOnFirstFailure();
         $data = $validator->validate();
 
+        // Kolom yang DIISI file dipakai apa adanya; yang kosong barulah
+        // diturunkan. Termasuk pada kuitansi pribadi: jalur impor dulu menolkan
+        // persen & jasa ketua di sini walau filenya mengisi, dan itu satu-satunya
+        // tempat tersisa di importer yang menimpa angka dari file.
+        //
+        // Aturan form TIDAK ikut berubah — di sana potongan & jasa ketua memang
+        // hanya berlaku untuk setoran kelompok. Bedanya, file migrasi mencatat
+        // apa yang SUDAH terjadi, dan importer tidak berwenang membetulkan angka
+        // yang sudah tercetak di kuitansinya.
         $data['member_deduction'] = $data['member_deduction'] ?? 0;
         $data['group_leader_fee_percent'] = $data['group_leader_fee_percent'] ?? 0;
-
-        // Sama dengan jalur simpan biasa: potongan & jasa ketua kelompok hanya
-        // berlaku pada setoran kelompok, jadi dinolkan pada kuitansi pribadi
-        // alih-alih diam-diam menggeser `balance`.
-        if ($data['transaction_type'] === 'pribadi') {
-            $data['group_leader_fee_percent'] = 0;
-            // Dinolkan, bukan dibiarkan null: null berarti "hitung dari
-            // persen", dan pada kuitansi pribadi jawabannya harus pasti nol
-            // bahkan bila filenya terlanjur mengisi nominal jasa.
-            $data['group_leader_fee'] = 0;
-        }
 
         return $data;
     }
