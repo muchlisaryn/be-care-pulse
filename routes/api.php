@@ -35,6 +35,7 @@ use App\Http\Controllers\Nafsul\StatusAnggotaController;
 use App\Http\Controllers\Nafsul\StatusNikahController;
 use App\Http\Controllers\Nafsul\TarifController;
 use App\Http\Controllers\Nafsul\TransaksiController;
+use App\Http\Controllers\Nafsul\RekapJasaController;
 use App\Http\Controllers\Nafsul\TransaksiHeaderController;
 use App\Http\Controllers\Nafsul\TransaksiImportController;
 use App\Http\Controllers\Nafsul\WilayahController;
@@ -399,6 +400,19 @@ Route::middleware('auth:sanctum')->group(function () {
             ->parameters(['pekerjaan' => 'occupation']);
         Route::apiResource('status-nikah', StatusNikahController::class)
             ->parameters(['status-nikah' => 'maritalStatus']);
+
+        // Jasa ketua kelompok — kuitansi berkomisi beserta nominal & terbilangnya.
+        // Read-only: yang membentuk angkanya adalah kuitansi, jadi tidak ada
+        // jalur untuk mengubahnya dari sini.
+        Route::get('rekap-jasa', [RekapJasaController::class, 'index']);
+        // Kuitansi (tanda terima) jasa ketua kelompok, PDF. Dokumen tersendiri,
+        // bukan biling: yang dibuktikan lembar ini adalah komisi ketuanya sudah
+        // diterima, bukan rincian iuran anggotanya.
+        // Cetak massal: SATU berkas, satu kuitansi per halaman. Didaftarkan
+        // sebelum rute ber-parameter agar `kuitansi` tidak tertangkap sebagai
+        // {transaksiHeader}.
+        Route::get('rekap-jasa/kuitansi', [RekapJasaController::class, 'kuitansiMassal']);
+        Route::get('rekap-jasa/{transaksiHeader}/kuitansi', [RekapJasaController::class, 'kuitansi']);
 
         // Transaksi iuran anggota. `->parameters()` ditulis eksplisit: tanpa
         // itu Laravel mensingularkan `transaksi` jadi `transaksus`, sedangkan
