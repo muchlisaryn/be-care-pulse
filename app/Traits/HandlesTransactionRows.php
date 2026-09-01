@@ -4,6 +4,7 @@ namespace App\Traits;
 
 use App\Models\Rate;
 use App\Models\Transaction;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -174,5 +175,45 @@ trait HandlesTransactionRows
     protected function totalBaris(array $baris): float
     {
         return max(0, (float) $baris['amount'] - (float) ($baris['discount'] ?? 0));
+    }
+
+    /**
+     * Batas rentang periode sebagai perbandingan bertingkat pada (`year`, `month`).
+     *
+     * Ditulis begini, bukan sebagai `year * 100 + month` yang lebih pendek:
+     * ekspresi aritmetika membuat MySQL tidak bisa memakai index
+     * `transactions_periode_index` dan seluruh tabel harus dipindai. Bentuk
+     * "tahunnya lebih besar, ATAU tahun sama tapi bulannya memenuhi" tetap
+     * berupa perbandingan kolom biasa sehingga index-nya terpakai.
+     *
+     * Baris tanpa periode (tarif sekali bayar) otomatis tersaring keluar --
+     * perbandingan apa pun terhadap NULL bernilai NULL, bukan true. Itu memang
+     * yang diinginkan: baris yang tidak punya periode tidak berada di dalam
+     * rentang periode mana pun.
+     *
+     * `$tabel` diisi HANYA bila query-nya mengandung join -- tanpa kualifikasi,
+     * `year`/`month` jadi ambigu begitu ada tabel tetangga yang punya kolom
+     * senama.
+     *
+     * @param  array{month:int,year:int}  $batas
+     * @param  '>='|'<='  $arah
+     */
+    protected function filterRentangPeriode(
+        Builder $query,
+        array $batas,
+        string $arah,
+        ?string $tabel = null
+    ): void {
+        $tahun = $tabel ? "{$tabel}.year" : 'year';
+        $bulan = $tabel ? "{$tabel}.month" : 'month';
+        $tahunLebih = $arah === '>=' ? '>' : '<';
+
+        $query->where(function (Builder $q) use ($batas, $arah, $tahunLebih, $tahun, $bulan) {
+            $q->where($tahun, $tahunLebih, $batas['year'])
+                ->orWhere(function (Builder $q) use ($batas, $arah, $tahun, $bulan) {
+                    $q->where($tahun, $batas['year'])
+                        ->where($bulan, $arah, $batas['month']);
+                });
+        });
     }
 }

@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Nafsul;
 
 use App\Http\Controllers\Controller;
-use App\Models\GroupLeader;
 use App\Models\Member;
 use App\Models\Transaction;
 use App\Models\TransactionHeader;
@@ -39,7 +38,7 @@ class TransaksiHeaderController extends Controller
         $query = TransactionHeader::query()
             ->select('transaction_headers.*')
             ->withCount('transactions')
-            ->addSelect(['group_leader_name' => $this->subqueryNamaKetua()])
+            ->withGroupLeaderName()
             // Kuitansi PRIBADI tidak punya ketua kelompok yang berarti, jadi
             // kolom "Nama" di daftar memakai nama anggota pertamanya beserta
             // banyaknya anggota lain pada kuitansi yang sama.
@@ -857,44 +856,12 @@ class TransaksiHeaderController extends Controller
      * Positif berarti masih kurang bayar, negatif berarti lebih bayar.
      */
     /**
-     * Nama ketua kelompok pemilik kuitansi, sebagai subquery berkorelasi.
-     *
-     * Diambil dari rincian PERTAMA: kuitansi kelompok hanya untuk satu ketua —
-     * form transaksi mengunci pilihan ketuanya begitu rincian pertama masuk —
-     * jadi baris mana pun memberi jawaban yang sama.
-     *
-     * Subquery, bukan `with('transactions.member.groupLeader')`: relasi itu akan
-     * menyeret SELURUH rincian tiap kuitansi ke memori (satu kuitansi kelompok
-     * bisa berisi belasan anggota) hanya untuk membaca satu nama di daftar.
-     *
-     * Rincian yang sudah dihapus tidak ikut: kalau ikut, kuitansi yang seluruh
-     * rinciannya sudah diganti akan tetap menampilkan ketua yang lama.
-     */
-    private function subqueryNamaKetua()
-    {
-        return GroupLeader::query()
-            ->select('group_leaders.name')
-            ->join('members', 'members.group_leader_id', '=', 'group_leaders.id')
-            ->join('transactions', 'transactions.member_id', '=', 'members.id')
-            ->whereColumn('transactions.transaction_header_id', 'transaction_headers.id')
-            ->whereNull('transactions.deleted_by')
-            ->whereNull('members.deleted_by')
-            ->whereNull('group_leaders.deleted_by')
-            // Global scope `active` menulis `deleted_by` TANPA nama tabel,
-            // sehingga ambigu begitu tabel lain yang juga punya kolom itu ikut
-            // di-join. Scope-nya dilepas dan syaratnya ditulis ulang di atas.
-            ->withoutGlobalScope('active')
-            ->orderBy('transactions.id')
-            ->limit(1);
-    }
-
-    /**
      * Nama anggota pada rincian PERTAMA kuitansi, sebagai subquery berkorelasi.
      *
      * Dipakai kolom "Nama" untuk kuitansi PRIBADI, yang tidak punya ketua
      * kelompok yang berarti. Subquery dengan alasan yang sama seperti
-     * subqueryNamaKetua(): menyeret seluruh rincian tiap kuitansi ke memori
-     * hanya untuk membaca satu nama itu pemborosan.
+     * TransactionHeader::scopeWithGroupLeaderName(): menyeret seluruh rincian
+     * tiap kuitansi ke memori hanya untuk membaca satu nama itu pemborosan.
      */
     private function subqueryNamaAnggota()
     {
@@ -904,8 +871,8 @@ class TransaksiHeaderController extends Controller
             ->whereColumn('transactions.transaction_header_id', 'transaction_headers.id')
             ->whereNull('transactions.deleted_by')
             ->whereNull('members.deleted_by')
-            // Sama seperti subqueryNamaKetua(): global scope `active` menulis
-            // `deleted_by` TANPA nama tabel, jadi ambigu begitu ada join.
+            // Sama seperti scopeWithGroupLeaderName(): global scope `active`
+            // menulis `deleted_by` TANPA nama tabel, jadi ambigu begitu ada join.
             ->withoutGlobalScope('active')
             ->orderBy('transactions.id')
             ->limit(1);
