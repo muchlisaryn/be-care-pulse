@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Traits\HasAuditColumns;
 use App\Traits\MarksDisabledWhenDeleted;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
@@ -99,6 +100,50 @@ class TransactionHeader extends Model
     public function transactions(): HasMany
     {
         return $this->hasMany(Transaction::class);
+    }
+
+    /**
+     * Sertakan kolom semu `group_leader_name` -- nama ketua kelompok pemilik
+     * kuitansi, diambil dari rincian PERTAMA.
+     *
+     * Rincian pertama sudah cukup: satu kuitansi kelompok hanya menampung
+     * anggota dari satu ketua. Pada kuitansi PRIBADI nilainya diabaikan
+     * pemanggil (yang ditampilkan "Pribadi", diturunkan dari
+     * `transaction_type`), dan pada kuitansi yang belum punya rincian sama
+     * sekali hasilnya null.
+     *
+     * Subquery, bukan `with('transactions.member.groupLeader')`: relasi itu akan
+     * menyeret SELURUH rincian tiap kuitansi ke memori (satu kuitansi kelompok
+     * bisa berisi belasan anggota) hanya untuk membaca satu nama di daftar.
+     *
+     * Rincian yang sudah dihapus tidak ikut: kalau ikut, kuitansi yang seluruh
+     * rinciannya sudah diganti akan tetap menampilkan ketua yang lama.
+     *
+     * Dijadikan scope model, bukan method privat di controller: daftar
+     * transaksi dan laporan penerimaan sama-sama menampilkan kolom ini, dan
+     * dua salinan subquery yang sama cepat atau lambat berbeda isinya.
+     *
+     * WAJIB dipanggil SEBELUM `select()` apa pun pada query yang sama:
+     * `select()` mengganti seluruh daftar kolom, jadi dipanggil sesudahnya ia
+     * ikut membuang subquery ini.
+     */
+    public function scopeWithGroupLeaderName(Builder $query): Builder
+    {
+        return $query->addSelect(['group_leader_name' => GroupLeader::query()
+            ->select('group_leaders.name')
+            ->join('members', 'members.group_leader_id', '=', 'group_leaders.id')
+            ->join('transactions', 'transactions.member_id', '=', 'members.id')
+            ->whereColumn('transactions.transaction_header_id', 'transaction_headers.id')
+            ->whereNull('transactions.deleted_by')
+            ->whereNull('members.deleted_by')
+            ->whereNull('group_leaders.deleted_by')
+            // Global scope `active` menulis `deleted_by` TANPA nama tabel,
+            // sehingga ambigu begitu tabel lain yang juga punya kolom itu ikut
+            // di-join. Scope-nya dilepas dan syaratnya ditulis ulang di atas.
+            ->withoutGlobalScope('active')
+            ->orderBy('transactions.id')
+            ->limit(1),
+        ]);
     }
 
     /**

@@ -7,7 +7,6 @@ use App\Models\Rate;
 use App\Models\Transaction;
 use App\Traits\HandlesTransactionRows;
 use Carbon\Carbon;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -69,11 +68,11 @@ class TransaksiController extends Controller
 
         // Filter periode berupa rentang; masing-masing sisi berdiri sendiri.
         if ($dari = $request->query('period_from')) {
-            $this->filterPeriode($query, $this->pecahPeriode($dari, 'period_from'), '>=');
+            $this->filterRentangPeriode($query, $this->pecahPeriode($dari, 'period_from'), '>=');
         }
 
         if ($sampai = $request->query('period_to')) {
-            $this->filterPeriode($query, $this->pecahPeriode($sampai, 'period_to'), '<=');
+            $this->filterRentangPeriode($query, $this->pecahPeriode($sampai, 'period_to'), '<=');
         }
 
         // Periode bisa sama antar baris; `id` dipakai sebagai pemecah seri agar
@@ -85,36 +84,6 @@ class TransaksiController extends Controller
         $data->getCollection()->transform(fn ($row) => $this->transform($row));
 
         return response()->json($data);
-    }
-
-    /**
-     * Batas rentang periode sebagai perbandingan bertingkat pada (`year`, `month`).
-     *
-     * Ditulis begini, bukan sebagai `year * 100 + month` yang lebih pendek:
-     * ekspresi aritmetika membuat MySQL tidak bisa memakai index
-     * `transactions_periode_index` dan seluruh tabel harus dipindai. Bentuk
-     * "tahunnya lebih besar, ATAU tahun sama tapi bulannya memenuhi" tetap
-     * berupa perbandingan kolom biasa sehingga index-nya terpakai.
-     *
-     * Baris tanpa periode (tarif sekali bayar) otomatis tersaring keluar —
-     * perbandingan apa pun terhadap NULL bernilai NULL, bukan true. Itu memang
-     * yang diinginkan: baris yang tidak punya periode tidak berada di dalam
-     * rentang periode mana pun.
-     *
-     * @param  array{month:int,year:int}  $batas
-     * @param  '>='|'<='  $arah
-     */
-    private function filterPeriode(Builder $query, array $batas, string $arah): void
-    {
-        $tahunLebih = $arah === '>=' ? '>' : '<';
-
-        $query->where(function (Builder $q) use ($batas, $arah, $tahunLebih) {
-            $q->where('year', $tahunLebih, $batas['year'])
-                ->orWhere(function (Builder $q) use ($batas, $arah) {
-                    $q->where('year', $batas['year'])
-                        ->where('month', $arah, $batas['month']);
-                });
-        });
     }
 
     /**

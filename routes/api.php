@@ -29,6 +29,7 @@ use App\Http\Controllers\Nafsul\DashboardController as NafsulDashboardController
 use App\Http\Controllers\Nafsul\GabungAnggotaController;
 use App\Http\Controllers\Nafsul\KetuaKelompokController;
 use App\Http\Controllers\Nafsul\KotaController;
+use App\Http\Controllers\Nafsul\LaporanController as NafsulLaporanController;
 use App\Http\Controllers\Nafsul\PekerjaanController;
 use App\Http\Controllers\Nafsul\PendidikanController;
 use App\Http\Controllers\Nafsul\StatusAnggotaController;
@@ -334,15 +335,15 @@ Route::middleware('auth:sanctum')->group(function () {
             ->parameters(['asesmen' => 'asesmen']);
     });
 
-    // Nafsul Muthmainah — master keanggotaan.
+    // Nafsul Muthmainah — keanggotaan, iuran, dan laporannya.
     //
     // Di-prefix `nafsul` agar tidak bentrok dengan route CSSD; login memakai
     // token Sanctum yang sama (satu sesi untuk seluruh aplikasi), sehingga
     // AuthController & UserController milik modul Nafsul lama tidak diikutkan.
     //
-    // Sebatas master: transaksi, pelayanan jenazah, dashboard, dan laporan
-    // belum ada di repo ini (tabelnya pun tidak dibuat, lihat migrasi
-    // create_nafsul_tables) — daftarkan lagi saat modulnya menyusul.
+    // Yang belum ada di repo ini: pelayanan jenazah — tabelnya pun tidak dibuat
+    // (lihat migrasi create_nafsul_tables); daftarkan lagi saat modulnya
+    // menyusul.
     //
     // Seluruh `->parameters()` di bawah WAJIB ditulis eksplisit: Laravel
     // mensingularkan nama resource Inggris (mis. `kota` → `kotum`), sedangkan
@@ -351,6 +352,15 @@ Route::middleware('auth:sanctum')->group(function () {
         // Ringkasan pendapatan iuran — satu respons untuk seluruh layar dashboard,
         // alasannya sama dengan dashboard CSSD & perawat di atas.
         Route::get('dashboard', [NafsulDashboardController::class, 'index']);
+
+        // Laporan — dua sudut pandang atas data iuran yang sama: per kuitansi
+        // (uang yang masuk) dan per rincian (iuran siapa untuk periode apa).
+        //
+        // Keduanya melayani layar DAN export sekaligus: frontend merangkai
+        // .xlsx dari respons yang sama dengan penyaring yang sama, jadi tidak
+        // ada endpoint export terpisah yang angkanya bisa berselisih.
+        Route::get('laporan/penerimaan', [NafsulLaporanController::class, 'penerimaan']);
+        Route::get('laporan/per-anggota', [NafsulLaporanController::class, 'perAnggota']);
 
         // `anggota/import` didaftarkan sebelum apiResource agar tidak tertangkap
         // sebagai `anggota/{anggota}`.
