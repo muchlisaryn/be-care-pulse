@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Nafsul;
 
 use App\Http\Controllers\Controller;
 use App\Models\Transaction;
+use App\Models\TransactionHeader;
 use App\Traits\HandlesTransactionRows;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -127,6 +128,11 @@ class LaporanController extends Controller
             // Batas atas 5000 supaya export bisa menarik seluruh lembar dalam
             // satu permintaan tanpa membuka pintu untuk permintaan tanpa batas.
             'per_page' => ['nullable', 'integer', 'min:1', 'max:5000'],
+            // `detail=1` mengembalikan bentuk LAMA: satu baris per anggota per
+            // kuitansi, datar. Dipakai export .xlsx, yang lembarnya memang
+            // merentangkan seluruh anggota — baris yang di layar tersembunyi di
+            // balik lipatan tidak akan pernah terbuka di dalam Excel.
+            'detail' => ['nullable', 'boolean'],
         ]);
 
         $diminta = trim((string) $request->query('period', ''));
@@ -175,6 +181,8 @@ class LaporanController extends Controller
             (string) $request->query('payment_method', ''),
         );
 
+        $rinci = $request->boolean('detail');
+
         $perHalaman = (int) $request->integer('per_page', self::PER_HALAMAN);
         $halaman = max((int) $request->integer('page', 1), 1);
 
@@ -187,17 +195,35 @@ class LaporanController extends Controller
         // periode di dalamnya — itu yang di-GROUP BY, jadi menghitung baris
         // subquery ini sudah menghitung dalam satuan yang benar.
         $ringkas = DB::query()->fromSub($dasar, 'r')
-            ->selectRaw('payment_method, COUNT(*) as jml, SUM(amount) as amount, SUM(deduction) as deduction')
+            ->selectRaw(implode(', ', [
+                'payment_method',
+                'COUNT(*) as jml',
+                // Satuan PAGINASI layar: satu kuitansi, berapa pun anggota di
+                // dalamnya. Dihitung dari subquery yang sama dengan totalnya
+                // supaya jumlah halaman dan angka penutup tidak pernah dihitung
+                // atas dua himpunan baris yang berbeda.
+                'COUNT(DISTINCT header_id) as kuitansi',
+                'SUM(amount) as amount',
+                'SUM(deduction) as deduction',
+            ]))
             ->groupBy('payment_method')
             ->get()
             ->keyBy('payment_method');
 
-        $total = (int) $ringkas->sum('jml');
+        $total = (int) $ringkas->sum($rinci ? 'jml' : 'kuitansi');
         $halamanTerakhir = max((int) ceil($total / max($perHalaman, 1)), 1);
 
-        $baris = (clone $dasar)->forPage($halaman, $perHalaman)->get();
+        // Layar meminta KUITANSI (anggotanya menyusul lewat `anggotaKuitansi()`
+        // saat barisnya dibuka), export meminta seluruh baris anggota sekaligus.
+        // Keduanya berdiri di atas `$dasar` yang sama, jadi tidak ada penyaring
+        // yang berlaku untuk satu bentuk tapi tidak untuk bentuk lainnya.
+        $sumber = $rinci ? clone $dasar : $this->queryKuitansi($dasar);
 
-        $this->tandaiKunjungan($baris);
+        $baris = $sumber->forPage($halaman, $perHalaman)->get();
+
+        if ($rinci) {
+            $this->tandaiKunjungan($baris);
+        }
 
         $perMetode = $baris->groupBy('payment_method');
 
@@ -206,6 +232,7 @@ class LaporanController extends Controller
                 $metode,
                 $perMetode->get($metode, collect()),
                 $ringkas->get($metode),
+                $rinci,
             ))
             // Cara bayar yang tidak muncul di HALAMAN ini tidak dicetak sebagai
             // blok kosong berisi "Rp 0,00" — itu terbaca sebagai laporan yang
@@ -245,9 +272,13 @@ class LaporanController extends Controller
      * dari baris — bentuk ini tidak bisa melenceng dari keduanya, sedangkan
      * penjumlahan terpisah bisa.
      *
+     * `$rinci` memilih SATUAN barisnya: satu anggota per kuitansi (export)
+     * atau satu kuitansi (layar). Angka penutupnya sama untuk keduanya — ia
+     * dihitung dari seluruh hasil penyaringan, bukan dari baris yang tercetak.
+     *
      * @param  \Illuminate\Support\Collection<int, \stdClass>  $baris
      */
-    private function blokRekap(string $metode, $baris, ?object $ringkas = null): array
+    private function blokRekap(string $metode, $baris, ?object $ringkas = null, bool $rinci = true): array
     {
         // Angka penutup diambil dari ringkasan SELURUH hasil penyaringan bila
         // ada — bukan dari baris halaman ini.
@@ -260,25 +291,9 @@ class LaporanController extends Controller
 
         return [
             'payment_method' => $metode,
-            'rows' => $baris->map(fn ($r) => [
-                // Kunci baris untuk React. Pasangan kuitansi+anggota memang
-                // sudah unik di sini — itu tepat yang di-GROUP BY.
-                'key' => $r->header_id.'-'.$r->member_id,
-                'date' => $r->date,
-                'transaction_number' => $r->transaction_number,
-                'transaction_type' => $r->transaction_type,
-                // Diabaikan frontend pada kuitansi pribadi — yang tampil
-                // "Pribadi". Tetap dikirim agar bentuk barisnya satu macam.
-                'group_leader_name' => $r->group_leader_name,
-                'member_name' => $r->member_name,
-                'member_number' => $r->member_number,
-                // "B" = kuitansi ini memuat iuran PALING AWAL anggota itu,
-                // "L" = ia sudah punya iuran yang lebih dulu. Diturunkan di
-                // tandaiKunjungan(), bukan dibaca dari kolom.
-                'visit' => $r->visit,
-                'amount' => $this->rupiah($r->amount),
-                'deduction' => $this->rupiah($r->deduction),
-            ])->values()->all(),
+            'rows' => $baris->map(fn ($r) => $rinci
+                ? $this->barisAnggota($r)
+                : $this->barisKuitansi($r))->values()->all(),
             'summary' => [
                 'rows' => $ringkas !== null ? (int) $ringkas->jml : $baris->count(),
                 'amount' => $this->rupiah($bruto),
@@ -286,6 +301,120 @@ class LaporanController extends Controller
                 'net' => $this->rupiah($bruto - $potongan),
             ],
         ];
+    }
+
+    /**
+     * Satu baris tingkat ANGGOTA — bentuk yang dipakai export dan endpoint
+     * rincian, keduanya lewat perakit yang sama supaya lembar .xlsx dan daftar
+     * yang terbuka di layar tidak pernah menyebut angka yang berbeda.
+     */
+    private function barisAnggota(object $r): array
+    {
+        return [
+            // Kunci baris untuk React. Pasangan kuitansi+anggota memang sudah
+            // unik di sini — itu tepat yang di-GROUP BY.
+            'key' => $r->header_id.'-'.$r->member_id,
+            'date' => $r->date,
+            'transaction_number' => $r->transaction_number,
+            'transaction_type' => $r->transaction_type,
+            // Diabaikan frontend pada kuitansi pribadi — yang tampil "Pribadi".
+            // Tetap dikirim agar bentuk barisnya satu macam.
+            'group_leader_name' => $r->group_leader_name,
+            'member_name' => $r->member_name,
+            'member_number' => $r->member_number,
+            // "B" = kuitansi ini memuat iuran PALING AWAL anggota itu, "L" = ia
+            // sudah punya iuran yang lebih dulu. Diturunkan di tandaiKunjungan(),
+            // bukan dibaca dari kolom. Null bila tidak dihitung.
+            'visit' => $r->visit ?? null,
+            'amount' => $this->rupiah($r->amount),
+            'deduction' => $this->rupiah($r->deduction),
+        ];
+    }
+
+    /**
+     * Satu baris tingkat KUITANSI — isi layar rekap.
+     *
+     * Hanya memuat yang ada di `transaction_headers`: tanggal, nomor, jenis,
+     * cara bayar, plus nama ketua kelompok yang menyertainya. Nominal TIDAK ikut
+     * — angka per anggota adalah milik `transactions`, dan menaruh jumlah
+     * sekuitansi di kolom yang sama dengan jumlah seorang anggota membuat satu
+     * kolom memuat dua satuan yang tidak bisa dibedakan.
+     *
+     * `uuid` dipakai frontend untuk meminta rinciannya saat barisnya dibuka.
+     */
+    private function barisKuitansi(object $r): array
+    {
+        return [
+            'key' => $r->uuid,
+            'uuid' => $r->uuid,
+            'date' => $r->date,
+            'transaction_number' => $r->transaction_number,
+            'transaction_type' => $r->transaction_type,
+            'group_leader_name' => $r->group_leader_name,
+            'members_count' => (int) $r->members_count,
+        ];
+    }
+
+    /**
+     * GET /api/nafsul/laporan/rekap-pembayaran/{transaksiHeader}/anggota
+     *
+     * Anggota pada SATU kuitansi — rincian yang diminta layar rekap saat baris
+     * kuitansinya dibuka.
+     *
+     * Diambil terpisah, bukan ikut terkirim bersama daftar kuitansinya: sebuah
+     * halaman berisi 50 kuitansi bisa memuat ribuan baris anggota, dan hampir
+     * semuanya tidak pernah dibuka. Yang dikirim di muka cuma yang benar-benar
+     * tampil.
+     *
+     * Memakai query yang SAMA dengan lembar rekapnya, hanya dipersempit ke satu
+     * kuitansi — tanpa penyaring tanggal, kata kunci, maupun cara bayar: baris
+     * yang dibuka harus memuat SELURUH anggota kuitansi itu. Menyaringnya ulang
+     * dengan kata kunci akan menyembunyikan anggota lain pada kuitansi yang
+     * sama, dan jumlah yang terbaca di layar tidak lagi jumlah kuitansi itu.
+     */
+    public function anggotaKuitansi(TransactionHeader $transaksiHeader)
+    {
+        $baris = $this->queryRekapPembayaran(null, null, '', '', $transaksiHeader->id)->get();
+
+        $this->tandaiKunjungan($baris);
+
+        return response()->json([
+            'rows' => $baris->map(fn ($r) => $this->barisAnggota($r))->values()->all(),
+        ]);
+    }
+
+    /**
+     * Daftar KUITANSI dari baris tingkat anggota — satu tingkat di atas
+     * `queryRekapPembayaran()`.
+     *
+     * Dibangun sebagai subquery atas query itu, bukan sebagai query tersendiri
+     * yang mengulang join & penyaringnya: dua query yang menyaring "hal yang
+     * sama" cepat atau lambat berselisih, dan selisihnya muncul sebagai kuitansi
+     * yang ada di daftar tapi kosong saat dibuka — atau sebaliknya.
+     *
+     * `MAX()` pada kolom kuitansi bukan agregasi yang berarti: nilainya memang
+     * tunggal untuk satu `header_id`, dan `MAX()` hanya bentuk yang diterima
+     * `ONLY_FULL_GROUP_BY`.
+     */
+    private function queryKuitansi($dasar)
+    {
+        return DB::query()->fromSub($dasar, 'r')
+            ->selectRaw(implode(', ', [
+                'r.header_id',
+                'MAX(r.uuid) as uuid',
+                'MAX(r.`date`) as `date`',
+                'MAX(r.transaction_number) as transaction_number',
+                'MAX(r.transaction_type) as transaction_type',
+                'MAX(r.payment_method) as payment_method',
+                'MAX(r.group_leader_name) as group_leader_name',
+                'COUNT(*) as members_count',
+            ]))
+            ->groupBy('r.header_id')
+            // Urutan di dalam subquery TIDAK dijamin terbawa keluar; ditulis
+            // ulang di sini dengan pengertian yang sama: kronologis per hari,
+            // lalu urutan input kuitansinya.
+            ->orderByRaw('MAX(r.`date`)')
+            ->orderBy('r.header_id');
     }
 
     /**
@@ -302,13 +431,16 @@ class LaporanController extends Controller
      * pembayaran, dan ditelusuri lewat daftar transaksi.
      *
      * `$cari` dan `$metode` boleh kosong, dan kosong berarti "tanpa penyaring"
-     * — bukan "cocokkan dengan string kosong".
+     * — bukan "cocokkan dengan string kosong". Begitu pula `$awal`/`$akhir` yang
+     * null: dipakai `anggotaKuitansi()`, yang menunjuk satu kuitansi lewat
+     * `$headerId` dan justru TIDAK boleh menyaring apa pun lagi di atasnya.
      */
     private function queryRekapPembayaran(
-        string $awal,
-        string $akhir,
+        ?string $awal,
+        ?string $akhir,
         string $cari = '',
         string $metode = '',
+        ?int $headerId = null,
     ) {
         return Transaction::query()
             ->withoutGlobalScope('active')
@@ -326,8 +458,9 @@ class LaporanController extends Controller
             })
             ->whereNull('transactions.deleted_by')
             ->whereNull('m.deleted_by')
-            ->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) >= ?', [$awal])
-            ->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) <= ?', [$akhir])
+            ->when($awal !== null, fn ($q) => $q->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) >= ?', [$awal]))
+            ->when($akhir !== null, fn ($q) => $q->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) <= ?', [$akhir]))
+            ->when($headerId !== null, fn ($q) => $q->where('h.id', $headerId))
             // Disaring di QUERY, bukan dibuang saat merakit blok: kalau baris
             // cara bayar lain ikut terambil, ia ikut memakan `MAX_ROWS` dan bisa
             // membuat lembar terpotong oleh baris yang tidak pernah tercetak.
@@ -350,6 +483,8 @@ class LaporanController extends Controller
             })
             ->selectRaw(implode(', ', [
                 'h.id as header_id',
+                // Kunci publik kuitansi; route model binding memakai uuid.
+                'h.uuid',
                 'DATE(COALESCE(h.`date`, h.created_at)) as `date`',
                 'h.transaction_number',
                 'h.transaction_type',
@@ -371,7 +506,7 @@ class LaporanController extends Controller
             // kuncinya: dengan `ONLY_FULL_GROUP_BY` menyala (bawaan MySQL 5.7+)
             // query yang menyebut kolom di luar daftar ini langsung ditolak.
             ->groupByRaw(implode(', ', [
-                'h.id', 'h.`date`', 'h.created_at', 'h.transaction_number',
+                'h.id', 'h.uuid', 'h.`date`', 'h.created_at', 'h.transaction_number',
                 'h.transaction_type', 'h.payment_method',
                 'm.id', 'm.name', 'm.member_number', 'gl.name',
             ]))

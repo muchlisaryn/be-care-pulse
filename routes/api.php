@@ -361,6 +361,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // respons yang sama, jadi tidak ada endpoint export terpisah yang
         // angkanya bisa berselisih.
         Route::get('laporan/rekap-pembayaran', [NafsulLaporanController::class, 'rekapPembayaran']);
+        // Anggota pada satu kuitansi — diminta layar rekap saat baris kuitansi
+        // itu dibuka, bukan ikut terkirim bersama daftarnya. Satu halaman berisi
+        // 50 kuitansi bisa memuat ribuan baris anggota yang hampir semuanya
+        // tidak pernah dilihat.
+        Route::get('laporan/rekap-pembayaran/{transaksiHeader}/anggota', [NafsulLaporanController::class, 'anggotaKuitansi']);
 
         // `anggota/import` didaftarkan sebelum apiResource agar tidak tertangkap
         // sebagai `anggota/{anggota}`.
