@@ -353,14 +353,14 @@ Route::middleware('auth:sanctum')->group(function () {
         // alasannya sama dengan dashboard CSSD & perawat di atas.
         Route::get('dashboard', [NafsulDashboardController::class, 'index']);
 
-        // Laporan — dua sudut pandang atas data iuran yang sama: per kuitansi
-        // (uang yang masuk) dan per rincian (iuran siapa untuk periode apa).
+        // Laporan — rekap bulanan siap cetak: satu baris per anggota per
+        // kuitansi, dipecah menjadi blok per cara bayar dengan totalnya
+        // masing-masing. Sengaja tanpa paginasi; lihat `rekapPembayaran()`.
         //
-        // Keduanya melayani layar DAN export sekaligus: frontend merangkai
-        // .xlsx dari respons yang sama dengan penyaring yang sama, jadi tidak
-        // ada endpoint export terpisah yang angkanya bisa berselisih.
-        Route::get('laporan/penerimaan', [NafsulLaporanController::class, 'penerimaan']);
-        Route::get('laporan/per-anggota', [NafsulLaporanController::class, 'perAnggota']);
+        // Melayani layar DAN export sekaligus: frontend merangkai .xlsx dari
+        // respons yang sama, jadi tidak ada endpoint export terpisah yang
+        // angkanya bisa berselisih.
+        Route::get('laporan/rekap-pembayaran', [NafsulLaporanController::class, 'rekapPembayaran']);
 
         // `anggota/import` didaftarkan sebelum apiResource agar tidak tertangkap
         // sebagai `anggota/{anggota}`.

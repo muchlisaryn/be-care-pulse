@@ -4,29 +4,27 @@ namespace App\Http\Controllers\Nafsul;
 
 use App\Http\Controllers\Controller;
 use App\Models\Transaction;
-use App\Models\TransactionHeader;
 use App\Traits\HandlesTransactionRows;
-use Illuminate\Contracts\Database\Query\Builder as BuilderContract;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
- * Laporan modul Nafsul — dua sudut pandang atas data iuran yang sama.
+ * Laporan modul Nafsul — lembar cetak bulanan Binroh, satu-satunya bentuk
+ * laporan modul ini.
  *
- *  1. `penerimaan()`  — per KUITANSI: uang yang masuk, potongan, dan jasa ketua
- *                       kelompok. Menjawab "berapa yang diterima kas".
- *  2. `perAnggota()`  — per RINCIAN: siapa membayar periode apa, dengan tarif
- *                       berapa. Menjawab "iuran siapa saja yang sudah masuk".
+ * `rekapPembayaran()` mengembalikan sebulan pembayaran yang dipecah per CARA
+ * BAYAR, tiap blok ditutup total kotor, total potongan, dan total bersih. Satu
+ * baris = satu ANGGOTA pada satu KUITANSI, bukan satu periode iuran.
  *
- * Keduanya BUKAN pengulangan daftar transaksi yang sudah ada. Daftar itu alat
- * kerja harian — dipagi 25 baris, tanpa penjumlahan. Laporan ini selalu
- * mengembalikan `summary` yang dihitung atas SELURUH baris hasil saring, bukan
- * atas halaman yang kebetulan sedang tampil; angka rekap yang hanya menjumlah
- * satu halaman adalah angka yang salah, dan salahnya tidak terlihat.
+ * BUKAN pengulangan daftar transaksi yang sudah ada. Daftar itu alat kerja
+ * harian — dipagi 25 baris, tanpa penjumlahan. Lembar ini justru tidak
+ * dipaginasi sama sekali, karena diakhiri baris total yang harus mencakup
+ * seluruh isinya; total yang berdiri di bawah SEBAGIAN baris adalah angka yang
+ * salah tanpa terlihat salah.
  *
- * Tidak ada endpoint export terpisah: frontend meminta halaman besar
- * (`per_page`) dengan penyaring yang sama lalu merangkainya jadi .xlsx di
- * peramban — lihat `lib/excel.ts`. Satu sumber angka untuk layar dan berkas.
+ * Tidak ada endpoint export terpisah: frontend merangkai .xlsx di peramban dari
+ * respons yang sama dengan yang mengisi layar — lihat `lib/excel.ts`. Satu
+ * sumber angka untuk layar dan berkas.
  *
  * Seperti controller Nafsul lain, responsnya JSON polos (bukan pembungkus
  * `success`/`error`) karena `lib/nafsul/api.ts` membaca body-nya langsung.
@@ -36,343 +34,291 @@ class LaporanController extends Controller
     use HandlesTransactionRows;
 
     /**
-     * Batas atas `per_page`.
+     * Pagar terakhir jumlah baris `rekapPembayaran()`, yang memang tidak
+     * dipaginasi.
      *
-     * Angkanya dipilih untuk melayani export — satu berkas .xlsx sekali minta —
-     * bukan untuk ditampilkan. Tanpa batas, `per_page=1000000` menarik seluruh
-     * tabel ke memori PHP dan mematikan proses; dengan batas ini permintaan
-     * seperti itu tetap dilayani, hanya terpotong.
+     * Bukan ukuran halaman: sebulan setoran berorde ratusan baris, jauh di
+     * bawah angka ini. Yang dijaga adalah keadaan tidak wajar — impor yang
+     * salah tanggal sehingga bertahun-tahun setoran menumpuk di satu bulan —
+     * agar tidak menarik seluruh tabel ke memori PHP dan mematikan prosesnya.
      */
-    private const MAX_PER_PAGE = 5000;
+    private const MAX_ROWS = 20000;
 
     /**
-     * Dasar tanggal kuitansi — SAMA PERSIS dengan `TransaksiHeaderController::index()`
-     * dan `DashboardController`.
+     * Cara bayar yang dicetak di lembar ini, dalam urutan bloknya.
      *
-     * `date` (tanggal uang diterima) dengan `created_at` sebagai cadangan untuk
-     * baris lama yang kolomnya belum terisi. Kalau laporan berangkat dari dasar
-     * tanggal yang lain, angkanya tidak akan pernah cocok dengan daftar
-     * transaksi yang dibuka petugas untuk memeriksanya.
+     * Urutannya DIPATOK di sini, bukan mengikuti apa yang kebetulan ada
+     * datanya: bulan tanpa setoran transfer tidak boleh membuat tunai naik ke
+     * posisi blok pertama.
+     *
+     * Lembar Binroh sendiri cuma punya dua blok, TRANSFER dan TUNAI. Blok
+     * ketiga, LAIN-LAIN, ada karena setoran 2014–2024 dari sistem lama masuk
+     * tanpa penanda cara bayar sama sekali — 4.720 kuitansi, lebih dari 90%
+     * isi basis data, seluruhnya `other`. Tanpa blok itu, dua belas tahun
+     * setoran hilang dari laporan; dan menyerapnya ke blok TUNAI hanya
+     * membuat laporan menyebut sesuatu yang tidak diketahui siapa pun.
+     * Begitu cara bayarnya dibereskan, blok ini kosong dengan sendirinya dan
+     * tidak lagi tercetak.
      */
-    private const TANGGAL_KUITANSI = 'DATE(COALESCE(`date`, created_at))';
+    private const METODE_LEMBAR = ['transfer', 'cash', 'other'];
 
     /**
-     * GET /api/nafsul/laporan/penerimaan
+     * GET /api/nafsul/laporan/rekap-pembayaran
      *
-     * Query: `search` (no. kuitansi / nama ketua), `date_from`, `date_to`,
-     * `transaction_type`, `payment_method`, `validation` (validated|unvalidated),
-     * `page`, `per_page`.
+     * Rekap SATU BULAN pembayaran, dipecah per cara bayar — bentuk cetak yang
+     * dipakai Binroh untuk laporan bulanan ("PEMBAYARAN TRANSFER/TUNAI - NAFSUL
+     * APRIL 2026"), lengkap dengan total kotor, total potongan, dan total
+     * bersih tiap bloknya.
+     *
+     * BUKAN pengulangan `perAnggota()`. Laporan itu memecah per PERIODE iuran —
+     * seorang anggota yang melunasi 12 bulan sekaligus muncul 12 baris. Rekap
+     * ini memecah per ANGGOTA PER KUITANSI: orang yang sama pada kuitansi yang
+     * sama selalu satu baris, berapa pun periode yang dilunasinya, karena yang
+     * ditanyakan lembar ini adalah "siapa menyetor berapa", bukan "iuran bulan
+     * apa saja yang tertutup".
+     *
+     * Query: `period` (MM/YYYY, opsional), `date` (YYYY-MM-DD, opsional),
+     * `search` (opsional), `payment_method` (opsional).
+     *
+     * `date` mempersempit ke SATU HARI di dalam bulan itu — dipakai saat
+     * petugas menelusuri setoran satu tanggal tertentu. Bulannya tetap
+     * diturunkan dari tanggal itu, bukan dari `period`, supaya judul dan baris
+     * total tidak pernah menyebut bulan yang berbeda dari isinya.
+     *
+     * `period` yang KOSONG berarti BULAN BERJALAN, sekalipun bulan itu belum
+     * ada setorannya sama sekali. Halaman yang membuka bulan lain akan
+     * mengejutkan: petugas membuka laporan untuk melihat bulan yang sedang
+     * berjalan, dan bulan yang tampil harus sama dengan bulan di kalender —
+     * lembar kosong pada awal bulan adalah jawaban yang benar, dan pesan "tidak
+     * ada pembayaran yang tercatat pada bulan ini" sudah menyebutkannya.
+     *
+     * Penyaringnya dikerjakan DI SINI, bukan di peramban atas baris yang sudah
+     * terkirim: tiap blok ditutup baris total, dan total yang dihitung ulang di
+     * frontend akan jadi versi kedua dari angka yang sama — dua tempat yang
+     * bisa berselisih tanpa ada yang tahu mana yang benar. Dengan menyaring di
+     * query, `summary` selalu milik baris yang benar-benar tercetak.
+     *
+     * Tidak dipaginasi, dan itu disengaja: lembarannya dibaca sebagai satu
+     * kesatuan yang diakhiri baris total, dan total yang berdiri di bawah
+     * SEBAGIAN baris adalah angka yang salah tanpa terlihat salah. Sebulan
+     * setoran memang berhingga — orde ratusan baris. `MAX_ROWS` hanya pagar
+     * terakhir supaya data yang tidak wajar tidak sampai mematikan proses PHP,
+     * dan bila terpakai, `truncated` menyebutkannya alih-alih diam-diam
+     * memotong.
      */
-    public function penerimaan(Request $request)
+    public function rekapPembayaran(Request $request)
     {
         $request->validate([
-            'date_from' => ['nullable', 'date'],
-            'date_to' => ['nullable', 'date'],
-            'transaction_type' => ['nullable', 'string', 'in:'.implode(',', TransactionHeader::TRANSACTION_TYPES)],
-            'payment_method' => ['nullable', 'string', 'in:'.implode(',', TransactionHeader::PAYMENT_METHODS)],
-            'validation' => ['nullable', 'string', 'in:validated,unvalidated'],
+            'period' => ['nullable', 'string'],
+            'date' => ['nullable', 'date_format:Y-m-d'],
+            // Dicocokkan ke nama anggota, no. anggota, no. kuitansi, dan nama
+            // ketua — empat kolom yang dibaca petugas saat menelusuri lembar.
+            'search' => ['nullable', 'string', 'max:100'],
+            'payment_method' => ['nullable', Rule::in(self::METODE_LEMBAR)],
         ]);
 
-        $data = $this->queryPenerimaan($request)
-            ->withGroupLeaderName()
-            ->withCount('transactions')
-            ->orderByDesc('transaction_number')
-            ->orderByDesc('id')
-            ->paginate($this->perPage($request));
+        $diminta = trim((string) $request->query('period', ''));
+        $tanggal = trim((string) $request->query('date', ''));
 
-        $data->getCollection()->transform(fn (TransactionHeader $row) => [
-            'id' => $row->id,
-            'uuid' => $row->uuid,
-            'transaction_number' => $row->transaction_number,
-            'date' => optional($row->date)->toDateString(),
-            'transaction_type' => $row->transaction_type,
-            // Pada kuitansi PRIBADI nilainya diabaikan frontend — yang tampil
-            // "Pribadi", diturunkan dari `transaction_type`. Tetap dikirim agar
-            // bentuk barisnya satu macam.
-            'group_leader_name' => $row->group_leader_name,
-            'transactions_count' => $row->transactions_count ?? 0,
-            'total' => $row->total,
-            'member_deduction' => $row->member_deduction,
-            'group_leader_deduction' => $row->group_leader_deduction,
-            'group_leader_fee' => $row->group_leader_fee,
-            'payment' => $row->payment,
-            'payment_method' => $row->payment_method,
-            // `validation_at` null = belum divalidasi; tidak ada boolean
-            // terpisah yang bisa menyimpang darinya.
-            'validation_at' => optional($row->validation_at)->toDateTimeString(),
-            'validation_by' => $row->validation_by,
-        ]);
+        $periode = match (true) {
+            // Tanggal menang atas `period`: keduanya bisa saja tidak sejalan
+            // (isian bulan tertinggal saat tanggalnya diganti), dan yang benar
+            // selalu bulan tempat tanggal itu berada.
+            $tanggal !== '' => ['month' => (int) date('n', strtotime($tanggal)), 'year' => (int) date('Y', strtotime($tanggal))],
+            $diminta === '' => ['month' => (int) now()->month, 'year' => (int) now()->year],
+            default => $this->pecahPeriode($diminta, 'period'),
+        };
 
-        // Query dirakit ULANG, bukan di-clone dari yang sudah dipaginasi:
-        // `withGroupLeaderName()` & `withCount()` menyisipkan subquery per baris
-        // yang tidak ada gunanya di dalam agregat, dan `paginate()` sudah
-        // menempelkan limit/offset pada builder-nya.
-        $rekap = $this->queryPenerimaan($request)
-            ->selectRaw(implode(', ', [
-                'COUNT(*) as receipts',
-                'COALESCE(SUM(total), 0) as total',
-                'COALESCE(SUM(member_deduction), 0) as member_deduction',
-                'COALESCE(SUM(group_leader_deduction), 0) as group_leader_deduction',
-                'COALESCE(SUM(group_leader_fee), 0) as group_leader_fee',
-                'COALESCE(SUM(payment), 0) as payment',
-            ]))
-            ->first();
+        // Rentang dirakit di PHP, bukan lewat WHERE MONTH()/YEAR(): fungsi atas
+        // kolom membuat index tanggalnya tidak terpakai, dan di sini kolomnya
+        // sudah dibungkus COALESCE untuk baris lama yang `date`-nya kosong.
+        $awal = sprintf('%04d-%02d-01', $periode['year'], $periode['month']);
+        $akhir = date('Y-m-t', strtotime($awal));
 
-        return response()->json($data->toArray() + [
-            'summary' => [
-                'receipts' => (int) $rekap->receipts,
-                'total' => $this->rupiah($rekap->total),
-                'member_deduction' => $this->rupiah($rekap->member_deduction),
-                'group_leader_deduction' => $this->rupiah($rekap->group_leader_deduction),
-                'group_leader_fee' => $this->rupiah($rekap->group_leader_fee),
-                'payment' => $this->rupiah($rekap->payment),
+        // Satu hari = rentang sehari. Ditulis sebagai penyempitan rentang, bukan
+        // sebagai syarat terpisah, supaya seluruh sisa fungsi ini tetap bekerja
+        // atas satu pengertian rentang saja.
+        if ($tanggal !== '') {
+            $awal = $akhir = $tanggal;
+        }
+
+        $baris = $this->queryRekapPembayaran(
+            $awal,
+            $akhir,
+            trim((string) $request->query('search', '')),
+            (string) $request->query('payment_method', ''),
+        )
+            ->limit(self::MAX_ROWS + 1)
+            ->get();
+
+        $terpotong = $baris->count() > self::MAX_ROWS;
+        if ($terpotong) {
+            $baris = $baris->take(self::MAX_ROWS);
+        }
+
+        // Dikelompokkan di PHP, bukan lewat dua query terpisah per cara bayar:
+        // satu pemindaian menghasilkan kedua blok, dan keduanya karenanya tidak
+        // mungkin berangkat dari kumpulan baris yang berbeda.
+        $perMetode = $baris->groupBy('payment_method');
+
+        $blok = collect(self::METODE_LEMBAR)
+            ->map(fn (string $metode) => $this->blokRekap($metode, $perMetode->get($metode, collect())))
+            // Cara bayar yang tidak terpakai bulan itu tidak dicetak sebagai
+            // blok kosong berisi "Rp 0,00" — itu terbaca sebagai laporan yang
+            // gagal, bukan sebagai tidak adanya setoran.
+            ->filter(fn (array $b) => $b['rows'] !== [])
+            ->values();
+
+        return response()->json([
+            'period' => [
+                'month' => $periode['month'],
+                'year' => $periode['year'],
+                'date_from' => $awal,
+                'date_to' => $akhir,
+                // Dikembalikan apa adanya supaya frontend bisa membedakan
+                // "sebulan penuh" dari "satu tanggal" tanpa menebak dari
+                // rentangnya.
+                'date' => $tanggal !== '' ? $tanggal : null,
             ],
+            'blocks' => $blok,
+            'truncated' => $terpotong,
         ]);
     }
 
     /**
-     * GET /api/nafsul/laporan/per-anggota
+     * Satu blok cara bayar: barisnya apa adanya, plus tiga angka penutup.
      *
-     * Query: `search` (nama / no. anggota), `region_code`, `group_leader_code`,
-     * `rate_code`, `period_from`, `period_to` (MM/YYYY), `date_from`, `date_to`
-     * (tanggal kuitansi), `status` (paid|unpaid), `page`, `per_page`.
+     * `net` dihitung dari selisih dua angka di atasnya, bukan dijumlah sendiri
+     * dari baris — bentuk ini tidak bisa melenceng dari keduanya, sedangkan
+     * penjumlahan terpisah bisa.
+     *
+     * @param  \Illuminate\Support\Collection<int, \stdClass>  $baris
      */
-    public function perAnggota(Request $request)
+    private function blokRekap(string $metode, $baris): array
     {
-        $request->validate([
-            'date_from' => ['nullable', 'date'],
-            'date_to' => ['nullable', 'date'],
-            'period_from' => ['nullable', 'string'],
-            'period_to' => ['nullable', 'string'],
-            'status' => ['nullable', 'string', 'in:paid,unpaid'],
-        ]);
+        $bruto = $baris->sum(fn ($r) => (float) $r->amount);
+        $potongan = $baris->sum(fn ($r) => (float) $r->deduction);
 
-        $data = $this->queryPerAnggota($request)
-            ->select([
-                'transactions.id',
-                'transactions.uuid',
-                // `month` & `year` ikut diambil karena accessor `payment_period`
-                // dirakit dari keduanya; tanpa itu periodenya selalu null.
-                'transactions.month',
-                'transactions.year',
-                'transactions.amount',
-                'transactions.discount',
-                'm.member_number',
-                'm.name as member_name',
-                'r.name as region_name',
-                'gl.name as group_leader_name',
-                'rt.code as rate_code',
-                'rt.name as rate_name',
-                'h.transaction_number',
-                'h.date as transaction_date',
-                'h.payment_method',
-                'h.validation_at',
-            ])
-            // Urut per anggota, baru kronologis di dalamnya — laporan ini dibaca
-            // per orang, bukan per tanggal. `transactions.id` sebagai pemecah
-            // seri agar urutannya tidak berubah antar halaman.
-            ->orderBy('m.name')
-            ->orderBy('transactions.year')
-            ->orderBy('transactions.month')
-            ->orderBy('transactions.id')
-            ->paginate($this->perPage($request));
-
-        $data->getCollection()->transform(fn (Transaction $row) => [
-            'id' => $row->id,
-            'uuid' => $row->uuid,
-            'member_number' => $row->member_number,
-            'member_name' => $row->member_name,
-            'region_name' => $row->region_name,
-            'group_leader_name' => $row->group_leader_name,
-            // Null untuk tarif SEKALI BAYAR yang memang tak berperiode.
-            'payment_period' => $row->payment_period,
-            'rate_code' => $row->rate_code,
-            'rate_name' => $row->rate_name,
-            'amount' => $row->amount,
-            'discount' => $row->discount,
-            'total' => $row->total,
-            // Null = rincian ini masih tagihan, belum masuk kuitansi mana pun.
-            'transaction_number' => $row->transaction_number,
-            'transaction_date' => $row->transaction_date,
-            'payment_method' => $row->payment_method,
-            'validation_at' => $row->validation_at,
-        ]);
-
-        $rekap = $this->queryPerAnggota($request)
-            ->selectRaw(implode(', ', [
-                'COUNT(*) as rows_count',
-                // Satu anggota bisa punya banyak baris (beberapa periode); yang
-                // ditanyakan laporan adalah berapa ORANG, bukan berapa baris.
-                'COUNT(DISTINCT transactions.member_id) as members',
-                'COALESCE(SUM(transactions.amount), 0) as amount',
-                'COALESCE(SUM(transactions.discount), 0) as discount',
-            ]))
-            ->first();
-
-        return response()->json($data->toArray() + [
+        return [
+            'payment_method' => $metode,
+            'rows' => $baris->map(fn ($r) => [
+                // Kunci baris untuk React. Pasangan kuitansi+anggota memang
+                // sudah unik di sini — itu tepat yang di-GROUP BY.
+                'key' => $r->header_id.'-'.$r->member_id,
+                'date' => $r->date,
+                'transaction_number' => $r->transaction_number,
+                'transaction_type' => $r->transaction_type,
+                // Diabaikan frontend pada kuitansi pribadi — yang tampil
+                // "Pribadi". Tetap dikirim agar bentuk barisnya satu macam.
+                'group_leader_name' => $r->group_leader_name,
+                'member_name' => $r->member_name,
+                'member_number' => $r->member_number,
+                // "L"/"B" pada data berjalan, tapi kolomnya string bebas dan
+                // boleh kosong — ditampilkan apa adanya, tidak dipetakan.
+                'visit' => $r->visit,
+                'amount' => $this->rupiah($r->amount),
+                'deduction' => $this->rupiah($r->deduction),
+            ])->values()->all(),
             'summary' => [
-                'rows' => (int) $rekap->rows_count,
-                'members' => (int) $rekap->members,
-                'amount' => $this->rupiah($rekap->amount),
-                'discount' => $this->rupiah($rekap->discount),
-                // Dihitung dari selisihnya, bukan SUM(amount - discount):
-                // keduanya sama secara aritmetika, dan bentuk ini tidak bisa
-                // melenceng dari dua angka yang ditampilkan di sebelahnya.
-                'total' => $this->rupiah((float) $rekap->amount - (float) $rekap->discount),
+                'rows' => $baris->count(),
+                'amount' => $this->rupiah($bruto),
+                'deduction' => $this->rupiah($potongan),
+                'net' => $this->rupiah($bruto - $potongan),
             ],
-        ]);
+        ];
     }
 
     /**
-     * Kuitansi yang memenuhi penyaring — tanpa kolom tambahan, urutan, maupun
-     * paginasi, supaya bisa dipakai baik untuk daftar maupun untuk agregat.
-     */
-    private function queryPenerimaan(Request $request): Builder
-    {
-        $query = TransactionHeader::query();
-
-        if ($search = $request->query('search')) {
-            $query->where(function (Builder $q) use ($search) {
-                $q->where('transaction_number', 'like', "%{$search}%")
-                    // Nama ketua kelompok pemilik kuitansi. Petugas mencari
-                    // "setoran Pak Anu", bukan menghafal nomor kuitansinya.
-                    ->orWhereExists(function (BuilderContract $sub) use ($search) {
-                        $sub->from('transactions as tx')
-                            ->join('members as m', 'm.id', '=', 'tx.member_id')
-                            ->join('group_leaders as gl', 'gl.id', '=', 'm.group_leader_id')
-                            ->whereColumn('tx.transaction_header_id', 'transaction_headers.id')
-                            ->whereNull('tx.deleted_by')
-                            ->whereNull('m.deleted_by')
-                            ->whereNull('gl.deleted_by')
-                            ->where('gl.name', 'like', "%{$search}%");
-                    });
-            });
-        }
-
-        if ($jenis = $request->query('transaction_type')) {
-            $query->where('transaction_type', $jenis);
-        }
-
-        if ($metode = $request->query('payment_method')) {
-            $query->where('payment_method', $metode);
-        }
-
-        if ($dari = $request->query('date_from')) {
-            $query->whereRaw(self::TANGGAL_KUITANSI.' >= ?', [$dari]);
-        }
-
-        if ($sampai = $request->query('date_to')) {
-            $query->whereRaw(self::TANGGAL_KUITANSI.' <= ?', [$sampai]);
-        }
-
-        if ($validasi = $request->query('validation')) {
-            $validasi === 'validated'
-                ? $query->whereNotNull('validation_at')
-                : $query->whereNull('validation_at');
-        }
-
-        return $query;
-    }
-
-    /**
-     * Rincian iuran yang memenuhi penyaring, sudah di-join ke anggota, wilayah,
-     * ketua kelompok, tarif, dan kuitansinya.
+     * Satu baris per ANGGOTA per KUITANSI dalam rentang tanggal kuitansi.
      *
-     * Dipakai join, bukan `with()`: laporan ini menyaring DAN mengurutkan
-     * berdasarkan kolom tabel tetangga (nama anggota, nama wilayah), dan itu
-     * tidak bisa dilakukan pada relasi yang baru dimuat setelah barisnya
-     * terambil.
+     * Berangkat dari `transactions` lalu digabungkan, bukan dari
+     * `transaction_headers`: nominal yang dicetak adalah nominal per anggota,
+     * dan angka itu hanya ada di rincian — kolom `total`/`member_deduction` di
+     * header sudah terlanjur menjumlah seluruh anggota dalam kuitansi itu.
      *
-     * Global scope `active` DILEPAS lalu syaratnya ditulis ulang berkualifikasi
-     * tabel: scope itu menulis `deleted_by` tanpa nama tabel, sehingga menjadi
-     * ambigu begitu tabel lain yang juga punya kolom itu ikut di-join.
+     * Join ke header bersifat INNER: rincian yang belum dibayar tidak punya
+     * tanggal, nomor kuitansi, maupun cara bayar — tiga kolom yang justru
+     * menyusun lembar ini. Tagihan yang belum masuk memang bukan isi lembar
+     * pembayaran, dan ditelusuri lewat daftar transaksi.
+     *
+     * `$cari` dan `$metode` boleh kosong, dan kosong berarti "tanpa penyaring"
+     * — bukan "cocokkan dengan string kosong".
      */
-    private function queryPerAnggota(Request $request): Builder
-    {
-        $query = Transaction::query()
+    private function queryRekapPembayaran(
+        string $awal,
+        string $akhir,
+        string $cari = '',
+        string $metode = '',
+    ) {
+        return Transaction::query()
             ->withoutGlobalScope('active')
-            ->join('members as m', 'm.id', '=', 'transactions.member_id')
-            ->leftJoin('regions as r', 'r.id', '=', 'm.region_id')
-            ->leftJoin('group_leaders as gl', 'gl.id', '=', 'm.group_leader_id')
-            ->join('rates as rt', 'rt.id', '=', 'transactions.rate_id')
-            // LEFT join: rincian yang belum dibayar memang belum punya kuitansi,
-            // dan justru baris itulah yang dicari saat menelusuri tagihan.
-            // Syarat "kuitansinya belum dihapus" ditaruh di ON, bukan di WHERE —
-            // di WHERE ia membuang baris tanpa kuitansi sama sekali, karena
-            // perbandingan apa pun terhadap NULL tidak pernah bernilai true.
-            ->leftJoin('transaction_headers as h', function ($join) {
+            ->join('transaction_headers as h', function ($join) {
                 $join->on('h.id', '=', 'transactions.transaction_header_id')
                     ->whereNull('h.deleted_by');
             })
+            ->join('members as m', 'm.id', '=', 'transactions.member_id')
+            // LEFT join: anggota boleh belum punya ketua kelompok, dan barisnya
+            // tetap harus tercetak — pada kuitansi pribadi kolom itu memang
+            // tidak dipakai sama sekali.
+            ->leftJoin('group_leaders as gl', function ($join) {
+                $join->on('gl.id', '=', 'm.group_leader_id')
+                    ->whereNull('gl.deleted_by');
+            })
             ->whereNull('transactions.deleted_by')
-            ->whereNull('m.deleted_by');
+            ->whereNull('m.deleted_by')
+            ->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) >= ?', [$awal])
+            ->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) <= ?', [$akhir])
+            // Disaring di QUERY, bukan dibuang saat merakit blok: kalau baris
+            // cara bayar lain ikut terambil, ia ikut memakan `MAX_ROWS` dan bisa
+            // membuat lembar terpotong oleh baris yang tidak pernah tercetak.
+            ->whereIn('h.payment_method', self::METODE_LEMBAR)
+            ->when($metode !== '', fn ($q) => $q->where('h.payment_method', $metode))
+            // Dibungkus closure supaya seluruh OR-nya berdiri sebagai satu
+            // syarat; tanpa kurung itu, `orWhere` pertama membatalkan penyaring
+            // tanggal di atasnya dan lembarnya berisi bulan-bulan lain.
+            ->when($cari !== '', function ($q) use ($cari) {
+                // `%` dan `_` di dalam kata kunci diperlakukan sebagai huruf
+                // biasa: petugas mengetik nomor kuitansi, bukan pola LIKE.
+                $suku = '%'.addcslashes($cari, '%_\\').'%';
 
-        if ($search = $request->query('search')) {
-            $query->where(function (Builder $q) use ($search) {
-                $q->where('m.name', 'like', "%{$search}%")
-                    ->orWhere('m.member_number', 'like', "%{$search}%");
-            });
-        }
-
-        // Wilayah & ketua kelompok disaring lewat KODE, bukan id: kode itulah
-        // yang dipakai kontrak API master Nafsul (`kode`, `noketua`), sehingga
-        // frontend bisa mengoper nilai dropdown apa adanya.
-        if ($wilayah = $request->query('region_code')) {
-            $query->where('r.code', $wilayah);
-        }
-
-        if ($ketua = $request->query('group_leader_code')) {
-            $query->where('gl.code', $ketua);
-        }
-
-        // Tarif juga disaring lewat KODE, bukan id: kontrak API master tarif
-        // hanya mengeluarkan `kode`/`nama`, jadi id-nya memang tidak pernah
-        // sampai ke frontend untuk bisa dikirim balik.
-        if ($tarif = $request->query('rate_code')) {
-            $query->where('rt.code', $tarif);
-        }
-
-        if ($dari = $request->query('period_from')) {
-            $this->filterRentangPeriode($query, $this->pecahPeriode($dari, 'period_from'), '>=', 'transactions');
-        }
-
-        if ($sampai = $request->query('period_to')) {
-            $this->filterRentangPeriode($query, $this->pecahPeriode($sampai, 'period_to'), '<=', 'transactions');
-        }
-
-        // Rentang TANGGAL KUITANSI — berbeda dari rentang periode di atas.
-        // Periode adalah bulan iuran yang dibayar, tanggal kuitansi adalah kapan
-        // uangnya diterima; iuran Januari bisa saja dibayar pada Maret.
-        //
-        // Menyaringnya otomatis membuang rincian yang belum punya kuitansi:
-        // baris itu memang belum diterima uangnya, jadi ia tidak berada di dalam
-        // rentang penerimaan mana pun.
-        if ($dari = $request->query('date_from')) {
-            $query->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) >= ?', [$dari]);
-        }
-
-        if ($sampai = $request->query('date_to')) {
-            $query->whereRaw('DATE(COALESCE(h.`date`, h.created_at)) <= ?', [$sampai]);
-        }
-
-        if ($status = $request->query('status')) {
-            $status === 'paid'
-                ? $query->whereNotNull('h.id')
-                : $query->whereNull('h.id');
-        }
-
-        return $query;
-    }
-
-    /**
-     * Jumlah baris per halaman, dibatasi `MAX_PER_PAGE`.
-     *
-     * Bawaannya 25, sama dengan daftar transaksi — laporan yang dibuka pertama
-     * kali menampilkan sebanyak yang sudah biasa dilihat petugas.
-     */
-    private function perPage(Request $request): int
-    {
-        return min(max($request->integer('per_page', 25), 1), self::MAX_PER_PAGE);
+                $q->where(function ($q) use ($suku) {
+                    $q->where('m.name', 'like', $suku)
+                        ->orWhere('m.member_number', 'like', $suku)
+                        ->orWhere('h.transaction_number', 'like', $suku)
+                        ->orWhere('gl.name', 'like', $suku);
+                });
+            })
+            ->selectRaw(implode(', ', [
+                'h.id as header_id',
+                'DATE(COALESCE(h.`date`, h.created_at)) as `date`',
+                'h.transaction_number',
+                'h.transaction_type',
+                'h.payment_method',
+                'm.id as member_id',
+                'm.name as member_name',
+                'm.member_number',
+                'm.visit',
+                'gl.name as group_leader_name',
+                'COALESCE(SUM(transactions.amount), 0) as amount',
+                'COALESCE(SUM(transactions.discount), 0) as deduction',
+            ]))
+            // Seluruh kolom non-agregat ikut di GROUP BY, bukan hanya pasangan
+            // kuncinya: dengan `ONLY_FULL_GROUP_BY` menyala (bawaan MySQL 5.7+)
+            // query yang menyebut kolom di luar daftar ini langsung ditolak.
+            ->groupByRaw(implode(', ', [
+                'h.id', 'h.`date`', 'h.created_at', 'h.transaction_number',
+                'h.transaction_type', 'h.payment_method',
+                'm.id', 'm.name', 'm.member_number', 'm.visit', 'gl.name',
+            ]))
+            // Urut seperti lembar aslinya dibaca: kronologis per hari, lalu per
+            // kuitansi dalam URUTAN INPUT (`h.id`), bukan urutan nomor kuitansi
+            // — nomor dibangkitkan per hari dan tidak selalu naik searah dengan
+            // urutan penerimaannya. `m.id` sebagai pemecah seri agar dua anggota
+            // bernama sama tidak bertukar posisi antar permintaan.
+            ->orderByRaw('DATE(COALESCE(h.`date`, h.created_at))')
+            ->orderBy('h.id')
+            ->orderBy('m.name')
+            ->orderBy('m.id');
     }
 
     /**
