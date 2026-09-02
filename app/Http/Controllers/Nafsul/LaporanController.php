@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Transaction;
 use App\Traits\HandlesTransactionRows;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -43,6 +44,9 @@ class LaporanController extends Controller
      * agar tidak menarik seluruh tabel ke memori PHP dan mematikan prosesnya.
      */
     private const MAX_ROWS = 20000;
+
+    /** Baris per halaman bawaan lembar rekap. */
+    private const PER_HALAMAN = 50;
 
     /**
      * Cara bayar yang dicetak di lembar ini, dalam urutan bloknya.
@@ -111,16 +115,32 @@ class LaporanController extends Controller
         $request->validate([
             'period' => ['nullable', 'string'],
             'date' => ['nullable', 'date_format:Y-m-d'],
+            // Rentang bebas, boleh memotong beberapa bulan. Menang atas `period`
+            // maupun `date` bila diisi lengkap.
+            'date_from' => ['nullable', 'date_format:Y-m-d'],
+            'date_to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:date_from'],
             // Dicocokkan ke nama anggota, no. anggota, no. kuitansi, dan nama
             // ketua — empat kolom yang dibaca petugas saat menelusuri lembar.
             'search' => ['nullable', 'string', 'max:100'],
             'payment_method' => ['nullable', Rule::in(self::METODE_LEMBAR)],
+            'page' => ['nullable', 'integer', 'min:1'],
+            // Batas atas 5000 supaya export bisa menarik seluruh lembar dalam
+            // satu permintaan tanpa membuka pintu untuk permintaan tanpa batas.
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:5000'],
         ]);
 
         $diminta = trim((string) $request->query('period', ''));
         $tanggal = trim((string) $request->query('date', ''));
+        $dari = trim((string) $request->query('date_from', ''));
+        $sampai = trim((string) $request->query('date_to', ''));
+        $pakaiRentang = $dari !== '' && $sampai !== '';
 
         $periode = match (true) {
+            // Rentang menang atas semuanya. `month`/`year` pada respons diisi
+            // dari tanggal AWAL rentang — nilai itu cuma penanda, sedangkan yang
+            // menentukan isi lembar adalah `date_from`/`date_to` yang ikut
+            // dikembalikan.
+            $pakaiRentang => ['month' => (int) date('n', strtotime($dari)), 'year' => (int) date('Y', strtotime($dari))],
             // Tanggal menang atas `period`: keduanya bisa saja tidak sejalan
             // (isian bulan tertinggal saat tanggalnya diganti), dan yang benar
             // selalu bulan tempat tanggal itu berada.
@@ -142,28 +162,52 @@ class LaporanController extends Controller
             $awal = $akhir = $tanggal;
         }
 
-        $baris = $this->queryRekapPembayaran(
+        // Rentang bebas: ditulis paling akhir agar menimpa dua bentuk di atas.
+        if ($pakaiRentang) {
+            $awal = $dari;
+            $akhir = $sampai;
+        }
+
+        $dasar = $this->queryRekapPembayaran(
             $awal,
             $akhir,
             trim((string) $request->query('search', '')),
             (string) $request->query('payment_method', ''),
-        )
-            ->limit(self::MAX_ROWS + 1)
-            ->get();
+        );
 
-        $terpotong = $baris->count() > self::MAX_ROWS;
-        if ($terpotong) {
-            $baris = $baris->take(self::MAX_ROWS);
-        }
+        $perHalaman = (int) $request->integer('per_page', self::PER_HALAMAN);
+        $halaman = max((int) $request->integer('page', 1), 1);
 
-        // Dikelompokkan di PHP, bukan lewat dua query terpisah per cara bayar:
-        // satu pemindaian menghasilkan kedua blok, dan keduanya karenanya tidak
-        // mungkin berangkat dari kumpulan baris yang berbeda.
+        // Jumlah & total dihitung atas SELURUH hasil penyaringan, bukan atas
+        // halaman yang sedang tampil. Baris penutup tiap blok menyebut total
+        // lembar ini; kalau ia ikut mengecil tiap kali halaman berpindah, angka
+        // yang dibaca petugas berubah-ubah untuk penyaring yang sama.
+        //
+        // Satu baris lembar = satu pasangan kuitansi+anggota, berapa pun rincian
+        // periode di dalamnya — itu yang di-GROUP BY, jadi menghitung baris
+        // subquery ini sudah menghitung dalam satuan yang benar.
+        $ringkas = DB::query()->fromSub($dasar, 'r')
+            ->selectRaw('payment_method, COUNT(*) as jml, SUM(amount) as amount, SUM(deduction) as deduction')
+            ->groupBy('payment_method')
+            ->get()
+            ->keyBy('payment_method');
+
+        $total = (int) $ringkas->sum('jml');
+        $halamanTerakhir = max((int) ceil($total / max($perHalaman, 1)), 1);
+
+        $baris = (clone $dasar)->forPage($halaman, $perHalaman)->get();
+
+        $this->tandaiKunjungan($baris);
+
         $perMetode = $baris->groupBy('payment_method');
 
         $blok = collect(self::METODE_LEMBAR)
-            ->map(fn (string $metode) => $this->blokRekap($metode, $perMetode->get($metode, collect())))
-            // Cara bayar yang tidak terpakai bulan itu tidak dicetak sebagai
+            ->map(fn (string $metode) => $this->blokRekap(
+                $metode,
+                $perMetode->get($metode, collect()),
+                $ringkas->get($metode),
+            ))
+            // Cara bayar yang tidak muncul di HALAMAN ini tidak dicetak sebagai
             // blok kosong berisi "Rp 0,00" — itu terbaca sebagai laporan yang
             // gagal, bukan sebagai tidak adanya setoran.
             ->filter(fn (array $b) => $b['rows'] !== [])
@@ -181,7 +225,16 @@ class LaporanController extends Controller
                 'date' => $tanggal !== '' ? $tanggal : null,
             ],
             'blocks' => $blok,
-            'truncated' => $terpotong,
+            'pagination' => [
+                'page' => $halaman,
+                'per_page' => $perHalaman,
+                'total' => $total,
+                'last_page' => $halamanTerakhir,
+            ],
+            // Dipertahankan demi bentuk respons yang tetap; dengan paginasi
+            // muatannya sudah dibatasi per halaman sehingga tidak pernah lagi
+            // ada yang terpotong diam-diam.
+            'truncated' => false,
         ]);
     }
 
@@ -194,10 +247,16 @@ class LaporanController extends Controller
      *
      * @param  \Illuminate\Support\Collection<int, \stdClass>  $baris
      */
-    private function blokRekap(string $metode, $baris): array
+    private function blokRekap(string $metode, $baris, ?object $ringkas = null): array
     {
-        $bruto = $baris->sum(fn ($r) => (float) $r->amount);
-        $potongan = $baris->sum(fn ($r) => (float) $r->deduction);
+        // Angka penutup diambil dari ringkasan SELURUH hasil penyaringan bila
+        // ada — bukan dari baris halaman ini.
+        $bruto = $ringkas !== null
+            ? (float) $ringkas->amount
+            : $baris->sum(fn ($r) => (float) $r->amount);
+        $potongan = $ringkas !== null
+            ? (float) $ringkas->deduction
+            : $baris->sum(fn ($r) => (float) $r->deduction);
 
         return [
             'payment_method' => $metode,
@@ -213,14 +272,15 @@ class LaporanController extends Controller
                 'group_leader_name' => $r->group_leader_name,
                 'member_name' => $r->member_name,
                 'member_number' => $r->member_number,
-                // "L"/"B" pada data berjalan, tapi kolomnya string bebas dan
-                // boleh kosong — ditampilkan apa adanya, tidak dipetakan.
+                // "B" = kuitansi ini memuat iuran PALING AWAL anggota itu,
+                // "L" = ia sudah punya iuran yang lebih dulu. Diturunkan di
+                // tandaiKunjungan(), bukan dibaca dari kolom.
                 'visit' => $r->visit,
                 'amount' => $this->rupiah($r->amount),
                 'deduction' => $this->rupiah($r->deduction),
             ])->values()->all(),
             'summary' => [
-                'rows' => $baris->count(),
+                'rows' => $ringkas !== null ? (int) $ringkas->jml : $baris->count(),
                 'amount' => $this->rupiah($bruto),
                 'deduction' => $this->rupiah($potongan),
                 'net' => $this->rupiah($bruto - $potongan),
@@ -297,7 +357,12 @@ class LaporanController extends Controller
                 'm.id as member_id',
                 'm.name as member_name',
                 'm.member_number',
-                'm.visit',
+                // Bahan penentu kolom Kunjungan (B/L). `m.visit` TIDAK dipakai:
+                // kolom itu null pada seluruh baris, jadi lembarnya selalu
+                // kosong di kolom ini. Lihat tandaiKunjungan().
+                'MIN(CASE WHEN transactions.month IS NOT NULL'
+                    .' THEN transactions.year * 100 + transactions.month END) as periode_awal',
+                'COUNT(transactions.id) as rincian_dalam',
                 'gl.name as group_leader_name',
                 'COALESCE(SUM(transactions.amount), 0) as amount',
                 'COALESCE(SUM(transactions.discount), 0) as deduction',
@@ -308,7 +373,7 @@ class LaporanController extends Controller
             ->groupByRaw(implode(', ', [
                 'h.id', 'h.`date`', 'h.created_at', 'h.transaction_number',
                 'h.transaction_type', 'h.payment_method',
-                'm.id', 'm.name', 'm.member_number', 'm.visit', 'gl.name',
+                'm.id', 'm.name', 'm.member_number', 'gl.name',
             ]))
             // Urut seperti lembar aslinya dibaca: kronologis per hari, lalu per
             // kuitansi dalam URUTAN INPUT (`h.id`), bukan urutan nomor kuitansi
@@ -319,6 +384,58 @@ class LaporanController extends Controller
             ->orderBy('h.id')
             ->orderBy('m.name')
             ->orderBy('m.id');
+    }
+
+    /**
+     * Isi kolom Kunjungan tiap baris: "B" bila kuitansi itulah yang memuat iuran
+     * PALING AWAL si anggota, "L" bila ia sudah punya iuran yang lebih dulu.
+     *
+     * Aturannya sengaja sama persis dengan biling (lihat
+     * TransaksiHeaderController::barisBilingPerAnggota) — satu anggota tidak
+     * boleh terbaca "B" di lembar rekap tapi "L" di bilingnya sendiri.
+     *
+     * Dasarnya periode TERAWAL, bukan sekadar "punya transaksi lain": kalau
+     * memakai yang kedua, memasukkan iuran bulan berikutnya akan mengubah lembar
+     * yang sudah tercetak dari B jadi L.
+     *
+     * Dihitung di PHP lewat dua query ringkasan, bukan sebagai subquery per
+     * baris: subquery berkorelasi akan dijalankan sekali untuk tiap baris lembar
+     * — pada lembar sepanjang MAX_ROWS itu ribuan kali.
+     */
+    private function tandaiKunjungan($baris): void
+    {
+        $idAnggota = $baris->pluck('member_id')->unique()->values()->all();
+
+        if ($idAnggota === []) {
+            return;
+        }
+
+        $awalGlobal = Transaction::whereIn('member_id', $idAnggota)
+            ->whereNotNull('month')
+            ->selectRaw('member_id, MIN(year * 100 + month) AS awal')
+            ->groupBy('member_id')
+            ->pluck('awal', 'member_id');
+
+        // Cadangan untuk anggota yang seluruh iurannya tarif SEKALI BAYAR:
+        // mereka tidak punya periode sama sekali, jadi tidak ada yang bisa
+        // dibandingkan — yang tersisa cuma "punya iuran di luar kuitansi ini".
+        $totalRincian = Transaction::whereIn('member_id', $idAnggota)
+            ->selectRaw('member_id, COUNT(*) AS jml')
+            ->groupBy('member_id')
+            ->pluck('jml', 'member_id');
+
+        foreach ($baris as $r) {
+            $awalBaris = $r->periode_awal === null ? null : (int) $r->periode_awal;
+
+            if ($awalBaris === null) {
+                $diLuar = (int) ($totalRincian[$r->member_id] ?? 0) - (int) $r->rincian_dalam;
+                $baru = $diLuar <= 0;
+            } else {
+                $baru = (int) ($awalGlobal[$r->member_id] ?? PHP_INT_MAX) >= $awalBaris;
+            }
+
+            $r->visit = $baru ? 'B' : 'L';
+        }
     }
 
     /**
