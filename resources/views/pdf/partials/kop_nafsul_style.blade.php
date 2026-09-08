@@ -13,15 +13,17 @@
     table.kop td { vertical-align: middle; padding: 0; }
 
     /*
-        Lebar sel logo DIPATOK, dan sel kanan dibuat selebar itu juga.
-
-        Tanpa sel penyeimbang di kanan, blok tengah menempati sisa lebar
-        halaman dan "rata tengah"-nya jadi tengah dari sisa itu — tergeser ke
-        kanan sebesar logonya, yang langsung terlihat begitu lembarnya
-        ditumpuk dengan lembar lain.
+        Lebar sel logo DIPATOK supaya tepi kiri tulisannya berhenti di tempat
+        yang sama pada tiap lembar, berapa pun panjang barisnya.
     */
-    .kop-logo, .kop-sisi { width: 74px; }
-    .kop-logo img { width: 66px; height: 66px; }
+    .kop-logo { width: 82px; }
+    .kop-logo img { width: 72px; height: 72px; }
 
-    .kop-teks { text-align: center; }
+    /*
+        RATA KIRI, menempel di sebelah logonya — bukan rata tengah halaman.
+        Karena itu tidak ada lagi sel penyeimbang di kanan: yang dulu
+        dibutuhkan hanya untuk mengembalikan titik tengah blok tulisan setelah
+        logonya mengambil ruang di kiri.
+    */
+    .kop-teks { text-align: left; padding-left: 4px; }
 </style>

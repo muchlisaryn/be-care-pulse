@@ -32,9 +32,17 @@
            supaya barisnya tidak terbentang selebar halaman. */
         @page { margin: 14mm 24mm; }
 
+        /*
+            SATU JENIS HURUF, SATU UKURAN, SEMUANYA TEBAL — aturan yang sama
+            dengan pdf.nafsul_biling, termasuk alasannya: huruf bergaris tipis
+            keluar putus-putus dari jarum printer LX begitu pitanya mulai
+            kering. Yang boleh berbeda hanya ukuran judul: nama rumah sakit di
+            kop dan kata KUITANSI.
+        */
         body {
             font-family: Helvetica;
-            font-size: 13px;
+            font-size: 16px;
+            font-weight: bold;
             color: #000;
             margin: 0;
         }
@@ -42,34 +50,30 @@
         /* Kop surat: ukuran & spasinya disamakan dengan pdf.nafsul_biling;
            tata letak logonya di pdf.partials.kop_nafsul_style. */
         .kop-nama {
-            font-size: 17px;
-            font-weight: bold;
+            font-size: 20px;
             letter-spacing: .3px;
         }
         .kop-unit {
-            font-size: 14px;
-            font-weight: bold;
             letter-spacing: .3px;
             margin-top: 1px;
         }
-        .kop-alamat { font-size: 10.5px; }
+        .kop-alamat { margin-top: 1px; }
 
         .garis { border-bottom: 1.5px solid #000; margin: 6px 0 16px; }
 
         .judul {
             text-align: center;
-            font-size: 18px;
-            font-weight: bold;
+            font-size: 20px;
             letter-spacing: .4px;
             margin-bottom: 20px;
         }
 
-        /* Isi kuitansi dicetak lebih besar daripada teks dokumen Nafsul lain.
-           Bukan tidak konsisten: lembar ini cuma lima baris di atas kertas
-           melintang, dan pada 13px seperti biling ia terbaca seperti catatan
-           kaki di tengah halaman kosong. Yang tetap dijaga sama adalah JENIS
-           hurufnya. */
-        table.isi { width: 100%; border-collapse: collapse; font-size: 16px; }
+        /* Isi kuitansi ikut ukuran badan lembar ini (16px), yang memang lebih
+           besar daripada biling: lembar ini cuma lima baris di atas kertas
+           melintang, dan pada ukuran biling ia terbaca seperti catatan kaki di
+           tengah halaman kosong. Di dalam lembarnya sendiri tidak ada lagi dua
+           ukuran yang berbeda. */
+        table.isi { width: 100%; border-collapse: collapse; }
         table.isi td { padding: 9px 0; vertical-align: top; }
         table.isi td.label { width: 22%; }
         table.isi td.pemisah { width: 2%; }
@@ -80,7 +84,7 @@
 
         /* Jarak lebar sebelum blok tanda tangan: memberi ruang bagi petugas
            menuliskan catatan tangan di bawah baris Terbilang bila perlu. */
-        table.ttd { width: 100%; margin-top: 48px; border-collapse: collapse; font-size: 14px; }
+        table.ttd { width: 100%; margin-top: 48px; border-collapse: collapse; }
         /* Rata KANAN, bukan sekadar digeser lewat lebar sel: dengan lebar sel
            saja bloknya berhenti di tengah halaman melintang yang lebar, dan
            tanda tangan yang mengambang di tengah bukan tempatnya. */
