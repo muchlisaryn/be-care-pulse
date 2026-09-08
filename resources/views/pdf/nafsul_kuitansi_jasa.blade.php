@@ -13,9 +13,12 @@
 
     Sama seperti biling: HITAM PUTIH seluruhnya (printer kantor lazimnya
     monokrom), tata letak memakai tabel karena dompdf tidak mendukung flexbox
-    maupun grid, dan JENIS HURUFNYA satu macam — DejaVu Sans, persis yang
-    dipakai biling. Jangan menambah font-family lain di sini: dokumen Nafsul
-    harus terlihat berasal dari satu aplikasi yang sama.
+    maupun grid, dan JENIS HURUFNYA satu macam — Helvetica, persis yang dipakai
+    biling. Jangan menambah font-family lain di sini: dokumen Nafsul harus
+    terlihat berasal dari satu aplikasi yang sama, dan alasan teknis memilih
+    font inti PDF (bukan DejaVu) ada di catatan huruf pdf.nafsul_biling —
+    singkatnya: font yang ditanam ke berkas keluar terpotong di printer dot
+    matrix LX.
 
     Dicetak MELINTANG (landscape, diatur di RekapJasaController::render).
 --}}
@@ -30,27 +33,26 @@
         @page { margin: 14mm 24mm; }
 
         body {
-            font-family: DejaVu Sans, sans-serif;
-            font-size: 11px;
+            font-family: Helvetica;
+            font-size: 13px;
             color: #000;
             margin: 0;
         }
 
-        /* Kop surat: rata tengah, memenuhi lebar halaman. Ukuran & spasinya
-           disamakan dengan pdf.nafsul_biling. */
-        .kop { text-align: center; }
+        /* Kop surat: ukuran & spasinya disamakan dengan pdf.nafsul_biling;
+           tata letak logonya di pdf.partials.kop_nafsul_style. */
         .kop-nama {
-            font-size: 14px;
+            font-size: 17px;
             font-weight: bold;
             letter-spacing: .3px;
         }
         .kop-unit {
-            font-size: 11px;
+            font-size: 14px;
             font-weight: bold;
             letter-spacing: .3px;
             margin-top: 1px;
         }
-        .kop-alamat { font-size: 8.5px; }
+        .kop-alamat { font-size: 10.5px; }
 
         .garis { border-bottom: 1.5px solid #000; margin: 6px 0 16px; }
 
@@ -64,10 +66,10 @@
 
         /* Isi kuitansi dicetak lebih besar daripada teks dokumen Nafsul lain.
            Bukan tidak konsisten: lembar ini cuma lima baris di atas kertas
-           melintang, dan pada 11px seperti biling ia terbaca seperti catatan
+           melintang, dan pada 13px seperti biling ia terbaca seperti catatan
            kaki di tengah halaman kosong. Yang tetap dijaga sama adalah JENIS
            hurufnya. */
-        table.isi { width: 100%; border-collapse: collapse; font-size: 14px; }
+        table.isi { width: 100%; border-collapse: collapse; font-size: 16px; }
         table.isi td { padding: 9px 0; vertical-align: top; }
         table.isi td.label { width: 22%; }
         table.isi td.pemisah { width: 2%; }
@@ -78,7 +80,7 @@
 
         /* Jarak lebar sebelum blok tanda tangan: memberi ruang bagi petugas
            menuliskan catatan tangan di bawah baris Terbilang bila perlu. */
-        table.ttd { width: 100%; margin-top: 48px; border-collapse: collapse; font-size: 13px; }
+        table.ttd { width: 100%; margin-top: 48px; border-collapse: collapse; font-size: 14px; }
         /* Rata KANAN, bukan sekadar digeser lewat lebar sel: dengan lebar sel
            saja bloknya berhenti di tengah halaman melintang yang lebar, dan
            tanda tangan yang mengambang di tengah bukan tempatnya. */
@@ -112,18 +114,14 @@
         .lembar { page-break-inside: avoid; }
         .lembar.putus { page-break-after: always; }
     </style>
+    @include('pdf.partials.kop_nafsul_style')
 </head>
 <body>
 
 @foreach ($lembar as $l)
 <div class="lembar {{ $loop->last ? '' : 'putus' }}">
 
-    <div class="kop">
-        <div class="kop-nama">RUMAH SAKIT ISLAM JAKARTA PONDOK KOPI</div>
-        <div class="kop-unit">UNIT LAYANAN NAFSUL MUTMAINAH</div>
-        <div class="kop-alamat">Jl. Raya Pondok Kopi - Jakarta Timur 13460</div>
-        <div class="kop-alamat">tlp. 021--61-471, 0630654 ext 5111 fax 021-0611101</div>
-    </div>
+    @include('pdf.partials.kop_nafsul')
 
     <div class="garis"></div>
 

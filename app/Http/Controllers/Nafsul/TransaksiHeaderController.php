@@ -681,8 +681,8 @@ class TransaksiHeaderController extends Controller
 
         $pdf = Pdf::loadView('pdf.nafsul_biling', [
             'header' => $transaksiHeader,
-            'tanggal' => optional($transaksiHeader->date)->translatedFormat('d F Y') ?? '—',
-            'divalidasi' => optional($transaksiHeader->validation_at)->translatedFormat('d F Y H:i') ?? '—',
+            'tanggal' => optional($transaksiHeader->date)->translatedFormat('d F Y') ?? '-',
+            'divalidasi' => optional($transaksiHeader->validation_at)->translatedFormat('d F Y H:i') ?? '-',
             'qr' => $qr,
             'baris' => $baris,
             'uang' => [
@@ -726,7 +726,7 @@ class TransaksiHeaderController extends Controller
      *
      * Biling adalah lembar yang dipegang penyetor, bukan salinan basis data:
      * seorang anggota yang membayar 12 bulan sekaligus cukup ditulis satu baris
-     * "01/2026 – 12/2026", bukan dua belas baris yang isinya berulang. Rincian
+     * "01/2026-12/2026", bukan dua belas baris yang isinya berulang. Rincian
      * per bulan tetap ada di aplikasi bagi yang perlu menelusurinya.
      *
      * @param  Collection<int, Transaction>  $rincian
@@ -785,7 +785,7 @@ class TransaksiHeaderController extends Controller
 
             $baris[] = [
                 'no_anggota' => $anggota?->member_number,
-                'nama' => $anggota?->name ?? '—',
+                'nama' => $anggota?->name ?? '-',
                 'periode' => $this->rentangPeriode($periode->first(), $periode->last()),
                 'kunjungan' => $baru ? 'B' : 'L',
                 'jumlah_nilai' => $milik->sum(fn ($t) => (float) $t->total),
@@ -795,7 +795,16 @@ class TransaksiHeaderController extends Controller
         return $this->bagiPotongan($baris, (float) $header->member_deduction);
     }
 
-    /** `202601`, `202612` → `"01/2026 – 12/2026"`. Sama → satu periode saja. */
+    /**
+     * `202601`, `202612` → `"01/2026-12/2026"`. Sama → satu periode saja.
+     *
+     * Pemisahnya TANDA HUBUNG BIASA, bukan en dash. Lembar biling memakai font
+     * inti PDF (Helvetica/Courier) supaya tidak ditanam ke berkasnya — itu yang
+     * membuatnya tercetak utuh di printer dot matrix — dan font inti hanya
+     * mengenal huruf Windows-1252: en dash keluar sebagai tanda tanya kotak.
+     * Tanpa spasi di kedua sisinya supaya rentangnya muat satu baris di kolom
+     * Periode.
+     */
     private function rentangPeriode(?int $awal, ?int $akhir): string
     {
         if ($awal === null) {
@@ -804,7 +813,7 @@ class TransaksiHeaderController extends Controller
 
         $tulis = fn (int $p) => str_pad((string) ($p % 100), 2, '0', STR_PAD_LEFT).'/'.intdiv($p, 100);
 
-        return $awal === $akhir ? $tulis($awal) : $tulis($awal).' – '.$tulis($akhir);
+        return $awal === $akhir ? $tulis($awal) : $tulis($awal).'-'.$tulis($akhir);
     }
 
     /**

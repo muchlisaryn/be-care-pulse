@@ -28,28 +28,49 @@
         */
         @page { margin: 18mm 16mm; }
 
+        /*
+            HURUFNYA HELVETICA & COURIER, bukan DejaVu, dan ukurannya jauh lebih
+            besar dari sebelumnya. Keduanya karena lembar ini dicetak di printer
+            dot matrix Epson LX.
+
+            DejaVu ditanam (embedded) ke dalam PDF sebagai subset TrueType, dan
+            di jalur cetak LX subset itulah yang bikin huruf keluar terpotong —
+            driver 9 jarum merasterkan halaman pada resolusi rendah, dan garis
+            huruf yang lebih tipis dari satu titik jarum hilang begitu saja.
+            Helvetica dan Courier adalah font INTI PDF: tidak ditanam sama
+            sekali, jadi yang dipakai adalah huruf yang sudah dikenal penampil &
+            printernya sendiri.
+
+            Ukurannya naik dari 10px ke 13px dengan alasan yang sama: pada 120
+            dpi vertikal, huruf 10px cuma setinggi belasan titik jarum dan
+            bagian atas-bawahnya yang pertama hilang.
+
+            KONSEKUENSI: font inti hanya mengenal huruf Windows-1252. Jangan
+            memakai tanda di luar itu — tanda minus U+2212, tanda petik miring,
+            panah — karena yang keluar bukan hurufnya. Untuk pengurangan pakai
+            tanda hubung biasa, seperti pada blok ringkasan di bawah.
+        */
         body {
-            font-family: DejaVu Sans, sans-serif;
-            font-size: 10px;
+            font-family: Helvetica;
+            font-size: 13px;
             color: #000;
             margin: 0;
         }
 
-        /* Kop surat: rata tengah, memenuhi lebar halaman. */
-        .kop { text-align: center; }
+        /* Kop surat: logonya di `pdf.partials.kop_nafsul_style`. */
         .kop-nama {
-            font-size: 14px;
+            font-size: 17px;
             font-weight: bold;
             letter-spacing: .3px;
         }
         .kop-unit {
-            font-size: 11px;
+            font-size: 14px;
             font-weight: bold;
             letter-spacing: .3px;
             margin-top: 1px;
         }
         .kop-alamat {
-            font-size: 8.5px;
+            font-size: 10.5px;
             margin-top: 1px;
         }
 
@@ -62,8 +83,8 @@
 
         .nomor { font-weight: bold; letter-spacing: .5px; }
 
-        .meta td { padding: 1.5px 0; }
-        .meta .label { width: 90px; }
+        .meta td { padding: 2px 0; }
+        .meta .label { width: 108px; }
 
         /*
             Kepala tabel dulu berlatar biru pekat dengan huruf putih. Diganti
@@ -72,19 +93,28 @@
         */
         .rincian { margin-top: 14px; }
         .rincian th {
-            font-size: 9px;
+            font-size: 11px;
             text-align: left;
-            padding: 5px 6px;
+            padding: 6px 5px;
             text-transform: uppercase;
-            letter-spacing: .4px;
+            letter-spacing: .3px;
             border-top: 1px solid #000;
             border-bottom: 1px solid #000;
         }
-        .rincian td { padding: 5px 6px; border-bottom: 1px solid #000; }
+        .rincian td { padding: 6px 5px; border-bottom: 1px solid #000; }
 
         .angka { text-align: right; white-space: nowrap; }
         .tengah { text-align: center; }
-        .mono { font-family: DejaVu Sans Mono, monospace; font-size: 9px; }
+        /*
+            Courier, sesama font inti — lihat catatan huruf di atas.
+
+            `nowrap` bukan hiasan: tanpa itu rentang periode boleh patah di
+            tanda hubungnya, dan dompdf yang menghitung lebar kolom dari
+            potongan terpanjang lalu memberi kolom Periode dua baris —
+            "01/2026-" di atas "12/2026" — padahal selisihnya cuma sepersekian
+            milimeter. Dengan nowrap, lebar kolomnya dihitung dari rentang utuh.
+        */
+        .mono { font-family: Courier; font-size: 11px; white-space: nowrap; }
 
         /*
             Penanda kunjungan: huruf tebal saja, tanpa kotak berlatar. Satu huruf
@@ -93,32 +123,35 @@
         */
         .tanda { font-weight: bold; }
 
-        .keterangan { margin: 6px 0 0; font-size: 8px; }
+        .keterangan { margin: 6px 0 0; font-size: 11px; }
 
         /* Penutup lembar: verifikasi kiri, ringkasan uang kanan. */
         .penutup { margin-top: 14px; }
         .penutup > tr > td { vertical-align: top; }
         .penutup-kiri { padding-right: 10px; }
         /* Selebar kira-kira sepertiga halaman; sisanya milik blok verifikasi. */
-        .penutup-kanan { width: 218px; }
+        .penutup-kanan { width: 304px; }
 
-        .ringkas td { padding: 3px 6px; }
-        .ringkas .label { text-align: right; }
-        .ringkas .nilai { text-align: right; white-space: nowrap; width: 110px; }
+        .ringkas td { padding: 4px 6px; }
+        /* `nowrap` juga di labelnya: "Seharusnya Dibayar" yang pecah dua baris
+           membuat angkanya berdiri sendiri tanpa keterangan di barisnya. */
+        .ringkas .label { text-align: right; white-space: nowrap; }
+        .ringkas .nilai { text-align: right; white-space: nowrap; width: 140px; }
         .ringkas .tebal td { font-weight: bold; border-top: 1px solid #000; }
         .ringkas .akhir td {
             font-weight: bold;
-            font-size: 12px;
+            font-size: 16px;
             border-top: 1.5px solid #000;
         }
 
         .kepala-kotak {
-            font-size: 9px;
+            font-size: 11px;
             text-transform: uppercase;
             letter-spacing: .4px;
             margin-bottom: 4px;
         }
     </style>
+    @include('pdf.partials.kop_nafsul_style')
 </head>
 <body>
 
@@ -128,12 +161,7 @@
     akan terbaca sebagai bagian dari identitas rumah sakit, bukan identitas
     lembar ini.
 --}}
-<div class="kop">
-    <div class="kop-nama">RUMAH SAKIT ISLAM JAKARTA PONDOK KOPI</div>
-    <div class="kop-unit">UNIT LAYANAN NAFSUL MUTMAINAH</div>
-    <div class="kop-alamat">Jl. Raya Pondok Kopi - Jakarta Timur 13460</div>
-    <div class="kop-alamat">tlp. 021--61-471, 0630654 ext 5111 fax 021-0611101</div>
-</div>
+@include('pdf.partials.kop_nafsul')
 
 <div class="garis"></div>
 
@@ -155,7 +183,7 @@
             <table class="meta">
                 <tr>
                     <td class="label">Jenis</td>
-                    <td>: {{ ucfirst($header->transaction_type) }} · {{ ucfirst($header->payment_method) }}</td>
+                    <td>: {{ ucfirst($header->transaction_type) }} - {{ ucfirst($header->payment_method) }}</td>
                 </tr>
                 <tr>
                     <td class="label">Jumlah Anggota</td>
@@ -177,20 +205,33 @@
 <table class="rincian">
     <thead>
         <tr>
-            <th style="width: 24px">No</th>
-            <th style="width: 74px">No Anggota</th>
+            {{--
+                Lebar kolom dihitung ulang mengikuti huruf yang membesar: yang
+                isinya tetap (nomor, periode, rupiah) dipatok pas untuk isi
+                terpanjangnya, sisanya milik kolom nama. Dibiarkan seperti
+                ukuran lama, angka rupiah tujuh digit pecah jadi dua baris.
+            --}}
+            <th style="width: 26px">No</th>
+            <th style="width: 78px">No Anggota</th>
             <th>Nama Anggota</th>
-            <th style="width: 108px" class="tengah">Periode</th>
-            <th style="width: 52px" class="tengah">Kunjungan</th>
-            <th style="width: 78px" class="angka">Jumlah</th>
-            <th style="width: 78px" class="angka">Pot Anggota</th>
+            <th style="width: 96px" class="tengah">Periode</th>
+            {{--
+                Kepalanya "B/L", bukan "Kunjungan": kata itu tiga kali lebih
+                lebar dari isinya yang cuma satu huruf, dan lebar yang
+                dimakannya diambil dari kolom nama — nama panjang lalu pecah
+                jadi tiga baris. Artinya tetap terbaca dari keterangan di bawah
+                tabel.
+            --}}
+            <th style="width: 34px" class="tengah">B/L</th>
+            <th style="width: 92px" class="angka">Jumlah</th>
+            <th style="width: 84px" class="angka">Pot Anggota</th>
         </tr>
     </thead>
     <tbody>
         @foreach ($baris as $i => $b)
             <tr>
                 <td class="tengah">{{ $i + 1 }}</td>
-                <td class="mono">{{ $b['no_anggota'] ?? '—' }}</td>
+                <td class="mono">{{ $b['no_anggota'] ?? '-' }}</td>
                 <td>{{ $b['nama'] }}</td>
                 <td class="tengah mono">{{ $b['periode'] }}</td>
                 {{-- L = sudah pernah beriuran sebelum kuitansi ini, B = baru mulai di sini. --}}
@@ -240,7 +281,7 @@
                     </td>
                     <td style="vertical-align: middle">
                         <div class="kepala-kotak">Diverifikasi Oleh</div>
-                        <div style="font-weight:bold">{{ $header->validation_by ?: '—' }}</div>
+                        <div style="font-weight:bold">{{ $header->validation_by ?: '-' }}</div>
                         <div>{{ $divalidasi }}</div>
                     </td>
                 </tr>
@@ -256,7 +297,7 @@
                 @if ($header->member_deduction > 0)
                     <tr>
                         <td class="label">Potongan Anggota</td>
-                        <td class="nilai">− {{ $uang['member_deduction'] }}</td>
+                        <td class="nilai">- {{ $uang['member_deduction'] }}</td>
                     </tr>
                 @endif
                 @if ($header->group_leader_deduction > 0)
@@ -267,7 +308,7 @@
                                 ({{ rtrim(rtrim(number_format((float) $header->group_leader_fee_percent, 2, ',', '.'), '0'), ',') }}%)
                             @endif
                         </td>
-                        <td class="nilai">− {{ $uang['group_leader_deduction'] }}</td>
+                        <td class="nilai">- {{ $uang['group_leader_deduction'] }}</td>
                     </tr>
                 @endif
                 <tr class="tebal">
