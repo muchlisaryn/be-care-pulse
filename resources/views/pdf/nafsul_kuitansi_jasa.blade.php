@@ -18,9 +18,12 @@
 
     Sama seperti biling: HITAM PUTIH seluruhnya (printer kantor lazimnya
     monokrom), tata letak memakai tabel karena dompdf tidak mendukung flexbox
-    maupun grid, dan JENIS HURUFNYA satu macam — DejaVu Sans, persis yang
-    dipakai biling. Jangan menambah font-family lain di sini: dokumen Nafsul
-    harus terlihat berasal dari satu aplikasi yang sama.
+    maupun grid, dan JENIS HURUFNYA satu macam — Helvetica, persis yang dipakai
+    biling. Jangan menambah font-family lain di sini: dokumen Nafsul harus
+    terlihat berasal dari satu aplikasi yang sama, dan alasan teknis memilih
+    font inti PDF (bukan DejaVu) ada di catatan huruf pdf.nafsul_biling —
+    singkatnya: font yang ditanam ke berkas keluar terpotong di printer dot
+    matrix LX.
 --}}
 <!DOCTYPE html>
 <html lang="id">
@@ -32,9 +35,17 @@
            jatuh tepat di tengah tinggi kertas (105 mm dari atas). */
         @page { margin: 0; }
 
+        /*
+            SATU JENIS HURUF, SATU UKURAN, SEMUANYA TEBAL — aturan yang sama
+            dengan pdf.nafsul_biling, termasuk alasannya: huruf bergaris tipis
+            keluar putus-putus dari jarum printer LX begitu pitanya mulai
+            kering. Yang boleh berbeda hanya ukuran judul: nama rumah sakit di
+            kop dan kata KUITANSI.
+        */
         body {
-            font-family: DejaVu Sans, sans-serif;
-            font-size: 11px;
+            font-family: Helvetica;
+            font-size: 16px;
+            font-weight: bold;
             color: #000;
             margin: 0;
         }
@@ -61,27 +72,23 @@
            dengan hasil cetak massal. */
         .lajur.atas { border-bottom: 1px dashed #000; }
 
-        /* Kop surat: rata tengah. Ukurannya disamakan dengan pdf.nafsul_biling. */
-        .kop { text-align: center; }
+        /* Kop surat: ukuran & spasinya disamakan dengan pdf.nafsul_biling;
+           tata letak logonya di pdf.partials.kop_nafsul_style. */
         .kop-nama {
-            font-size: 14px;
-            font-weight: bold;
+            font-size: 20px;
             letter-spacing: .3px;
         }
         .kop-unit {
-            font-size: 11px;
-            font-weight: bold;
             letter-spacing: .3px;
             margin-top: 1px;
         }
-        .kop-alamat { font-size: 8.5px; }
+        .kop-alamat { margin-top: 1px; }
 
         .garis { border-bottom: 1.5px solid #000; margin: 5px 0 8px; }
 
         .judul {
             text-align: center;
-            font-size: 16px;
-            font-weight: bold;
+            font-size: 20px;
             letter-spacing: .4px;
             margin-bottom: 8px;
         }
@@ -93,11 +100,11 @@
         table.badan td.badan-kiri { width: 70%; vertical-align: top; padding-right: 8mm; }
         table.badan td.badan-kanan { width: 30%; vertical-align: top; }
 
-        /* Isi kuitansi lebih besar daripada teks dokumen Nafsul lain: lembarnya
-           cuma lima baris, dan pada 11px ia terbaca seperti catatan kaki. Yang
-           tetap dijaga sama adalah JENIS hurufnya. */
-        table.isi { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-        table.isi td { padding: 5px 0; vertical-align: top; }
+        /* Isi kuitansi ikut ukuran badan lembar ini (16px) — di dalam lembarnya
+           sendiri tidak ada dua ukuran yang berbeda. Jarak antarbaris dibuat
+           rapat supaya lima baris muat di setengah kertas. */
+        table.isi { width: 100%; border-collapse: collapse; }
+        table.isi td { padding: 4px 0; vertical-align: top; }
         table.isi td.label { width: 30%; white-space: nowrap; }
         table.isi td.pemisah { width: 3%; }
 
@@ -107,9 +114,11 @@
 
         /* Blok tanda tangan: "Tgl Cetak" dan "Penerima" rata kiri di dalam
            kotak yang sama; nama penerima rata tengah di atas garisnya. */
-        .blok-ttd { font-size: 12px; padding-top: 4px; }
+        .blok-ttd { padding-top: 4px; }
         /* Ruang tanda tangan basah antara "Penerima" dan nama penerimanya. */
         .ruang-ttd { height: 62px; }
+        /* `display: block` agar garis atasnya memenuhi lebar kotak, bukan cuma
+           selebar namanya. */
         .nama-ttd {
             border-top: 1px solid #000;
             padding-top: 4px;
@@ -117,6 +126,7 @@
             text-align: center;
         }
     </style>
+    @include('pdf.partials.kop_nafsul_style')
 </head>
 <body>
 
@@ -126,12 +136,7 @@
     @foreach ($isiHalaman as $l)
     <div class="lajur {{ $loop->first ? 'atas' : '' }}">
 
-        <div class="kop">
-            <div class="kop-nama">RUMAH SAKIT ISLAM JAKARTA PONDOK KOPI</div>
-            <div class="kop-unit">UNIT LAYANAN NAFSUL MUTMAINAH</div>
-            <div class="kop-alamat">Jl. Raya Pondok Kopi - Jakarta Timur 13460</div>
-            <div class="kop-alamat">tlp. 021--61-471, 0630654 ext 5111 fax 021-0611101</div>
-        </div>
+        @include('pdf.partials.kop_nafsul')
 
         <div class="garis"></div>
 

@@ -177,7 +177,7 @@ class RekapJasaController extends Controller
 
         return [
             'header' => $row,
-            'ketua' => $ketua ?: '—',
+            'ketua' => $ketua ?: '-',
             'tanggalCetak' => now()->translatedFormat('d F Y'),
             'nominal' => $rupiah($jasa),
             'terbilang' => Terbilang::rupiah($jasa),
