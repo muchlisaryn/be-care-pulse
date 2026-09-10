@@ -133,7 +133,7 @@ class RekapJasaController extends Controller
 
     /**
      * SATU berkas PDF berisi kuitansi jasa seluruh baris yang cocok penyaring,
-     * satu kuitansi per halaman.
+     * dua kuitansi per halaman dengan garis potong di tengahnya.
      *
      * Bukan sekumpulan berkas terpisah: yang dibawa petugas ke ketua-ketua
      * kelompok adalah setumpuk lembar untuk ditandatangani, dan satu dokumen
@@ -185,11 +185,12 @@ class RekapJasaController extends Controller
     }
 
     /**
-     * Render kumpulan lembar jadi satu PDF melintang, satu lembar per halaman.
+     * Render kumpulan lembar jadi satu PDF A4 melintang, DUA lembar per
+     * halaman (atas-bawah) dipisah garis potong putus-putus.
      *
-     * Landscape: isi tiap lembar cuma segelintir baris, dan pada A4 tegak
-     * halamannya hampir seluruhnya kosong di bawah tanda tangan. Melintang
-     * membuat proporsinya wajar sekaligus mendekati bentuk buku kuitansi.
+     * Isi tiap kuitansi cuma segelintir baris, jadi setengah A4 melintang
+     * (±297 × 105 mm) sudah cukup — bentuknya sama dengan buku kuitansi, dan
+     * kertas yang dipakai tinggal separuh. Pembagian lajurnya ada di blade.
      */
     private function render(array $lembar, string $namaBerkas): Response
     {

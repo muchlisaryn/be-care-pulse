@@ -117,6 +117,18 @@ class ReportController extends Controller
             $stockIds
         );
 
+        // Petugas gudang steril per (batch, unit) — lihat storageOfficers().
+        $storageBy = $this->storageOfficers(
+            $items->pluck('sterilization_id')->filter()->map(fn ($id) => (int) $id)->unique()->values()->all(),
+            $stockIds
+        );
+
+        // Nama petugas tiap tahap per baris, dikumpulkan dari SEMUA unit di bungkus
+        // itu lalu digabung unik: satu bungkus lazimnya diproses orang yang sama,
+        // tapi kalau tidak, tidak boleh ada nama yang hilang hanya karena unitnya
+        // bukan yang pertama masuk.
+        $officers = [];
+
         // Nama baris dihitung setelah seluruh anggota terkumpul: `package_name` tidak
         // dijamin terisi di semua anggota satu bungkus, jadi tidak boleh hanya
         // mengandalkan unit yang kebetulan pertama masuk.
@@ -135,6 +147,11 @@ class ReportController extends Controller
             // Snapshot siklus batch ini; unit tanpa label jatuh ke snapshot terbaru.
             $prod = $prodByCycle[$barcode.'|'.$item->instrument_stock_id]
                 ?? $prodByStock->get($item->instrument_stock_id);
+
+            // Petugas produksi → pengemasan hanya terbaca lewat rantai label SIKLUS
+            // ini. Snapshot cadangan (`$prodByStock`) sengaja tidak dipakai: ia milik
+            // siklus terbaru, dan petugasnya belum tentu yang memproses batch ini.
+            $chain = $prodByCycle[$barcode.'|'.$item->instrument_stock_id] ?? null;
 
             $unit = [
                 'id' => $item->id,
@@ -175,6 +192,9 @@ class ReportController extends Controller
                 'temperature' => $batch?->temperature,
                 'duration_minutes' => $batch?->duration_minutes,
                 'operator' => $batch?->operator,
+                // Petugas sterilisasi: operator yang diisi saat batch dijalankan,
+                // cadangannya user yang memvalidasi hasil batch.
+                'sterilization_officer' => $batch?->operator ?: $batch?->completed_by,
                 'sterilized_at' => $batch?->sterilized_at,
                 // Hasil validasi batch: indikator kimia + indikator biologi
                 // (pembanding/kontrol & uji). Bernilai null pada batch yang belum
@@ -193,6 +213,16 @@ class ReportController extends Controller
             $groups[$key]['qty']++;
             $groups[$key]['failed'] = $groups[$key]['failed'] || $unit['failed'];
             $groups[$key]['units'][] = $unit;
+
+            $officers[$key]['production'][] = $chain?->production_by;
+            // Pencucian: operator yang diisi di form (bawaannya user yang login),
+            // lalu yang menyelesaikan, lalu yang memulai.
+            $officers[$key]['washing'][] = $chain?->washing_operator
+                ?: ($chain?->washing_completed_by ?: $chain?->washing_started_by);
+            // Pengemasan: yang menyelesaikan dulu — sama dengan riwayat di tab
+            // Pengemasan (`completed_by ?? operator`).
+            $officers[$key]['packaging'][] = $chain?->packaging_completed_by ?: $chain?->packaging_operator;
+            $officers[$key]['storage'][] = $storageBy[$batch?->id.'|'.$item->instrument_stock_id] ?? null;
         }
 
         // Baris berisi satu unit: kode unitnya dipakai sebagai identitas baris. Baris
@@ -201,6 +231,12 @@ class ReportController extends Controller
             $groups[$key]['unit_code'] = $group['qty'] === 1 ? $group['units'][0]['unit_code'] : null;
             // null bila tidak satu pun anggota menyimpan namanya — FE menampilkan "—".
             $groups[$key]['name'] = $rowNames[$key] ?? null;
+
+            // null bila tidak tercatat — FE menampilkan "—".
+            $groups[$key]['production_officer'] = $this->joinNames($officers[$key]['production'] ?? []);
+            $groups[$key]['washing_officer'] = $this->joinNames($officers[$key]['washing'] ?? []);
+            $groups[$key]['packaging_officer'] = $this->joinNames($officers[$key]['packaging'] ?? []);
+            $groups[$key]['storage_officer'] = $this->joinNames($officers[$key]['storage'] ?? []);
         }
 
         $all = array_values($groups);
@@ -305,12 +341,66 @@ class ReportController extends Controller
                 'pi.name',
                 'pi.source',
                 'pi.package_name',
+                // Petugas tiap tahap PADA SIKLUS INI — rantainya sudah di-join, jadi
+                // ikut dibaca di sini tanpa query tambahan. Semua kolom ini berisi
+                // NAMA user (auth()->user()->name), bukan username.
+                'pr.created_by as production_by',
+                'w.operator as washing_operator',
+                'w.completed_by as washing_completed_by',
+                'w.started_by as washing_started_by',
+                'pk.operator as packaging_operator',
+                'pk.completed_by as packaging_completed_by',
             ])
             ->each(function ($row) use (&$map) {
                 $map[$row->barcode_no.'|'.$row->instrument_stock_id] = $row;
             });
 
         return $map;
+    }
+
+    /**
+     * Petugas yang menyimpan unit ke gudang steril, di-key `sterilizationId|instrumentStockId`.
+     *
+     * Dicocokkan per BATCH, bukan per unit saja: satu unit disimpan berkali-kali
+     * lintas siklus, dan baris laporan batch lama harus menyebut petugas yang
+     * menyimpan hasil batch itu. Baris gudang yang sudah keluar atau di-void TETAP
+     * dihitung — penyimpanannya memang pernah terjadi. Bila satu unit tercatat
+     * lebih dari sekali pada batch yang sama, yang terakhir menang.
+     *
+     * @param  array<int,int>  $batchIds
+     * @param  array<int,int>  $stockIds
+     * @return array<string,string>
+     */
+    private function storageOfficers(array $batchIds, array $stockIds): array
+    {
+        if (empty($batchIds) || empty($stockIds)) {
+            return [];
+        }
+
+        return DB::table('instrument_storages')
+            ->whereIn('sterilization_id', $batchIds)
+            ->whereIn('instrument_stock_id', $stockIds)
+            ->whereNull('deleted_by')
+            ->whereNotNull('created_by')
+            ->orderBy('id')
+            ->get(['sterilization_id', 'instrument_stock_id', 'created_by'])
+            ->mapWithKeys(fn ($r) => [$r->sterilization_id.'|'.$r->instrument_stock_id => $r->created_by])
+            ->all();
+    }
+
+    /**
+     * Nama-nama unik digabung ", " sesuai urutan kemunculan; null bila kosong semua.
+     *
+     * @param  array<int,string|null>  $names
+     */
+    private function joinNames(array $names): ?string
+    {
+        $unique = array_values(array_unique(array_filter(
+            array_map(fn ($n) => trim((string) $n), $names),
+            fn ($n) => $n !== ''
+        )));
+
+        return $unique === [] ? null : implode(', ', $unique);
     }
 
     /**
