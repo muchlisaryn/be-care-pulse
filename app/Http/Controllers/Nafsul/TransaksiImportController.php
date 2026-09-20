@@ -42,6 +42,12 @@ use Illuminate\Validation\ValidationException;
  * bukan `fee_type` tarifnya: diisi → tersimpan, dikosongkan → kosong. Lihat
  * rincianDariBaris() untuk alasan klasifikasi master tidak dipakai di sini.
  *
+ * `discount` boleh kosong, dan NOL — kosong maupun diketik — berarti "hitungkan
+ * bonusnya": tiap 12 periode seorang anggota dalam satu `transaction_number`
+ * memberi satu bulan gratis di periode terakhirnya (`discount` = `amount`).
+ * Hanya diskon di atas nol yang dipakai apa adanya. Lihat
+ * isiBonusDuaBelasBulan().
+ *
  * Keduanya dihubungkan kolom `transaction_number`, yang WAJIB diisi dan wajib
  * unik. Nomor itu sekaligus yang tersimpan sebagai nomor kuitansinya.
  *
@@ -508,6 +514,10 @@ class TransaksiImportController extends Controller
         $header = $kuitansi['siap'][$kode];
         $rincian = array_map(fn ($row) => $this->rincianDariBaris($row, $rujukan), $grup);
 
+        // Setelah SELURUH baris grup terbaca: bonus 12 bulan hanya bisa dihitung
+        // dari jumlah periode satu anggota di kuitansi ini, bukan per baris.
+        $this->isiBonusDuaBelasBulan($rincian);
+
         $this->periksaDuplikatDalamGrup($grup, $rincian);
 
         // Kuitansi ini sudah tersimpan? Nomornya yang menjawab — bukan tebakan
@@ -911,6 +921,12 @@ class TransaksiImportController extends Controller
         }
 
         $diskon = $this->bersihkan($row['diskon'] ?? null);
+
+        // Kosong = nol, dan NOL BERARTI "hitungkan bonusnya" — lihat
+        // isiBonusDuaBelasBulan(). File migrasi dari sistem lama mengisi kolom
+        // ini nol di semua baris (begitu pula baris contoh di templatnya), jadi
+        // membedakan "kosong" dari "nol yang diketik" hanya akan membuat
+        // bonusnya tidak pernah terisi pada file yang sebenarnya dipakai.
         $diskon = ($diskon === null || $diskon === '') ? 0 : $diskon;
 
         $validator = Validator::make(
@@ -961,6 +977,8 @@ class TransaksiImportController extends Controller
         $data = [
             'member_id' => (int) $memberId,
             'amount' => $angka['amount'],
+            // Nol di sini belum final: isiBonusDuaBelasBulan() masih bisa
+            // menaikkannya jadi bulan gratis setelah seluruh baris grup terbaca.
             'discount' => $angka['discount'],
             'rate_id' => (int) $rate->id,
         ] + ($periode === null
@@ -974,6 +992,68 @@ class TransaksiImportController extends Controller
         // baris yang sudah masuk pada unggahan sebelumnya — siapkanGrup() yang
         // memisahkannya sebagai "dilewati".
         return $data;
+    }
+
+    /**
+     * Bonus "tiap 12 bulan, 1 bulan gratis" untuk baris yang kolom `discount`-nya
+     * nol di file (kosong maupun nol yang diketik).
+     *
+     * Dihitung per **kuitansi + anggota** — persis kunci yang dilihat petugas di
+     * lembar aslinya. Satu anggota yang membayar 12 periode dalam satu kuitansi
+     * mendapat satu bulan gratis, 24 periode dua, 11 periode tidak dapat apa-apa;
+     * bulan gratisnya dikenakan pada periode TERAKHIR (diskon = nominal penuh),
+     * sama seperti rencana yang dibuat TransaksiController::rencana() untuk jalur
+     * form. Diurutkan sendiri di sini: urutan baris di file tidak dijamin
+     * kronologis, sedangkan "terakhir" hanya punya arti menurut periodenya.
+     *
+     * Baris tanpa periode (pungutan sekali bayar) tidak ikut dihitung maupun
+     * diberi bonus — tidak ada jadwal bulanan yang bisa dikalikan di sana.
+     *
+     * Yang tidak pernah disentuh hanyalah baris yang diskonnya DI ATAS NOL:
+     * potongan yang sudah tercetak di kuitansi lama bukan wewenang importir
+     * membetulkannya, dan menimpanya dengan nominal penuh justru menghapus angka
+     * yang tidak bisa dipulihkan lagi. Nol — diketik maupun dikosongkan —
+     * diperlakukan sebagai "belum dihitung": file migrasi mengisi kolom ini nol
+     * di seluruh barisnya, jadi kalau nol dihormati, bonusnya tidak akan pernah
+     * terisi pada file yang sebenarnya diunggah.
+     *
+     * Aturan hangusnya bonus bagi penunggak sengaja TIDAK dipakai di sini. Itu
+     * aturan untuk transaksi yang BARU dibuat hari ini; file impor mencatat
+     * pembayaran yang sudah terjadi, dan tunggakan hari ini tidak boleh menggeser
+     * angka kuitansi tahun lalu.
+     *
+     * @param  array<int, array<string, mixed>>  $rincian
+     */
+    private function isiBonusDuaBelasBulan(array &$rincian): void
+    {
+        $perAnggota = [];
+
+        foreach ($rincian as $i => $baris) {
+            if ($baris['month'] === null || $baris['year'] === null) {
+                continue;
+            }
+
+            $perAnggota[$baris['member_id']][] = $i;
+        }
+
+        foreach ($perAnggota as $indeks) {
+            $gratis = intdiv(count($indeks), 12);
+
+            if ($gratis === 0) {
+                continue;
+            }
+
+            usort($indeks, fn ($a, $b) => [(int) $rincian[$a]['year'], (int) $rincian[$a]['month']]
+                <=> [(int) $rincian[$b]['year'], (int) $rincian[$b]['month']]);
+
+            foreach (array_slice($indeks, -$gratis) as $i) {
+                if ((float) $rincian[$i]['discount'] > 0) {
+                    continue;
+                }
+
+                $rincian[$i]['discount'] = $rincian[$i]['amount'];
+            }
+        }
     }
 
     /**
