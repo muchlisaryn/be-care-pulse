@@ -446,6 +446,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // Cetak biling (PDF). Sama seperti dua rute di atas, harus mendahului
         // apiResource-nya. Hanya kuitansi yang sudah divalidasi yang dilayani.
         Route::get('transaksi/header/{transaksiHeader}/biling', [TransaksiHeaderController::class, 'biling']);
+        // Rincian bentuk biling (JSON) untuk baris lipatan di daftar transaksi.
+        // Sama seperti rute di atas, harus mendahului apiResource-nya. Tidak
+        // menuntut kuitansinya sudah divalidasi — lihat rincianBiling().
+        Route::get('transaksi/header/{transaksiHeader}/rincian-biling', [TransaksiHeaderController::class, 'rincianBiling']);
 
         Route::apiResource('transaksi/header', TransaksiHeaderController::class)
             ->parameters(['header' => 'transaksiHeader'])

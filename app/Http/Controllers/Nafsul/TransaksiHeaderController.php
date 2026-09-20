@@ -626,6 +626,36 @@ class TransaksiHeaderController extends Controller
     }
 
     /**
+     * Rincian kuitansi dalam BENTUK BILING, sebagai JSON.
+     *
+     * Isinya persis baris yang tercetak di lembar biling — satu baris per
+     * anggota, periodenya dipadatkan jadi rentang, berkolom Kunjungan (B/L) dan
+     * potongan yang sudah dibagi. Dipakai baris lipatan di daftar transaksi,
+     * supaya petugas melihat susunan yang SAMA dengan lembar yang dipegang
+     * penyetor tanpa harus membuka pratinjau PDF-nya.
+     *
+     * Sengaja tidak memakai `show()`: yang dikembalikan `show()` adalah rincian
+     * apa adanya — satu baris per BULAN per anggota, tanpa Kunjungan maupun
+     * pembagian potongan. Dua bentuk itu memang berbeda peruntukannya, dan
+     * menyatukannya berarti salah satu pemakainya harus menghitung ulang.
+     *
+     * TIDAK menuntut kuitansinya sudah divalidasi, berbeda dari `biling()`.
+     * Alasan pembatasan di sana adalah lembar TERCETAK yang bisa tidak lagi
+     * cocok dengan datanya; di sini datanya dibaca langsung dari database setiap
+     * kali dibuka, jadi tidak ada salinan yang bisa basi.
+     */
+    public function rincianBiling(TransactionHeader $transaksiHeader): JsonResponse
+    {
+        $rincian = $transaksiHeader->transactions()
+            ->with(['member:id,member_number,name'])
+            ->get();
+
+        return response()->json([
+            'data' => $this->barisBilingPerAnggota($transaksiHeader, $rincian),
+        ]);
+    }
+
+    /**
      * Cetak biling kuitansi ke PDF.
      *
      * Dikembalikan inline (`stream`), bukan sebagai unduhan: frontend
