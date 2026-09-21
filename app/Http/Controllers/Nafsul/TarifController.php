@@ -41,6 +41,24 @@ class TarifController extends Controller
             });
         }
 
+        /**
+         * Sembunyikan tarif tertentu dari hasil.
+         *
+         * Dipakai form transaksi: tarif yang sudah masuk daftar rincian untuk
+         * anggota yang sedang dipilih tidak ditawarkan lagi — satu anggota boleh
+         * menagih beberapa tarif sekaligus, tapi tidak tarif yang sama dua kali.
+         * Penyaringannya di server, bukan di browser, karena daftar ini
+         * berpaginasi — membuang baris setelah diterima akan menyisakan halaman
+         * yang lebih pendek dari `per_page`.
+         */
+        if ($kecuali = $request->query('exclude_ids')) {
+            $ids = array_filter(array_map('intval', explode(',', (string) $kecuali)));
+
+            if ($ids !== []) {
+                $query->whereNotIn('id', $ids);
+            }
+        }
+
         if ($request->boolean('all')) {
             return response()->json($query->orderBy('code')->get());
         }
