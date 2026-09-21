@@ -117,6 +117,16 @@ class TransaksiController extends Controller
             // (10 tahun): di atas itu hampir pasti salah ketik, dan barisnya
             // jadi terlalu banyak untuk ditinjau petugas.
             'months' => ['nullable', 'integer', 'min:1', 'max:120'],
+            // Titik mulai periode, "MM/YYYY". Dipakai layar edit kuitansi:
+            // baris yang baru ditambahkan di sana belum tersimpan, jadi
+            // periodeBerikutnya() -- yang membaca DATABASE -- akan mengusulkan
+            // bulan yang sudah terpakai di formulir dan ditolak sebagai
+            // duplikat saat disimpan. Yang tahu periode terakhir di layar
+            // hanyalah layar itu sendiri, jadi ia yang menyebutkannya.
+            //
+            // Diperiksa regex, bukan `date`: "08/2026" bukan tanggal yang sah
+            // bagi Laravel, padahal itulah bentuk yang dipakai di UI.
+            'start_period' => ['nullable', 'string', 'regex:/^(0[1-9]|1[0-2])\/\d{4}$/'],
         ], [
             'member_id.required' => 'Anggota wajib dipilih.',
             'member_id.exists' => 'Anggota tidak ada di master.',
@@ -125,6 +135,7 @@ class TransaksiController extends Controller
             'months.integer' => 'Jumlah bulan harus berupa angka bulat.',
             'months.min' => 'Jumlah bulan minimal 1.',
             'months.max' => 'Jumlah bulan maksimal 120 (10 tahun).',
+            'start_period.regex' => 'Periode awal harus berformat MM/YYYY, contoh 08/2026.',
         ]);
 
         $tarif = Rate::whereKey($data['rate_id'])->first(['id', 'price', 'fee_type']);
@@ -145,6 +156,21 @@ class TransaksiController extends Controller
 
         $bulan = (int) $data['months'];
         $mulai = $this->periodeBerikutnya((int) $data['member_id'], (int) $data['rate_id']);
+
+        // Titik mulai dari pemanggil hanya boleh MENDORONG MAJU, tidak menarik
+        // mundur: yang dikirim layar edit adalah lanjutan dari formulirnya, dan
+        // formulir itu cuma memuat SATU kuitansi. Anggota yang punya iuran lebih
+        // jauh di kuitansi lain akan tetap bentrok kalau titik mulainya
+        // dituruti mentah-mentah -- periodenya sudah terpakai di database, dan
+        // pemeriksaan duplikat menolaknya saat disimpan. Yang paling belakang
+        // di antara keduanya selalu aman untuk kedua-duanya.
+        if (isset($data['start_period'])) {
+            $diminta = Carbon::createFromFormat('m/Y', $data['start_period'])->startOfMonth();
+
+            if ($diminta->greaterThan($mulai)) {
+                $mulai = $diminta;
+            }
+        }
 
         // Tiap genap 12 bulan dapat 1 bulan gratis; 11 bulan tidak dapat apa-apa,
         // 24 bulan dapat 2, dan seterusnya.

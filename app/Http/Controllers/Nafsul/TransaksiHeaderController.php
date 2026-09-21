@@ -814,6 +814,11 @@ class TransaksiHeaderController extends Controller
             $anggota = $milik->first()->member;
 
             $baris[] = [
+                // Ikut dikirim supaya daftar transaksi bisa menawarkan Ubah &
+                // Hapus PER ANGGOTA pada baris lipatannya: tanpa ini frontend
+                // cuma punya nama, yang tidak cukup untuk menunjuk rincian
+                // siapa yang harus dibuang — dua anggota boleh bernama sama.
+                'member_id' => (int) $memberId,
                 'no_anggota' => $anggota?->member_number,
                 'nama' => $anggota?->name ?? '-',
                 'periode' => $this->rentangPeriode($periode->first(), $periode->last()),
@@ -981,6 +986,19 @@ class TransaksiHeaderController extends Controller
         ];
 
         if ($denganRincian) {
+            // Kode ketua kelompok pemilik kuitansi -- BUKAN namanya, yang sudah
+            // dikirim terpisah untuk ditampilkan. Halaman edit memakainya untuk
+            // menyaring dropdown anggota saat sebuah rincian ditambahkan: satu
+            // kuitansi kelompok hanya untuk satu ketua, dan tanpa saringan ini
+            // dropdownnya menawarkan seluruh anggota di database.
+            //
+            // Hanya pada `show`: daftar tidak memerlukannya, dan subquery
+            // tambahan per baris di sana cuma jadi beban.
+            $hasil['group_leader_code'] = $row->transactions()
+                ->with('member.groupLeader:id,code')
+                ->orderBy('id')
+                ->first()?->member?->groupLeader?->code;
+
             $hasil['transactions'] = $row->transactions()
                 ->with(['member:id,member_number,name', 'rate:id,code,name'])
                 ->orderBy('year')
