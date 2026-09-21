@@ -84,9 +84,15 @@
             lembar ini. Kepala tabel, baris "Dibayar", dan nomor kuitansi
             dibedakan HURUF KAPITAL dan GARIS saja.
         */
+        /*
+            12px, bukan 15px seperti semula. Lebar kolom tabelnya dipatok dalam
+            px dan disetel saat hurufnya masih 15px, jadi mengecilkan huruf
+            hanya MELEGAKAN kolom — nominal rupiah & nama panjang justru makin
+            aman dari patah baris, bukan sebaliknya.
+        */
         body {
             font-family: Helvetica;
-            font-size: 15px;
+            font-size: 12px;
             font-weight: bold;
             color: #000;
             margin: 0;
@@ -98,7 +104,7 @@
             isi. Tata letak logonya di `pdf.partials.kop_nafsul_style`.
         */
         .kop-nama {
-            font-size: 20px;
+            font-size: 16px;
             letter-spacing: .3px;
         }
         .kop-unit {
@@ -140,6 +146,18 @@
 
         .angka { text-align: right; }
         .tengah { text-align: center; }
+
+        /*
+            Tabel rincian: SELURUH kolom rata kiri, judul maupun isinya.
+
+            Ditulis setelah `.angka`/`.tengah` supaya menang atas keduanya —
+            dua kelas itu masih dipakai di bagian lain lembar ini (ringkasan
+            uang, kotak QR) dan perataannya di sana tidak ikut berubah. Yang
+            tetap berlaku dari kelas-kelas itu hanyalah `white-space: nowrap`,
+            yang menjaga rupiah & periode tidak patah di tengah.
+        */
+        .rincian th,
+        .rincian td { text-align: left; }
         /*
             Yang tidak boleh patah barisnya hanya ISINYA — rupiah yang pecah
             jadi "Rp 1.250." di atas "000" tidak bisa dibaca sebagai angka.
@@ -176,12 +194,12 @@
         .penutup-kanan { width: 304px; }
 
         .ringkas td { padding: 4px 6px; }
-        /* `nowrap` juga di labelnya: "Seharusnya Dibayar" yang pecah dua baris
+        /* `nowrap` juga di labelnya: label panjang yang pecah dua baris
            membuat angkanya berdiri sendiri tanpa keterangan di barisnya. */
         .ringkas .label { text-align: right; white-space: nowrap; }
         .ringkas .nilai { text-align: right; white-space: nowrap; width: 140px; }
         /* Dua baris ringkasan yang paling dicari dibedakan GARIS saja: satu
-           garis tipis di atas "Seharusnya Dibayar", satu garis tebal di atas
+           garis tipis di atas "Total", satu garis tebal di atas
            "Dibayar". Ukuran dan tebal hurufnya sudah sama dengan sisa lembar. */
         .ringkas .tebal td { border-top: 1px solid #000; }
         .ringkas .akhir td { border-top: 1.5px solid #000; }
@@ -202,7 +220,7 @@
     akan terbaca sebagai bagian dari identitas rumah sakit, bukan identitas
     lembar ini.
 --}}
-@include('pdf.partials.kop_nafsul')
+@include('pdf.partials.kop_nafsul', ['tengah' => true])
 
 <div class="garis"></div>
 
@@ -351,7 +369,12 @@
                     </tr>
                 @endif
                 <tr class="tebal">
-                    <td class="label">Seharusnya Dibayar</td>
+                    {{-- "Total", bukan "Seharusnya Dibayar": angka inilah yang
+                         dicari orang di lembar ini, dan label sepanjang dua
+                         kata itu mendorong kolom nilainya menyempit. Barisnya
+                         sudah bertetangga dengan "Dibayar" di bawahnya, jadi
+                         hubungan keduanya terbaca tanpa perlu dieja. --}}
+                    <td class="label">Total</td>
                     <td class="nilai">{{ $uang['tagihan'] }}</td>
                 </tr>
                 <tr class="akhir">

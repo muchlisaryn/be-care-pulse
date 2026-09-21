@@ -28,6 +28,15 @@ use SimpleSoftwareIO\QrCode\Facades\QrCode;
  */
 class TransaksiHeaderController extends Controller
 {
+    /**
+     * Zona waktu yang dipakai saat MENCETAK jam ke lembar biling.
+     *
+     * Data tetap tersimpan UTC mengikuti `config('app.timezone')`; ini hanya
+     * penerjemah di ujung cetak, supaya jam yang dibaca anggota adalah jam yang
+     * ia kenal.
+     */
+    private const ZONA_WAKTU = 'Asia/Jakarta';
+
     use HandlesTransactionRows;
 
     public function index(Request $request)
@@ -108,12 +117,12 @@ class TransaksiHeaderController extends Controller
             // klien. Kalau keduanya boleh berbeda, header dan rincian bisa
             // berselisih tanpa ada yang tahu mana yang benar.
             if ($baris !== []) {
-                $data['total'] = array_sum(array_map(fn ($b) => $this->totalBaris($b), $baris));
+                $data['total'] = $this->totalKotor($baris);
             }
 
             // Setelah total final: nominal jasa ketua diturunkan dari total itu,
             // bukan dari angka kiriman klien.
-            $data = $this->terapkanPotonganAnggota($data);
+            $data = $this->terapkanPotonganAnggota($data, $baris);
             $data = $this->terapkanJasaKetua($data);
 
             $this->periksaPotongan($data);
@@ -383,7 +392,7 @@ class TransaksiHeaderController extends Controller
                 // Total mengikuti jumlah rinciannya, bukan angka kiriman klien —
                 // aturan yang sama dengan store(). Tanpa ini header dan rincian
                 // bisa berselisih tanpa ada yang tahu mana yang benar.
-                $data['total'] = array_sum(array_map(fn ($b) => $this->totalBaris($b), $baris));
+                $data['total'] = $this->totalKotor($baris);
 
                 $this->sinkronkanRincian($transaksiHeader, $baris);
             }
@@ -391,7 +400,7 @@ class TransaksiHeaderController extends Controller
             // Persentase atau totalnya bisa berubah, jadi nominal jasa ketua selalu
             // dihitung ulang — kalau tidak, nominalnya membeku di angka lama dan
             // tidak lagi cocok dengan persentase yang tercatat di kuitansi ini.
-            $data = $this->terapkanPotonganAnggota($data);
+            $data = $this->terapkanPotonganAnggota($data, $denganRincian ? $baris : null);
             $data = $this->terapkanJasaKetua($data);
 
             $this->periksaPotongan($data);
@@ -563,11 +572,53 @@ class TransaksiHeaderController extends Controller
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    private function terapkanPotonganAnggota(array $data): array
+    private function terapkanPotonganAnggota(array $data, ?array $baris = null): array
     {
+        // Dengan rincian: potongan anggota DITURUNKAN dari diskon tiap baris,
+        // angka kiriman klien diabaikan. Sebelumnya ia angka yang diketik
+        // terpisah, dan dua tempat yang menjawab "berapa potongannya" cepat
+        // atau lambat berselisih — lembar biling membagi angka header itu
+        // secara proporsional ke tiap anggota, padahal diskon yang sebenarnya
+        // menempel pada baris milik anggota tertentu.
+        //
+        // Tanpa rincian (pembaruan yang hanya menyentuh header, mis. cara
+        // bayar), potongannya dibiarkan apa adanya: rinciannya tidak dikirim,
+        // jadi tidak ada yang bisa dijumlahkan dan menolkannya akan menghapus
+        // potongan kuitansi lama tanpa diminta.
+        if ($baris !== null) {
+            $data['member_deduction'] = $this->totalDiskon($baris);
+        }
+
         $data['member_deduction'] = round((float) $data['member_deduction'], 2);
 
         return $data;
+    }
+
+    /**
+     * Total KOTOR rincian — sebelum diskon.
+     *
+     * `total` sengaja menyimpan yang kotor, bukan yang bersih: diskonnya
+     * dilaporkan tersendiri lewat `member_deduction`, dan lembar biling
+     * menampilkan keduanya berdampingan supaya Jumlah - Pot Anggota di kertas
+     * benar-benar menghasilkan angka yang dibayar. Kalau `total` sudah bersih,
+     * diskon yang sama akan terpotong dua kali.
+     *
+     * @param  array<int,array<string,mixed>>  $baris
+     */
+    private function totalKotor(array $baris): float
+    {
+        return array_sum(array_map(fn ($b) => (float) $b['amount'], $baris));
+    }
+
+    /**
+     * Jumlah seluruh diskon rincian. Tidak pernah melebihi `totalKotor()`:
+     * `periksaDiskon()` menolak diskon yang lebih besar dari nominal barisnya.
+     *
+     * @param  array<int,array<string,mixed>>  $baris
+     */
+    private function totalDiskon(array $baris): float
+    {
+        return array_sum(array_map(fn ($b) => (float) ($b['discount'] ?? 0), $baris));
     }
 
     /**
@@ -598,7 +649,13 @@ class TransaksiHeaderController extends Controller
      */
     private function terapkanJasaKetua(array $data): array
     {
-        $nominal = round((float) $data['total'] * (float) $data['group_leader_fee_percent'] / 100, 2);
+        // Dasarnya total BERSIH (kotor - potongan anggota), bukan `total` yang
+        // kini kotor. Komisi ketua sejak dulu dihitung dari nilai setelah
+        // diskon; memakai yang kotor akan menaikkannya diam-diam pada tiap
+        // kuitansi yang punya bulan gratis.
+        $dasar = (float) $data['total'] - (float) $data['member_deduction'];
+
+        $nominal = round($dasar * (float) $data['group_leader_fee_percent'] / 100, 2);
 
         $data['group_leader_deduction'] = 0;
         $data['group_leader_fee'] = $nominal;
@@ -712,7 +769,20 @@ class TransaksiHeaderController extends Controller
         $pdf = Pdf::loadView('pdf.nafsul_biling', [
             'header' => $transaksiHeader,
             'tanggal' => optional($transaksiHeader->date)->translatedFormat('d F Y') ?? '-',
-            'divalidasi' => optional($transaksiHeader->validation_at)->translatedFormat('d F Y H:i') ?? '-',
+            // Jam pemeriksaan DIALIHKAN ke waktu setempat sebelum dicetak.
+            //
+            // `config('app.timezone')` aplikasi ini UTC, jadi `validation_at`
+            // tersimpan dan terbaca sebagai UTC. Yang memegang lembar ini ada di
+            // Jakarta, dan jam yang tertera tujuh jam lebih awal daripada saat
+            // kuitansinya benar-benar diperiksa membuat jejak pemeriksaan itu
+            // sendiri meragukan.
+            //
+            // Dialihkan saat MENCETAK saja, bukan dengan mengubah zona waktu
+            // aplikasi: yang tersimpan tetap UTC — satu acuan untuk seluruh
+            // data — dan tidak ada baris lama yang berubah artinya.
+            'divalidasi' => optional($transaksiHeader->validation_at)
+                ?->setTimezone(self::ZONA_WAKTU)
+                ->translatedFormat('d F Y H:i') ?? '-',
             'qr' => $qr,
             'baris' => $baris,
             'uang' => [
@@ -797,6 +867,7 @@ class TransaksiHeaderController extends Controller
             ->groupBy('member_id')
             ->pluck('jml', 'member_id');
 
+        $rupiah = fn ($n) => 'Rp '.number_format((float) $n, 0, ',', '.');
         $baris = [];
 
         foreach ($perAnggota as $memberId => $milik) {
@@ -823,11 +894,74 @@ class TransaksiHeaderController extends Controller
                 'nama' => $anggota?->name ?? '-',
                 'periode' => $this->rentangPeriode($periode->first(), $periode->last()),
                 'kunjungan' => $baru ? 'B' : 'L',
-                'jumlah_nilai' => $milik->sum(fn ($t) => (float) $t->total),
+                // Jumlah = KOTOR, potongan = diskon milik anggota ini sendiri.
+                //
+                // Keduanya dibaca dari baris anggota yang bersangkutan, bukan
+                // dari angka header yang dibagi proporsional: diskon memang
+                // menempel pada baris tertentu (mis. bulan gratis seseorang),
+                // jadi membaginya rata ke semua orang membebankan potongan
+                // kepada anggota yang tidak menerimanya.
+                //
+                // Karena Jumlah kotor, "Jumlah - Pot Anggota" di kertas
+                // menghasilkan angka yang benar-benar dibayar anggota itu.
+                'jumlah_nilai' => $milik->sum(fn ($t) => (float) $t->amount),
+                'potongan_nilai' => $milik->sum(fn ($t) => (float) $t->discount),
             ];
         }
 
-        return $this->bagiPotongan($baris, (float) $header->member_deduction);
+        return $this->bagiSisaPotongan($baris, (float) $header->member_deduction);
+    }
+
+    /**
+     * Ratakan kolom potongan dengan angka potongan di ringkasan kuitansi.
+     *
+     * Potongan anggota kini DITURUNKAN dari diskon tiap rincian, jadi pada
+     * kuitansi yang dibuat sesudahnya jumlah kolom ini sudah pasti sama dengan
+     * `member_deduction` dan fungsi ini tidak mengubah apa pun.
+     *
+     * Yang ditanganinya adalah kuitansi LAMA: potongannya dulu diketik di
+     * tingkat kuitansi dan rinciannya tidak punya diskon sama sekali, sehingga
+     * kolom per anggota akan tercetak Rp 0 sementara ringkasan di bawahnya
+     * memotong sekian ribu. Lembar biling yang kolomnya tidak menjumlah adalah
+     * lembar yang akan dipertanyakan, dan pertanyaan itu muncul di tangan
+     * anggota - bukan di layar petugas.
+     *
+     * Sisanya dibagi SEBANDING dengan jumlah tiap anggota, dan baris terakhir
+     * menerima sisa pembulatannya supaya kolomnya berjumlah persis. Dibagi
+     * dalam rupiah bulat karena lembar ini memang mencetak rupiah bulat.
+     *
+     * @param  array<int, array<string, mixed>>  $baris
+     * @return array<int, array<string, mixed>>
+     */
+    private function bagiSisaPotongan(array $baris, float $potonganHeader): array
+    {
+        $rupiah = fn ($n) => 'Rp '.number_format((float) $n, 0, ',', '.');
+
+        $totalJumlah = array_sum(array_column($baris, 'jumlah_nilai'));
+        $sisa = (int) round($potonganHeader - array_sum(array_column($baris, 'potongan_nilai')));
+        $terbagi = 0;
+        $akhir = count($baris) - 1;
+
+        foreach ($baris as $i => $b) {
+            // Hanya sisa POSITIF yang dibagi. Potongan header yang lebih kecil
+            // daripada jumlah diskon rinciannya tidak pernah terjadi pada data
+            // baru, dan mengurangi diskon yang nyata menempel pada suatu baris
+            // demi mencocokkan angka header akan menyembunyikan datanya sendiri.
+            $tambahan = 0;
+
+            if ($sisa > 0) {
+                $tambahan = $i === $akhir
+                    ? $sisa - $terbagi
+                    : ($totalJumlah > 0 ? (int) round($sisa * $b['jumlah_nilai'] / $totalJumlah) : 0);
+                $terbagi += $tambahan;
+            }
+
+            $baris[$i]['jumlah'] = $rupiah($b['jumlah_nilai']);
+            $baris[$i]['potongan'] = $rupiah($b['potongan_nilai'] + $tambahan);
+            unset($baris[$i]['jumlah_nilai'], $baris[$i]['potongan_nilai']);
+        }
+
+        return $baris;
     }
 
     /**
@@ -849,50 +983,6 @@ class TransaksiHeaderController extends Controller
         $tulis = fn (int $p) => str_pad((string) ($p % 100), 2, '0', STR_PAD_LEFT).'/'.intdiv($p, 100);
 
         return $awal === $akhir ? $tulis($awal) : $tulis($awal).'-'.$tulis($akhir);
-    }
-
-    /**
-     * Bagi potongan anggota — satu angka di tingkat kuitansi — ke baris-barisnya,
-     * sebanding dengan jumlah masing-masing.
-     *
-     * `member_deduction` memang tersimpan per KUITANSI, bukan per anggota, jadi
-     * angka per baris di sini adalah pembagian, bukan data tersimpan. Sisa
-     * pembulatannya ditimpakan ke baris terakhir supaya kolomnya berjumlah
-     * PERSIS sama dengan potongan di ringkasan — lembar biling yang kolomnya
-     * tidak menjumlah adalah lembar yang akan dipertanyakan.
-     *
-     * Dibagi dalam RUPIAH BULAT, bukan dua desimal. Lembar ini mencetak rupiah
-     * bulat, jadi pembagian sen hanya akan hilang di pembulatan tampilan dan
-     * membuat kolomnya meleset justru karena sisanya sudah "diselesaikan" pada
-     * angka yang tidak pernah tercetak.
-     *
-     * @param  array<int, array<string, mixed>>  $baris
-     * @return array<int, array<string, mixed>>
-     */
-    private function bagiPotongan(array $baris, float $potongan): array
-    {
-        $rupiah = fn ($n) => 'Rp '.number_format((float) $n, 0, ',', '.');
-        $total = array_sum(array_column($baris, 'jumlah_nilai'));
-        $sasaran = (int) round($potongan);
-        $terbagi = 0;
-        $akhir = count($baris) - 1;
-
-        foreach ($baris as $i => $b) {
-            // Baris terakhir menerima SISANYA, bukan hasil hitungnya sendiri.
-            // Itu juga yang menyelamatkan keadaan total nol: tanpa ini seluruh
-            // baris jadi nol dan potongannya hilang dari lembar.
-            $bagian = $i === $akhir
-                ? $sasaran - $terbagi
-                : ($total > 0 ? (int) round($sasaran * $b['jumlah_nilai'] / $total) : 0);
-
-            $terbagi += $bagian;
-
-            $baris[$i]['jumlah'] = $rupiah($b['jumlah_nilai']);
-            $baris[$i]['potongan'] = $rupiah($bagian);
-            unset($baris[$i]['jumlah_nilai']);
-        }
-
-        return $baris;
     }
 
     /**

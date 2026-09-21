@@ -26,4 +26,15 @@
         logonya mengambil ruang di kiri.
     */
     .kop-teks { text-align: left; padding-left: 4px; }
+
+    /*
+        Varian RATA TENGAH — dipakai lembar yang menyertakan kop dengan
+        `['tengah' => true]`.
+
+        Sel penyeimbang selebar sel logo dipasang di kanan oleh partial isinya:
+        tanpa itu, "tengah" yang dimaksud adalah tengah SISA RUANG di sebelah
+        logo, bukan tengah halaman — tulisannya akan tampak meleset ke kanan.
+    */
+    table.kop.tengah .kop-teks { text-align: center; padding-left: 0; }
+    table.kop.tengah .kop-penyeimbang { width: 82px; }
 </style>

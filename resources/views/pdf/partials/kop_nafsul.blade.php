@@ -8,7 +8,12 @@
     `chroot` dompdf adalah base_path(), jadi berkas di dalam public/ boleh
     dibaca; data URI hanya perlu untuk gambar yang memang tidak punya berkas.
 --}}
-<table class="kop">
+{{--
+    `$tengah` (opsional) membuat identitas rumah sakitnya rata tengah halaman,
+    bukan rata kiri menempel logonya. Lembar biling memakainya; kuitansi jasa
+    tetap rata kiri.
+--}}
+<table class="kop {{ ($tengah ?? false) ? 'tengah' : '' }}">
     <tr>
         <td class="kop-logo">
             <img src="{{ public_path('images/logo_nafsul.png') }}" alt="Nafsul Mutmainnah">
@@ -19,5 +24,9 @@
             <div class="kop-alamat">Jl. Raya Pondok Kopi - Jakarta Timur 13460</div>
             <div class="kop-alamat">tlp. 021--61-471, 0630654 ext 5111 fax 021-0611101</div>
         </td>
+        @if ($tengah ?? false)
+            {{-- Penyeimbang sel logo; lihat catatan di kop_nafsul_style. --}}
+            <td class="kop-penyeimbang"></td>
+        @endif
     </tr>
 </table>

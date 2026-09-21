@@ -391,6 +391,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Master Nafsul
         Route::post('ketua-kelompok/import', [KetuaKelompokController::class, 'import']);
+        // Cetak daftar anggota satu kelompok (PDF). Harus mendahului
+        // apiResource-nya agar `import`/`cetak-anggota` tidak tertangkap
+        // sebagai {groupLeader}.
+        Route::get('ketua-kelompok/{groupLeader}/cetak-anggota', [KetuaKelompokController::class, 'cetakAnggota']);
         Route::apiResource('ketua-kelompok', KetuaKelompokController::class)
             ->parameters(['ketua-kelompok' => 'groupLeader']);
         // `*/import` selalu didaftarkan sebelum apiResource-nya, kalau tidak

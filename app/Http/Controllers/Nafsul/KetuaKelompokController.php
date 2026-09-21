@@ -4,8 +4,11 @@ namespace App\Http\Controllers\Nafsul;
 
 use App\Http\Controllers\Controller;
 use App\Models\GroupLeader;
+use App\Models\Transaction;
 use App\Traits\RecreatesSoftDeleted;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -212,6 +215,74 @@ class KetuaKelompokController extends Controller
         }
 
         return GroupLeader::create(GroupLeader::fromLegacy($data));
+    }
+
+    /**
+     * Cetak daftar anggota satu kelompok ke PDF.
+     *
+     * Dikembalikan inline (`stream`), bukan sebagai unduhan: frontend
+     * menampilkannya di iframe sebagai pratinjau dan menyediakan tombol unduh
+     * sendiri — pola yang sama dengan cetak biling.
+     *
+     * Kolomnya sama persis dengan yang tampil di modal "Lihat Anggota", dan
+     * ikut menghormati kata kunci pencarian yang sedang aktif di sana:
+     * petugas yang menyaring dulu lalu menekan Cetak mengharapkan kertasnya
+     * berisi yang barusan ia lihat, bukan seluruh kelompoknya.
+     *
+     * TANPA paginasi: yang dicetak seluruh anggota kelompok itu, bukan halaman
+     * yang kebetulan sedang terbuka.
+     */
+    public function cetakAnggota(Request $request, GroupLeader $groupLeader): Response
+    {
+        // Diurutkan per NOMOR ANGGOTA, sama dengan yang tampil di modal:
+        // kertas dan layar dibandingkan baris per baris, dan urutan yang
+        // berbeda membuat perbandingan itu mustahil.
+        $query = $groupLeader->members()->orderBy('member_number');
+
+        if ($search = $request->query('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                    ->orWhere('member_number', 'like', "%{$search}%")
+                    ->orWhere('id_card_number', 'like', "%{$search}%")
+                    ->orWhere('family_card_number', 'like', "%{$search}%");
+            });
+        }
+
+        // Periode iuran terakhir per anggota — subquery berkorelasi, sama
+        // dengan yang dipakai daftar anggota. Lihat AnggotaController::index().
+        $query->select('members.*')->addSelect([
+            'periode_terakhir_raw' => Transaction::selectRaw('MAX(year * 100 + month)')
+                ->whereColumn('member_id', 'members.id')
+                ->whereNotNull('month'),
+        ]);
+
+        $baris = $query->get()->map(fn ($anggota) => [
+            'no_anggota' => $anggota->member_number,
+            'nama' => $anggota->name,
+            'alamat' => $anggota->address,
+            'keterangan' => $anggota->description,
+            'iuran_terakhir' => self::periodeTerbaca($anggota->periode_terakhir_raw),
+        ])->all();
+
+        $pdf = Pdf::loadView('pdf.nafsul_anggota_kelompok', [
+            'ketua' => $groupLeader,
+            'baris' => $baris,
+            'tanggalCetak' => now()->setTimezone('Asia/Jakarta')->translatedFormat('d F Y H:i'),
+        ])->setPaper('a4');
+
+        return $pdf->stream("anggota-{$groupLeader->code}.pdf");
+    }
+
+    /** `202601` → `"01/2026"`. Null tetap null: anggota itu belum pernah bayar. */
+    private static function periodeTerbaca(int|string|null $gabungan): ?string
+    {
+        if ($gabungan === null || $gabungan === '') {
+            return null;
+        }
+
+        $angka = (int) $gabungan;
+
+        return str_pad((string) ($angka % 100), 2, '0', STR_PAD_LEFT).'/'.intdiv($angka, 100);
     }
 
     public function show(GroupLeader $groupLeader)
