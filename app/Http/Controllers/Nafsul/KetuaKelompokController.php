@@ -260,7 +260,11 @@ class KetuaKelompokController extends Controller
             'no_anggota' => $anggota->member_number,
             'nama' => $anggota->name,
             'alamat' => $anggota->address,
-            'keterangan' => $anggota->description,
+            // Kolom `note`, sama dengan yang dibaca layar & Excel lewat alias
+            // API `keterangan` (lihat Member::$legacyAttributes). Sebelumnya
+            // `description` — kolom yang tidak ada di tabel `members`, jadi
+            // kolom Keterangan di kertas selalu tercetak "-".
+            'keterangan' => $anggota->note,
             'iuran_terakhir' => self::periodeTerbaca($anggota->periode_terakhir_raw),
         ])->all();
 
