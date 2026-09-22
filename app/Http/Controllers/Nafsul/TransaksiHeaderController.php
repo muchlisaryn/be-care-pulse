@@ -757,13 +757,16 @@ class TransaksiHeaderController extends Controller
         // `discount`: `bagiSisaPotongan()` membulatkan & membagi sisa ke tiap
         // baris, jadi hanya angka yang keluar dari sana yang dijamin sama
         // dengan yang tercetak.
-        $baris = $this->barisBilingPerAnggota($transaksiHeader, $rincian, $potonganAnggota, $totalBersih);
+        $baris = $this->barisBilingPerAnggota($transaksiHeader, $rincian, $potonganAnggota, $totalJumlah);
 
-        // `$totalBersih` = JUMLAH kolom Jumlah yang tercetak, sudah bersih dari
-        // diskon. Dipakai baris "Total Rincian", jadi kolomnya benar-benar
-        // menjumlah ke angka di ringkasan — dan karena sudah bersih, potongan
-        // anggota TIDAK dikurangkan lagi di bawahnya.
-        $tagihan = $totalBersih - (float) $transaksiHeader->group_leader_deduction;
+        // `$totalJumlah` = JUMLAH kolom Jumlah yang tercetak — kotor, sebelum
+        // diskon. Dipakai baris "Total Rincian" alih-alih `header->total`,
+        // supaya kolom di tabel atas benar-benar menjumlah ke angka pertama
+        // ringkasan ini; keduanya biasanya sama, dan yang tidak sama adalah
+        // kuitansi yang kolom headernya tertinggal.
+        $tagihan = $totalJumlah
+            - $potonganAnggota
+            - (float) $transaksiHeader->group_leader_deduction;
 
         // Selisih dihitung dari `$tagihan` di atas, bukan dibaca dari accessor
         // `balance`: accessor itu memakai `member_deduction`, dan memakai dua
@@ -809,9 +812,15 @@ class TransaksiHeaderController extends Controller
                 ->translatedFormat('d F Y H:i') ?? '-',
             'qr' => $qr,
             'baris' => $baris,
+            // Bentuk MENTAHNYA, khusus untuk menentukan apakah baris potongan
+            // dicetak: yang di `uang` sudah jadi teks "Rp 0" dan tidak bisa
+            // dibandingkan dengan nol.
+            'potonganAnggota' => $potonganAnggota,
             'uang' => [
-                // Jumlah kolom Jumlah di tabel atas — sudah bersih dari diskon.
-                'total' => $rupiah($totalBersih),
+                // Jumlah kolom Jumlah di tabel atas — kotor, sebelum diskon.
+                'total' => $rupiah($totalJumlah),
+                // Jumlah kolom Pot Anggota, dikurangkan dari baris di atasnya.
+                'member_deduction' => $rupiah($potonganAnggota),
                 'group_leader_deduction' => $rupiah($transaksiHeader->group_leader_deduction),
                 // Yang seharusnya diterima setelah potongan. Dihitung ulang di
                 // sini dengan rumus yang sama dengan `balance`, karena accessor
@@ -857,16 +866,16 @@ class TransaksiHeaderController extends Controller
      * @param  float  $totalPotongan  keluaran: jumlah kolom potongan seluruh
      *                                baris, dipakai ringkasan biling supaya
      *                                angkanya sama dengan yang tercetak.
-     * @param  float  $totalBersih  keluaran: jumlah kolom JUMLAH yang tercetak
-     *                              — sudah bersih dari diskon. Inilah "Total
-     *                              Rincian" di ringkasan biling, supaya
+     * @param  float  $totalJumlah  keluaran: jumlah kolom JUMLAH yang
+     *                              tercetak — kotor, sebelum diskon. Inilah
+     *                              "Total Rincian" di ringkasan biling, supaya
      *                              kolomnya benar-benar menjumlah ke sana.
      * @return array<int, array<string, mixed>>
      */
-    private function barisBilingPerAnggota(TransactionHeader $header, $rincian, ?float &$totalPotongan = null, ?float &$totalBersih = null): array
+    private function barisBilingPerAnggota(TransactionHeader $header, $rincian, ?float &$totalPotongan = null, ?float &$totalJumlah = null): array
     {
         $totalPotongan = 0.0;
-        $totalBersih = 0.0;
+        $totalJumlah = 0.0;
 
         $perAnggota = $rincian->groupBy('member_id');
         $idAnggota = $perAnggota->keys()->all();
@@ -942,7 +951,7 @@ class TransaksiHeaderController extends Controller
             ];
         }
 
-        return $this->bagiSisaPotongan($baris, (float) $header->member_deduction, $totalPotongan, $totalBersih);
+        return $this->bagiSisaPotongan($baris, (float) $header->member_deduction, $totalPotongan, $totalJumlah);
     }
 
     /**
@@ -967,15 +976,15 @@ class TransaksiHeaderController extends Controller
      * @param  float  $totalPotongan  keluaran: jumlah kolom potongan setelah
      *                                sisanya dibagi — inilah angka yang benar
      *                                benar tercetak di kolom Pot Anggota.
-     * @param  float  $totalBersih  keluaran: jumlah kolom Jumlah yang tercetak,
-     *                              yakni kotor tiap baris dikurangi potongannya.
+     * @param  float  $totalJumlahCetak  keluaran: jumlah kolom Jumlah yang
+     *                                    tercetak — kotor, sebelum diskon.
      * @return array<int, array<string, mixed>>
      */
-    private function bagiSisaPotongan(array $baris, float $potonganHeader, ?float &$totalPotongan = null, ?float &$totalBersih = null): array
+    private function bagiSisaPotongan(array $baris, float $potonganHeader, ?float &$totalPotongan = null, ?float &$totalJumlahCetak = null): array
     {
         $rupiah = fn ($n) => 'Rp '.number_format((float) $n, 0, ',', '.');
         $totalPotongan = 0.0;
-        $totalBersih = 0.0;
+        $totalJumlahCetak = 0.0;
 
         $totalJumlah = array_sum(array_column($baris, 'jumlah_nilai'));
         $sisa = (int) round($potonganHeader - array_sum(array_column($baris, 'potongan_nilai')));
@@ -1000,27 +1009,17 @@ class TransaksiHeaderController extends Controller
             $totalPotongan += $potonganBaris;
 
             /*
-             * Kolom Jumlah tercetak BERSIH — kotor dikurangi potongan baris
-             * ini.
+             * Kolom Jumlah tercetak KOTOR — sebelum diskon.
              *
-             * Dulu kotor, dengan alasan "Jumlah - Pot Anggota di kertas
-             * menghasilkan yang dibayar". Yang terjadi di lapangan justru
-             * sebaliknya: angka pertama yang dibaca orang di kolom itu
-             * dianggap sebagai yang ia setorkan, dan Total Rincian di
-             * ringkasan — yang menjumlah kolom ini — terbaca belum dipotong
-             * diskon sama sekali. Potongannya tetap tercetak di kolom
-             * sebelahnya sebagai keterangan berapa yang ia dapat, jadi tidak
-             * ada informasi yang hilang.
-             *
-             * `max(0, ...)`: diskon tidak pernah melebihi nominal barisnya
-             * (`periksaDiskon()`), tapi sisa potongan header kuitansi LAMA
-             * dibagi proporsional dan bisa melampauinya pada baris terkecil.
-             * Jumlah negatif di lembar biling tidak punya arti.
+             * Ringkasan di bawahnya memang disusun sebagai pengurangan:
+             * Total Rincian (kotor) − Total Potongan Anggota = Total. Kolom ini
+             * yang menjumlah ke baris pertamanya, jadi ia harus kotor juga;
+             * kolom bersih membuat Total Rincian tidak bisa dicocokkan dengan
+             * tabel di atasnya, dan potongannya seolah dihitung dua kali.
              */
-            $jumlahBersih = max(0, $b['jumlah_nilai'] - $potonganBaris);
-            $totalBersih += $jumlahBersih;
+            $totalJumlahCetak += $b['jumlah_nilai'];
 
-            $baris[$i]['jumlah'] = $rupiah($jumlahBersih);
+            $baris[$i]['jumlah'] = $rupiah($b['jumlah_nilai']);
             $baris[$i]['potongan'] = $rupiah($potonganBaris);
             unset($baris[$i]['jumlah_nilai'], $baris[$i]['potongan_nilai']);
         }
