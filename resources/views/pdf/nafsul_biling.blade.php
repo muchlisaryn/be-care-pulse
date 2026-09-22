@@ -347,23 +347,19 @@
 
         <td class="penutup-kanan">
             <table class="ringkas">
+                {{--
+                    JUMLAH kolom Jumlah di tabel atas, yang kini tercetak
+                    BERSIH — kotor tiap baris dikurangi potongannya. Karena itu
+                    tidak ada lagi baris "Potongan Anggota" di bawah sini:
+                    diskonnya sudah masuk hitungan, dan mengurangkannya sekali
+                    lagi memotong angka yang sama dua kali. Berapa potongan
+                    tiap anggota tetap terbaca di kolom Pot Anggota. Lihat
+                    `bagiSisaPotongan()` di TransaksiHeaderController.
+                --}}
                 <tr>
                     <td class="label">Total Rincian</td>
                     <td class="nilai">{{ $uang['total'] }}</td>
                 </tr>
-                {{--
-                    Dasarnya JUMLAH kolom Pot Anggota di tabel atas, bukan
-                    kolom `member_deduction` milik header: baris ini harus
-                    muncul setiap kali ada potongan yang tercetak, termasuk
-                    pada kuitansi yang angka headernya tertinggal. Lihat
-                    `$potonganAnggota` di TransaksiHeaderController::biling().
-                --}}
-                @if ($potonganAnggota > 0)
-                    <tr>
-                        <td class="label">Potongan Anggota</td>
-                        <td class="nilai">- {{ $uang['member_deduction'] }}</td>
-                    </tr>
-                @endif
                 @if ($header->group_leader_deduction > 0)
                     <tr>
                         <td class="label">
