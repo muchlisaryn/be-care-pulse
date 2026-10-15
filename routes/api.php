@@ -49,12 +49,14 @@ use App\Http\Controllers\Transaction\OrderController;
 use App\Http\Controllers\Transaction\OrderTrackingController;
 use App\Http\Controllers\Transaction\OrderTransferController;
 use App\Http\Controllers\Transaction\PackagingController;
+use App\Http\Controllers\Transaction\ProductionBmhpController;
 use App\Http\Controllers\Transaction\ProductionController;
 use App\Http\Controllers\Transaction\ReportController;
 use App\Http\Controllers\Transaction\SterileExpiryController;
 use App\Http\Controllers\Transaction\SterileInventoryController;
 use App\Http\Controllers\Transaction\SterilizationController;
 use App\Http\Controllers\Transaction\SterilizationPipelineController;
+use App\Http\Controllers\Transaction\StorageBmhpController;
 use App\Http\Controllers\Transaction\StorageController;
 use App\Http\Controllers\Transaction\TrackingCountController;
 use App\Http\Controllers\Transaction\TransactionReportController;
@@ -198,6 +200,22 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('production', [ProductionController::class, 'store']);
         // Rincian batch produksi (lazy-load tombol Detail di timeline) — by nomor produksi.
         Route::get('production/detail', [ProductionController::class, 'detail']);
+
+        // Pipeline Produksi BMHP: 3 tahap (Produksi Baru, Inspeksi & Pengemasan, Sterilisasi)
+        Route::get('production-bmhp/candidates', [ProductionBmhpController::class, 'candidates']);
+        Route::post('production-bmhp', [ProductionBmhpController::class, 'store']);
+        Route::get('production-bmhp/packaging', [ProductionBmhpController::class, 'packagingQueue']);
+        Route::post('production-bmhp/packaging/{packaging}/complete', [ProductionBmhpController::class, 'packagingComplete']);
+        Route::get('production-bmhp/sterilization', [ProductionBmhpController::class, 'sterilizationQueue']);
+        Route::post('production-bmhp/sterilization/batch', [ProductionBmhpController::class, 'sterilizeBatch']);
+        Route::post('production-bmhp/sterilization/{sterilization}/validate', [ProductionBmhpController::class, 'validateSterilization']);
+
+        // Gudang Steril BMHP: simpan BMHP steril ke rak + inventaris
+        Route::get('storage-bmhp/incoming', [StorageBmhpController::class, 'incoming']);
+        Route::post('storage-bmhp/{sterilization}/store', [StorageBmhpController::class, 'store']);
+        Route::get('storage-bmhp/inventory', [StorageBmhpController::class, 'inventory']);
+        Route::get('storage-bmhp/summary', [StorageBmhpController::class, 'summary']);
+        Route::get('storage-bmhp/order-options', [StorageBmhpController::class, 'orderOptions']);
         // Pipeline pemrosesan CSSD: Proses order masuk → tahap Cleaning & Pengemasan
         Route::post('orders/{order}/process', [CleaningController::class, 'process']);
         Route::get('cleaning', [CleaningController::class, 'index']);

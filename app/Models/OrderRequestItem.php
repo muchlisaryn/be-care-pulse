@@ -16,7 +16,10 @@ class OrderRequestItem extends Model
         'type',
         'instrument_id',
         'instrument_catalog_id',
+        'bmhp_id',
+        'package_bmhp_id',
         'package_name',
+        'item_name',
         'quantity',
         'created_by',
         'updated_by',
@@ -39,5 +42,15 @@ class OrderRequestItem extends Model
     public function catalog()
     {
         return $this->belongsTo(InstrumentCatalog::class, 'instrument_catalog_id');
+    }
+
+    public function bmhp()
+    {
+        return $this->belongsTo(Bmhp::class, 'bmhp_id');
+    }
+
+    public function packageBmhp()
+    {
+        return $this->belongsTo(PackageBmhp::class, 'package_bmhp_id');
     }
 }

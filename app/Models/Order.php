@@ -57,6 +57,7 @@ class Order extends Model
     ];
 
     protected $fillable = [
+        'order_type',
         'room_id',
         'user_id',
         'code_transaction',
