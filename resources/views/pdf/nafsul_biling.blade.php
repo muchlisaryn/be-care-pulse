@@ -347,20 +347,25 @@
 
         <td class="penutup-kanan">
             <table class="ringkas">
+                {{--
+                    JUMLAH kolom Jumlah di tabel atas — kotor, sebelum diskon,
+                    jadi kolom itu benar-benar menjumlah ke baris ini. Lihat
+                    `$totalJumlah` di TransaksiHeaderController::biling().
+                --}}
                 <tr>
                     <td class="label">Total Rincian</td>
                     <td class="nilai">{{ $uang['total'] }}</td>
                 </tr>
                 {{--
-                    Dasarnya JUMLAH kolom Pot Anggota di tabel atas, bukan
-                    kolom `member_deduction` milik header: baris ini harus
-                    muncul setiap kali ada potongan yang tercetak, termasuk
-                    pada kuitansi yang angka headernya tertinggal. Lihat
+                    JUMLAH kolom Pot Anggota di tabel atas, bukan
+                    `member_deduction` milik header: baris ini harus muncul
+                    setiap kali ada potongan yang tercetak, termasuk pada
+                    kuitansi lama yang angka headernya tertinggal. Lihat
                     `$potonganAnggota` di TransaksiHeaderController::biling().
                 --}}
                 @if ($potonganAnggota > 0)
                     <tr>
-                        <td class="label">Potongan Anggota</td>
+                        <td class="label">Total Potongan Anggota</td>
                         <td class="nilai">- {{ $uang['member_deduction'] }}</td>
                     </tr>
                 @endif

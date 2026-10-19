@@ -48,7 +48,7 @@ class DistributionController extends Controller
             'distributed_at' => 'sometimes|nullable|date',
             'note' => 'nullable|string',
             'items' => 'required|array|min:1',
-            'items.*.bmhp_id' => 'required|integer|exists:bmhps,id',
+            'items.*.bmhp_id' => 'required|integer|exists:mst_bmhp,id',
             'items.*.quantity' => 'sometimes|integer|min:1',
             'items.*.note' => 'nullable|string',
         ]);

@@ -3,38 +3,53 @@
 namespace App\Models;
 
 use App\Traits\HasAuditColumns;
-use App\Traits\HasAutoCode;
 use Illuminate\Database\Eloquent\Model;
 
+/**
+ * Master BMHP (Bahan Medis Habis Pakai). Kodenya diketik manual oleh admin —
+ * tidak dibuat otomatis oleh sistem. Satuannya merujuk master satuan (`unit_id`).
+ */
 class Bmhp extends Model
 {
-    use HasAuditColumns, HasAutoCode;
+    use HasAuditColumns;
+
+    protected $table = 'mst_bmhp';
 
     protected $fillable = [
         'code',
         'name',
-        'unit',
+        'unit_id',
         'stock_qty',
-        'description',
+        'price',
         'created_by',
         'updated_by',
     ];
 
     protected $casts = [
-        'stock_qty' => 'integer',
+        // Desimal di database (12,2); dikirim sebagai angka, bukan string.
+        'stock_qty' => 'float',
+        'price' => 'float',
     ];
 
-    protected static function generateUniqueCode($model): string
+    // Nama satuan selalu ikut dikirim sebagai `unit` (teks), seperti sebelum
+    // satuannya dipindah ke master — pemakai API tidak perlu membongkar relasinya.
+    protected $with = ['unitMaster'];
+
+    protected $appends = ['unit'];
+
+    protected $hidden = ['unitMaster'];
+
+    /**
+     * Satuan BMHP ini. Satuan yang sudah dihapus dari master tetap terbaca, agar
+     * BMHP lama tidak mendadak kehilangan satuannya.
+     */
+    public function unitMaster()
     {
-        $maxCode = static::withoutGlobalScopes()
-            ->where('code', 'like', 'BMHP-%')
-            ->max('code');
+        return $this->belongsTo(Unit::class, 'unit_id')->withTrashed();
+    }
 
-        $sequence = 1;
-        if ($maxCode && preg_match('/-(\d+)$/', $maxCode, $matches)) {
-            $sequence = (int) $matches[1] + 1;
-        }
-
-        return 'BMHP-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
+    public function getUnitAttribute(): ?string
+    {
+        return $this->unitMaster?->name;
     }
 }

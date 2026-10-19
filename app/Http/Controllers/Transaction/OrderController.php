@@ -44,6 +44,8 @@ class OrderController extends Controller
         'requestItems.catalog',
         // Isi paket (instrumen apa saja di dalam katalog) untuk ditampilkan di detail.
         'requestItems.catalog.items.instrument',
+        'requestItems.bmhp',
+        'requestItems.packageBmhp.items.bmhp',
         // Unit fisik hasil generate saat order diterima (kosong sebelum diterima).
         'items.instrumentStock.instrument',
         'items.conditionOut',
@@ -183,6 +185,7 @@ class OrderController extends Controller
         $patientRequired = $room && $room->layanan === 'rawat_inap';
 
         $validated = $request->validate([
+            'order_type' => ['nullable', 'string', Rule::in(['cssd', 'bmhp'])],
             'room_id' => 'required|integer|exists:rooms,id',
             // `user_id` SENGAJA tidak diterima dari request: pemilik order selalu akun
             // yang membuatnya. Dulu boleh dikirim klien, sehingga order bisa didaftarkan
@@ -201,19 +204,18 @@ class OrderController extends Controller
             'items' => 'required|array|min:1',
             'items.*.type' => ['required', Rule::in(['satuan', 'paket'])],
             'items.*.quantity' => 'required|integer|min:1',
-            // Satuan → wajib instrument_id; Paket → wajib instrument_catalog_id.
-            'items.*.instrument_id' => 'required_if:items.*.type,satuan|nullable|integer|exists:instruments,id',
-            'items.*.instrument_catalog_id' => 'required_if:items.*.type,paket|nullable|integer|exists:instrument_catalogs,id',
+            'items.*.instrument_id' => 'nullable|integer',
+            'items.*.instrument_catalog_id' => 'nullable|integer',
+            'items.*.bmhp_id' => 'nullable|integer',
+            'items.*.package_bmhp_id' => 'nullable|integer',
             'items.*.package_name' => 'nullable|string|max:255',
+            'items.*.name' => 'nullable|string|max:255',
         ]);
 
         try {
             $order = DB::transaction(function () use ($validated) {
-                // Stok steril WAJIB dicek di server, bukan cuma di form. Pengecekan
-                // dilakukan di dalam transaksi + mengunci baris gudang, sehingga dua
-                // order yang dikirim bersamaan tidak bisa sama-sama lolos atas stok
-                // yang sama (race condition), termasuk bila halaman peminjam basi.
-                $this->assertSterileStockSufficient($validated['items']);
+                // Stok steril WAJIB dicek di server, bukan cuma di form.
+                $this->assertSterileStockSufficient($validated['items'], $validated['order_type'] ?? 'cssd');
 
                 return $this->createOrder($validated, $validated['items']);
             });
@@ -252,6 +254,7 @@ class OrderController extends Controller
         $patientRequired = $room && $room->layanan === 'rawat_inap';
 
         $validated = $request->validate([
+            'order_type' => ['nullable', 'string', Rule::in(['cssd', 'bmhp'])],
             'room_id' => 'required|integer|exists:rooms,id',
             'borrowed_by' => 'nullable|string|max:255',
             'order_date' => 'required|date',
@@ -265,9 +268,12 @@ class OrderController extends Controller
             'patients.*.items' => 'required|array|min:1',
             'patients.*.items.*.type' => ['required', Rule::in(['satuan', 'paket'])],
             'patients.*.items.*.quantity' => 'required|integer|min:1',
-            'patients.*.items.*.instrument_id' => 'required_if:patients.*.items.*.type,satuan|nullable|integer|exists:instruments,id',
-            'patients.*.items.*.instrument_catalog_id' => 'required_if:patients.*.items.*.type,paket|nullable|integer|exists:instrument_catalogs,id',
+            'patients.*.items.*.instrument_id' => 'nullable|integer',
+            'patients.*.items.*.instrument_catalog_id' => 'nullable|integer',
+            'patients.*.items.*.bmhp_id' => 'nullable|integer',
+            'patients.*.items.*.package_bmhp_id' => 'nullable|integer',
             'patients.*.items.*.package_name' => 'nullable|string|max:255',
+            'patients.*.items.*.name' => 'nullable|string|max:255',
         ]);
 
         // Satu pasien = satu order: No. RM yang sama tidak boleh dikirim dua kali,
@@ -286,10 +292,9 @@ class OrderController extends Controller
         try {
             $orders = DB::transaction(function () use ($validated) {
                 // Stok steril dicek SEKALI untuk gabungan permintaan SELURUH pasien:
-                // semuanya diambil dari kolam stok yang sama, jadi kalau dicek per
-                // pasien, stok yang sama bisa terhitung cukup berkali-kali.
                 $this->assertSterileStockSufficient(
-                    collect($validated['patients'])->flatMap(fn ($p) => $p['items'])->all()
+                    collect($validated['patients'])->flatMap(fn ($p) => $p['items'])->all(),
+                    $validated['order_type'] ?? 'cssd'
                 );
 
                 return collect($validated['patients'])
@@ -332,7 +337,9 @@ class OrderController extends Controller
      */
     private function createOrder(array $data, array $items): Order
     {
+        $orderType = $data['order_type'] ?? 'cssd';
         $order = Order::create([
+            'order_type' => $orderType,
             'room_id' => $data['room_id'],
             // Pemilik order SELALU akun yang membuatnya — tidak bisa ditentukan
             // dari request, sehingga `user_id` konsisten dengan `created_by`.
@@ -350,18 +357,22 @@ class OrderController extends Controller
 
         foreach ($items as $item) {
             $isPaket = $item['type'] === 'paket';
+            $isBmhp = $orderType === 'bmhp';
             $order->requestItems()->create([
                 'type' => $item['type'],
-                'instrument_id' => $isPaket ? null : ($item['instrument_id'] ?? null),
-                'instrument_catalog_id' => $isPaket ? ($item['instrument_catalog_id'] ?? null) : null,
-                'package_name' => $isPaket ? ($item['package_name'] ?? null) : null,
+                'instrument_id' => (! $isPaket && ! $isBmhp) ? ($item['instrument_id'] ?? null) : null,
+                'instrument_catalog_id' => ($isPaket && ! $isBmhp) ? ($item['instrument_catalog_id'] ?? null) : null,
+                'bmhp_id' => (! $isPaket && $isBmhp) ? ($item['bmhp_id'] ?? $item['instrument_id'] ?? null) : null,
+                'package_bmhp_id' => ($isPaket && $isBmhp) ? ($item['package_bmhp_id'] ?? $item['instrument_catalog_id'] ?? null) : null,
+                'package_name' => $isPaket ? ($item['package_name'] ?? $item['name'] ?? null) : null,
+                'item_name' => $item['name'] ?? null,
                 'quantity' => $item['quantity'],
             ]);
         }
 
         // Timeline: order dibuat (code_transaction masih null, diisi saat diterima).
         OrderEvent::record(OrderEvent::TYPE_DIBUAT, $order, [
-            'note' => 'Order peminjaman diajukan'
+            'note' => ($order->order_type === 'bmhp' ? 'Order BMHP diajukan' : 'Order peminjaman diajukan')
                 .($order->medical_record_no ? ' · RM '.$order->medical_record_no : '')
                 .($order->patient_name ? ' · '.$order->patient_name : ''),
         ]);
@@ -371,27 +382,15 @@ class OrderController extends Controller
 
     /**
      * Pastikan stok steril cukup untuk seluruh baris permintaan, SEBELUM order dibuat.
-     * Bila kurang → RuntimeException (ditangkap store() → 422) dan seluruh transaksi
-     * dibatalkan.
-     *
-     * Yang dibandingkan adalah stok steril FISIK di gudang (baris gudang dikunci
-     * `lockForUpdate` di dalam transaksi store()). Order lain yang masih `diajukan`
-     * SENGAJA tidak dikurangkan: order hanyalah permintaan — unit fisik baru diklaim
-     * saat distribusi (`allocateFefo(reserve: true)`). Mengurangkan pesanan yang masih
-     * menggantung dulu membuat stok 1 unit hanya bisa diorder sekali walau ordernya
-     * belum tentu jadi, sekaligus tidak cocok dengan angka "Tersedia" yang ditampilkan
-     * form order (InstrumentController / InstrumentCatalogController juga tidak
-     * mengurangkannya).
-     *
-     * Bentrok stok yang nyata tetap tertangkap di titik yang MENGIKAT: `acceptDistribution`
-     * (peringatan dini saat order diterima) dan `distribute` (klaim unit FEFO + kunci baris).
-     *
-     * @param  array<int,array<string,mixed>>  $items
-     *
-     * @throws \RuntimeException
      */
-    private function assertSterileStockSufficient(array $items): void
+    private function assertSterileStockSufficient(array $items, string $orderType = 'cssd'): void
     {
+        if ($orderType === 'bmhp') {
+            $this->assertBmhpStock($items);
+
+            return;
+        }
+
         // Kebutuhan per jenis: satuan dalam UNIT, paket dalam SET.
         $needUnits = [];   // instrument_id => unit
         $needSets = [];    // instrument_catalog_id => set
@@ -407,6 +406,62 @@ class OrderController extends Controller
 
         $this->assertSatuanStock($needUnits);
         $this->assertPaketStock($needSets);
+    }
+
+    /**
+     * Cek stok steril BMHP (satuan & paket) di Gudang Steril BMHP.
+     */
+    private function assertBmhpStock(array $items): void
+    {
+        $today = now()->startOfDay();
+        $needSatuan = [];
+        $needPaket = [];
+        foreach ($items as $item) {
+            $qty = (int) $item['quantity'];
+            if ($item['type'] === 'satuan') {
+                $id = (int) ($item['bmhp_id'] ?? $item['instrument_id'] ?? 0);
+                $needSatuan[$id] = ($needSatuan[$id] ?? 0) + $qty;
+            } else {
+                $id = (int) ($item['package_bmhp_id'] ?? $item['instrument_catalog_id'] ?? 0);
+                $needPaket[$id] = ($needPaket[$id] ?? 0) + $qty;
+            }
+        }
+
+        foreach ($needSatuan as $bmhpId => $needed) {
+            $available = \App\Models\StorageBmhp::sterilePool()
+                ->where('status', \App\Models\StorageBmhp::STATUS_TERSIMPAN)
+                ->where(function ($q) use ($today) {
+                    $q->whereNull('expiry_date')->orWhere('expiry_date', '>=', $today);
+                })
+                ->whereHas('productionItem', fn ($p) => $p->where('source', 'satuan')->where('bmhp_id', $bmhpId))
+                ->count();
+
+            if ($needed > $available) {
+                $bmhp = \App\Models\Bmhp::find($bmhpId);
+                $name = $bmhp?->name ?? "BMHP #{$bmhpId}";
+                throw new \RuntimeException(
+                    "Stok steril \"{$name}\" di Gudang Steril BMHP tidak mencukupi: diminta {$needed}, tersedia {$available}."
+                );
+            }
+        }
+
+        foreach ($needPaket as $pkgId => $needed) {
+            $available = \App\Models\StorageBmhp::sterilePool()
+                ->where('status', \App\Models\StorageBmhp::STATUS_TERSIMPAN)
+                ->where(function ($q) use ($today) {
+                    $q->whereNull('expiry_date')->orWhere('expiry_date', '>=', $today);
+                })
+                ->whereHas('productionItem', fn ($p) => $p->where('source', 'paket')->where('package_bmhp_id', $pkgId))
+                ->count();
+
+            if ($needed > $available) {
+                $pkg = \App\Models\PackageBmhp::find($pkgId);
+                $name = $pkg?->name ?? "Paket BMHP #{$pkgId}";
+                throw new \RuntimeException(
+                    "Stok steril \"{$name}\" di Gudang Steril BMHP tidak mencukupi: diminta {$needed} set, tersedia {$available} set."
+                );
+            }
+        }
     }
 
     /**

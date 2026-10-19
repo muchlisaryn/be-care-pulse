@@ -21,9 +21,11 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('instrument_storages', function (Blueprint $table) {
-            $table->foreignId('instrument_stock_id')->nullable()->after('production_item_id');
-        });
+        if (! Schema::hasColumn('instrument_storages', 'instrument_stock_id')) {
+            Schema::table('instrument_storages', function (Blueprint $table) {
+                $table->foreignId('instrument_stock_id')->nullable()->after('production_item_id');
+            });
+        }
 
         DB::statement(<<<'SQL'
             UPDATE instrument_storages s
