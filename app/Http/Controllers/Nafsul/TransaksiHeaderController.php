@@ -763,13 +763,6 @@ class TransaksiHeaderController extends Controller
             - $potonganAnggota
             - (float) $transaksiHeader->group_leader_deduction;
 
-        // Selisih dihitung dari `$tagihan` di atas, bukan dibaca dari accessor
-        // `balance`: accessor itu memakai `member_deduction`, dan memakai dua
-        // angka potongan yang berbeda dalam satu ringkasan membuat
-        // "Total - Dibayar" di kertas tidak sama dengan baris selisih tepat di
-        // bawahnya.
-        $selisih = round($tagihan - (float) $transaksiHeader->payment, 2);
-
         $qr = null;
 
         if ($transaksiHeader->validation_by) {
@@ -824,26 +817,9 @@ class TransaksiHeaderController extends Controller
                 'tagihan' => $rupiah($tagihan),
                 'payment' => $rupiah($transaksiHeader->payment),
             ],
-            // `balance` = seharusnya − dibayar. Positif berarti masih kurang
-            // bayar, negatif berarti lebih bayar; nol tidak ditampilkan sama
-            // sekali karena tidak ada yang perlu diberitahukan.
-            'selisih' => [
-                'nilai' => $selisih,
-                'label' => $selisih > 0 ? 'Kurang Bayar' : 'Lebih Bayar',
-                // Kurang bayar ditulis DALAM KURUNG, mengikuti lazimnya
-                // pembukuan: kurung menandai angka yang mengurangi.
-                //
-                // Perannya jadi penting sejak lembar ini hitam putih — dulu
-                // kekurangan bayar ditandai warna merah, dan begitu warnanya
-                // hilang tidak ada lagi yang membedakannya dari angka biasa
-                // selain tulisan "Kurang Bayar" di sebelahnya.
-                //
-                // Lebih bayar TIDAK dikurung: kurung berarti kurang, dan
-                // memakainya untuk kelebihan justru membalik artinya.
-                'rupiah' => $selisih > 0
-                    ? '('.$rupiah(abs($selisih)).')'
-                    : $rupiah(abs($selisih)),
-            ],
+            // Baris Kurang/Lebih Bayar sengaja TIDAK dikirim: lembar ini berhenti
+            // pada Total dan Dibayar, dan selisih keduanya tidak lagi dicetak.
+            // Angkanya tetap ada di aplikasi lewat accessor `balance`.
         ])->setPaper('a4', 'portrait');
 
         return $pdf->stream('biling-'.$transaksiHeader->transaction_number.'.pdf');

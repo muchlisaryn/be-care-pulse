@@ -384,23 +384,12 @@
                     <td class="label">Total</td>
                     <td class="nilai">{{ $uang['tagihan'] }}</td>
                 </tr>
+                {{-- Baris terakhir lembar ini. Kurang/Lebih Bayar tidak lagi
+                     dicetak; selisihnya tetap terbaca di aplikasi. --}}
                 <tr class="akhir">
                     <td class="label">Dibayar</td>
                     <td class="nilai">{{ $uang['payment'] }}</td>
                 </tr>
-                {{--
-                    Baris selisih hanya muncul bila ADA selisihnya. Pada kuitansi
-                    yang lunas, "Kurang Bayar Rp 0" cuma menimbulkan keraguan
-                    terhadap lembar yang sebenarnya beres.
-                --}}
-                @if ($selisih['nilai'] != 0)
-                    <tr>
-                        <td class="label">{{ $selisih['label'] }}</td>
-                        <td class="nilai">
-                            {{ $selisih['rupiah'] }}
-                        </td>
-                    </tr>
-                @endif
             </table>
         </td>
     </tr>
