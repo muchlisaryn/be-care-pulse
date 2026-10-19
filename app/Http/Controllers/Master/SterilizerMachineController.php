@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\SterilizerMachine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
  * Master mesin sterilisator (autoclave) — tahap Sterilization. CRUD standar; daftar
@@ -28,9 +29,24 @@ class SterilizerMachineController extends Controller
         return $this->success('Data mesin sterilisator berhasil diambil.', $data);
     }
 
+    /**
+     * Seluruh mesin AKTIF tanpa paginasi — pilihan dropdown saat memulai batch
+     * sterilisasi. Suhu & durasi ikut dikirim untuk mengisi form otomatis.
+     */
+    public function options(): JsonResponse
+    {
+        $data = SterilizerMachine::where('status', SterilizerMachine::STATUS_AKTIF)
+            ->orderBy('name')
+            ->get(['id', 'name', 'temperature', 'duration_minutes']);
+
+        return $this->success('Daftar mesin sterilisator berhasil diambil.', $data);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $validated = $this->validatePayload($request);
+        // Status tidak diisi dari form — mesin baru selalu aktif.
+        $validated['status'] ??= SterilizerMachine::STATUS_AKTIF;
 
         try {
             $machine = SterilizerMachine::create($validated);
@@ -48,7 +64,7 @@ class SterilizerMachineController extends Controller
 
     public function update(Request $request, SterilizerMachine $sterilizer_machine): JsonResponse
     {
-        $validated = $this->validatePayload($request);
+        $validated = $this->validatePayload($request, $sterilizer_machine);
 
         try {
             $sterilizer_machine->update($validated);
@@ -70,9 +86,12 @@ class SterilizerMachineController extends Controller
         }
     }
 
-    private function validatePayload(Request $request): array
+    private function validatePayload(Request $request, ?SterilizerMachine $machine = null): array
     {
         return $request->validate([
+            // Kode diketik petugas (bukan otomatis). Unik termasuk mesin yang sudah
+            // dihapus, karena index unik di DB juga mencakup baris soft delete.
+            'code' => ['required', 'string', 'max:50', Rule::unique('sterilizer_machines', 'code')->ignore($machine?->id)],
             'name' => 'required|string|max:255',
             'location' => 'nullable|string|max:255',
             // Suhu & durasi standar mesin.

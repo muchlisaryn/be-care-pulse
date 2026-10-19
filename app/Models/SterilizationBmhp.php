@@ -3,17 +3,22 @@
 namespace App\Models;
 
 use App\Traits\HasAuditColumns;
-use App\Traits\HasAutoCode;
 use Illuminate\Database\Eloquent\Model;
 
+/**
+ * Siklus sterilisasi BMHP. Kode {kode mesin}-{ddmmyy}-{urut}, mis. AUT01-191026-03
+ * — lihat nextCode().
+ */
 class SterilizationBmhp extends Model
 {
-    use HasAuditColumns, HasAutoCode;
+    use HasAuditColumns;
 
     protected $table = 'sterilization_bmhp';
 
     public const STATUS_DIPROSES = 'diproses';
+
     public const STATUS_SELESAI = 'selesai';
+
     public const STATUS_GAGAL = 'gagal';
 
     protected $fillable = [
@@ -50,24 +55,21 @@ class SterilizationBmhp extends Model
     ];
 
     /**
-     * Kode unik STR-BMHP-yymmdd-sequence
+     * Kode batch berikutnya: {kode mesin}-{ddmmyy}-{urut 2 digit}. Nomor urut =
+     * urutan sterilisasi BMHP hari itu, lintas mesin (sterilisasi ke-3 hari ini → 03).
      */
-    protected static function generateUniqueCode($model): string
+    public static function nextCode(string $machineCode): string
     {
-        $prefix = 'STR-BMHP-'.now()->format('ymd');
+        $day = now()->format('dmy');
+        $pattern = '/-'.$day.'-(\d+)$/';
 
-        $used = static::withoutGlobalScopes()
-            ->where('code', 'like', $prefix.'%')
+        $last = static::withoutGlobalScopes()
+            ->where('code', 'like', '%-'.$day.'-%')
             ->pluck('code')
-            ->map(fn ($code) => (int) substr($code, strlen($prefix)))
-            ->flip();
+            ->map(fn ($code) => preg_match($pattern, $code, $m) ? (int) $m[1] : 0)
+            ->max() ?? 0;
 
-        $sequence = 1;
-        while ($used->has($sequence)) {
-            $sequence++;
-        }
-
-        return $prefix.str_pad($sequence, 2, '0', STR_PAD_LEFT);
+        return $machineCode.'-'.$day.'-'.str_pad($last + 1, 2, '0', STR_PAD_LEFT);
     }
 
     public function machine()

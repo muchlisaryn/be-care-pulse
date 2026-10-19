@@ -13,7 +13,9 @@ class PackagingBmhp extends Model
     protected $table = 'packaging_bmhp';
 
     public const STATUS_DIPROSES = 'diproses';
+
     public const STATUS_SELESAI = 'selesai';
+
     public const STATUS_STERILISASI = 'sterilisasi';
 
     protected $fillable = [
@@ -65,6 +67,15 @@ class PackagingBmhp extends Model
         }
 
         return $day.str_pad($sequence, 2, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Kode berikutnya (tanpa prefix) — dipakai sebelum kemasan dibuat, karena kode
+     * produksi BMHP = BMHP-{prefix}-{kode kemasan ini}.
+     */
+    public static function nextCode(): string
+    {
+        return static::generateUniqueCode(new static);
     }
 
     public function getFullCodeAttribute(): string

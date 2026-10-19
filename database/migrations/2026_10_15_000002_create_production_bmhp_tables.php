@@ -57,7 +57,8 @@ return new class extends Migration
             Schema::create('packaging_bmhp', function (Blueprint $table) {
                 $table->id();
                 $table->foreignId('production_bmhp_id')->constrained('production_bmhp')->cascadeOnDelete();
-                $table->string('prefix', 8)->default('PKG');
+                // Prefix = BMHP-{kode master BMHP/Paket}- (kode master maks. 50), mis. BMHP-KS-.
+                $table->string('prefix', 64)->default('PKG');
                 $table->string('code')->unique();
                 $table->foreignId('packaging_type_id')->nullable()->constrained('packaging_types')->nullOnDelete();
                 $table->string('chemical_indicator')->nullable();

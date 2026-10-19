@@ -26,7 +26,7 @@ return new class extends Migration
         'rooms',
         'instrument_catalogs',
         'instrument_catalog_items',
-        'bmhps',
+        'mst_bmhp',
         'washer_machines',
         'icd10',
         'order',

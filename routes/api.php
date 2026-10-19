@@ -34,11 +34,11 @@ use App\Http\Controllers\Nafsul\KotaController;
 use App\Http\Controllers\Nafsul\LaporanController as NafsulLaporanController;
 use App\Http\Controllers\Nafsul\PekerjaanController;
 use App\Http\Controllers\Nafsul\PendidikanController;
+use App\Http\Controllers\Nafsul\RekapJasaController;
 use App\Http\Controllers\Nafsul\StatusAnggotaController;
 use App\Http\Controllers\Nafsul\StatusNikahController;
 use App\Http\Controllers\Nafsul\TarifController;
 use App\Http\Controllers\Nafsul\TransaksiController;
-use App\Http\Controllers\Nafsul\RekapJasaController;
 use App\Http\Controllers\Nafsul\TransaksiHeaderController;
 use App\Http\Controllers\Nafsul\TransaksiImportController;
 use App\Http\Controllers\Nafsul\WilayahController;
@@ -139,6 +139,8 @@ Route::middleware('auth:sanctum')->group(function () {
             ->parameters(['washer-machines' => 'washer_machine']);
 
         // Master mesin sterilisator (autoclave) — tahap Sterilization
+        // `options` = seluruh mesin aktif tanpa paginasi, untuk dropdown.
+        Route::get('sterilizer-machines/options', [SterilizerMachineController::class, 'options']);
         Route::apiResource('sterilizer-machines', SterilizerMachineController::class)
             ->parameters(['sterilizer-machines' => 'sterilizer_machine']);
 
@@ -206,7 +208,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('production-bmhp', [ProductionBmhpController::class, 'store']);
         Route::get('production-bmhp/packaging', [ProductionBmhpController::class, 'packagingQueue']);
         Route::post('production-bmhp/packaging/{packaging}/complete', [ProductionBmhpController::class, 'packagingComplete']);
-        Route::get('production-bmhp/sterilization', [ProductionBmhpController::class, 'sterilizationQueue']);
+        // Tab Sterilisasi: satu daftar ber-paginasi (lazy load) berisi kemasan siap
+        // steril + batch menunggu validasi + batch selesai; jumlahnya lewat summary.
+        Route::get('production-bmhp/sterilization/feed', [ProductionBmhpController::class, 'sterilizationFeed']);
+        Route::get('production-bmhp/sterilization/summary', [ProductionBmhpController::class, 'sterilizationSummary']);
         Route::post('production-bmhp/sterilization/batch', [ProductionBmhpController::class, 'sterilizeBatch']);
         Route::post('production-bmhp/sterilization/{sterilization}/validate', [ProductionBmhpController::class, 'validateSterilization']);
 

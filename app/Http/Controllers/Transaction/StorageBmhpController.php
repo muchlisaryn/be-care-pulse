@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Transaction;
 
 use App\Http\Controllers\Controller;
+use App\Models\Bmhp;
+use App\Models\PackageBmhp;
 use App\Models\PackagingBmhpItem;
 use App\Models\SterilizationBmhp;
 use App\Models\StorageBmhp;
@@ -129,7 +131,12 @@ class StorageBmhpController extends Controller
 
         return [
             'id' => $sterilization->id,
-            'code' => $sterilization->code,
+            // Batch tidak punya kode sendiri — yang ditampilkan kode kemasan di dalamnya.
+            'code' => $sterilization->items
+                ->map(fn ($it) => $it->packaging ? $it->packaging->prefix.$it->packaging->code : null)
+                ->filter()
+                ->unique()
+                ->implode(', '),
             'code_transaction' => null,
             'status' => $sterilization->status,
             'source' => 'produksi',
@@ -232,6 +239,7 @@ class StorageBmhpController extends Controller
         $query = StorageBmhp::with([
             'sterilization.machine',
             'packaging.packagingType',
+            'packaging.production',
             'productionItem',
         ])
             ->sterilePool()
@@ -240,8 +248,7 @@ class StorageBmhpController extends Controller
                     $w->where('rack_code', 'like', "%{$s}%")
                         ->orWhere('barcode_no', 'like', "%{$s}%")
                         ->orWhereHas('productionItem', fn ($p) => $p->where('name', 'like', "%{$s}%")
-                            ->orWhere('package_name', 'like', "%{$s}%"))
-                        ->orWhereHas('sterilization', fn ($st) => $st->where('code', 'like', "%{$s}%"));
+                            ->orWhere('package_name', 'like', "%{$s}%"));
                 });
             })
             ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
@@ -278,8 +285,9 @@ class StorageBmhpController extends Controller
                 'package_name' => $pi?->package_name,
                 'package_no' => $pi?->package_no,
                 'barcode_no' => $row->barcode_no,
-                'production_code' => $row->packaging?->production_bmhp_id ? 'PRD-'.$row->packaging->production_bmhp_id : null,
-                'batch' => $row->sterilization?->code ?? '-',
+                'production_code' => $row->packaging?->production?->code,
+                // Dikelompokkan per kemasan — batch sterilisasi tidak punya kode sendiri.
+                'batch' => $row->packaging ? $row->packaging->prefix.$row->packaging->code : '-',
                 'unit' => [
                     'id' => $row->packaging_bmhp_item_id,
                     'code' => $row->barcode_no,
@@ -346,7 +354,7 @@ class StorageBmhpController extends Controller
             }
         }
 
-        $allBmhps = \App\Models\Bmhp::whereNull('deleted_by')->orderBy('name')->get();
+        $allBmhps = Bmhp::whereNull('deleted_by')->orderBy('name')->get();
         $satuanResult = [];
         foreach ($allBmhps as $b) {
             $count = $satuanCounts[$b->id] ?? 0;
@@ -378,7 +386,7 @@ class StorageBmhpController extends Controller
             }
         }
 
-        $allPackages = \App\Models\PackageBmhp::with('items.bmhp')->whereNull('deleted_by')->orderBy('name')->get();
+        $allPackages = PackageBmhp::with('items.bmhp')->whereNull('deleted_by')->orderBy('name')->get();
         $paketResult = [];
         foreach ($allPackages as $p) {
             $count = $paketCounts[$p->id] ?? 0;

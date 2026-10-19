@@ -11,7 +11,7 @@ return new class extends Migration
         Schema::create('distribution_items', function (Blueprint $table) {
             $table->id();
             $table->foreignId('distribution_id')->constrained('distributions')->cascadeOnDelete();
-            $table->foreignId('bmhp_id')->nullable()->constrained('bmhps')->nullOnDelete();
+            $table->foreignId('bmhp_id')->nullable()->constrained('mst_bmhp')->nullOnDelete();
             $table->unsignedInteger('quantity')->default(1);   // Jumlah BMHP yang didistribusikan
             $table->string('note')->nullable();                // Keterangan
             $table->string('created_by')->nullable();

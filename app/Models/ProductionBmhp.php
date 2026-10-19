@@ -13,7 +13,9 @@ class ProductionBmhp extends Model
     protected $table = 'production_bmhp';
 
     public const STATUS_DIPROSES = 'diproses';
+
     public const STATUS_SELESAI = 'selesai';
+
     public const STATUS_DIBATALKAN = 'dibatalkan';
 
     protected $fillable = [
@@ -25,7 +27,9 @@ class ProductionBmhp extends Model
     ];
 
     /**
-     * Kode unik PRD-BMHP-yymmdd-sequence
+     * Cadangan bila `code` tidak diisi: PRD-BMHP-yymmdd-sequence. Produksi dari
+     * ProductionBmhpController@store selalu mengisi `code` sendiri, yaitu
+     * BMHP-{kode master BMHP/Paket}-{yymmdd}{urut} — nomornya sama dengan kemasannya.
      */
     protected static function generateUniqueCode($model): string
     {
