@@ -429,10 +429,7 @@ class OrderController extends Controller
 
         foreach ($needSatuan as $bmhpId => $needed) {
             $available = \App\Models\StorageBmhp::sterilePool()
-                ->where('status', \App\Models\StorageBmhp::STATUS_TERSIMPAN)
-                ->where(function ($q) use ($today) {
-                    $q->whereNull('expiry_date')->orWhere('expiry_date', '>=', $today);
-                })
+                ->usableOn($today)
                 ->whereHas('productionItem', fn ($p) => $p->where('source', 'satuan')->where('bmhp_id', $bmhpId))
                 ->count();
 
@@ -447,10 +444,7 @@ class OrderController extends Controller
 
         foreach ($needPaket as $pkgId => $needed) {
             $available = \App\Models\StorageBmhp::sterilePool()
-                ->where('status', \App\Models\StorageBmhp::STATUS_TERSIMPAN)
-                ->where(function ($q) use ($today) {
-                    $q->whereNull('expiry_date')->orWhere('expiry_date', '>=', $today);
-                })
+                ->usableOn($today)
                 ->whereHas('productionItem', fn ($p) => $p->where('source', 'paket')->where('package_bmhp_id', $pkgId))
                 ->count();
 

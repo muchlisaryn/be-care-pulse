@@ -8,6 +8,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * Penempatan BMHP steril pada lokasi rak penyimpanan di Gudang Steril BMHP.
+ *
+ * Tanpa kolom `status` dan `expiry_date`: masih di rak dibaca dari `removed_at` /
+ * `disabled_at` (lihat sterilePool), kedaluwarsanya dari kemasannya
+ * (`packaging_bmhp.expiry_date`, lihat usableOn).
  */
 class StorageBmhp extends Model
 {
@@ -15,19 +19,13 @@ class StorageBmhp extends Model
 
     protected $table = 'storage_bmhp';
 
-    public const STATUS_TERSIMPAN = 'tersimpan';
-
-    public const STATUS_KELUAR = 'keluar';
-
     protected $fillable = [
         'sterilization_bmhp_id',
         'packaging_bmhp_id',
         'packaging_bmhp_item_id',
         'production_bmhp_item_id',
         'barcode_no',
-        'rack_code',
-        'expiry_date',
-        'status',
+        'rack_id',
         'stored_at',
         'removed_at',
         'disabled',
@@ -37,7 +35,6 @@ class StorageBmhp extends Model
     ];
 
     protected $casts = [
-        'expiry_date' => 'date',
         'stored_at' => 'datetime',
         'removed_at' => 'datetime',
         'disabled' => 'boolean',
@@ -62,6 +59,23 @@ class StorageBmhp extends Model
     public function productionItem(): BelongsTo
     {
         return $this->belongsTo(ProductionBmhpItem::class, 'production_bmhp_item_id');
+    }
+
+    /** Rak tempat BMHP ini disimpan (master `racks`). */
+    public function rack(): BelongsTo
+    {
+        return $this->belongsTo(Rack::class, 'rack_id')->withTrashed();
+    }
+
+    /**
+     * Masih bisa dipakai pada tanggal `$date`: kemasannya belum kedaluwarsa
+     * (atau tidak bertanggal kedaluwarsa).
+     */
+    public function scopeUsableOn($query, $date)
+    {
+        return $query->whereHas('packaging', fn ($p) => $p->where(
+            fn ($w) => $w->whereNull('expiry_date')->orWhere('expiry_date', '>=', $date)
+        ));
     }
 
     /**

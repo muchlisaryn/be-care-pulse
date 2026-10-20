@@ -19,8 +19,7 @@ class UnitController extends Controller
     {
         $data = Unit::when(
             $request->search,
-            fn ($q, $s) => $q->where(fn ($w) => $w->where('name', 'like', "%{$s}%")
-                ->orWhere('code', 'like', "%{$s}%"))
+            fn ($q, $s) => $q->where('name', 'like', "%{$s}%")
         )
             ->latest()
             ->paginate(20);
@@ -86,14 +85,6 @@ class UnitController extends Controller
     private function validatePayload(Request $request, ?Unit $unit = null): array
     {
         return $request->validate([
-            // Kode diisi pengguna. Unik termasuk satuan yang sudah dihapus — barisnya
-            // masih ada (soft delete) dan kolom `code` ber-index unique.
-            'code' => [
-                'required',
-                'string',
-                'max:50',
-                Rule::unique('units', 'code')->ignore($unit?->id),
-            ],
             // Nama unik di antara satuan yang masih aktif — nama milik satuan yang
             // sudah dihapus boleh dipakai lagi.
             'name' => [
@@ -104,7 +95,6 @@ class UnitController extends Controller
             ],
             'note' => 'nullable|string',
         ], [
-            'code.unique' => 'Kode satuan sudah dipakai.',
             'name.unique' => 'Nama satuan sudah dipakai.',
         ]);
     }

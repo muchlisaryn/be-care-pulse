@@ -31,6 +31,9 @@ class ProductionBmhpController extends Controller
     /** Panjang rentang tanggal maksimal (hari, inklusif) di tab Sterilisasi. */
     private const STERIL_MAX_DAYS = 3;
 
+    /** Kolom item produksi yang dipakai kartu, isi kemasan & label (tanpa harga dll). */
+    private const PRODUCTION_ITEM_COLUMNS = 'id,source,name,package_no,quantity,unit_name';
+
     /**
      * Data kandidat untuk form produksi baru:
      * - Daftar BMHP satuan (aktif)
@@ -41,12 +44,10 @@ class ProductionBmhpController extends Controller
      */
     public function candidates(): JsonResponse
     {
-        $bmhps = Bmhp::whereNull('deleted_by')
-            ->orderBy('name')
-            ->get();
+        // `deleted_by IS NULL` sudah dari global scope HasAuditColumns.
+        $bmhps = Bmhp::orderBy('name')->get();
 
         $packages = PackageBmhp::with(['items.bmhp.unitMaster'])
-            ->whereNull('deleted_by')
             ->orderBy('name')
             ->get();
 
@@ -147,7 +148,6 @@ class ProductionBmhpController extends Controller
                     $production = ProductionBmhp::create([
                         'code' => $prefix.$code,
                         'note' => $validated['note'] ?? null,
-                        'status' => ProductionBmhp::STATUS_DIPROSES,
                     ]);
                     $productions[] = $production;
 
@@ -155,7 +155,6 @@ class ProductionBmhpController extends Controller
                         'production_bmhp_id' => $production->id,
                         'prefix' => $prefix,
                         'code' => $code,
-                        'status' => PackagingBmhp::STATUS_DIPROSES,
                         'note' => $validated['note'] ?? null,
                     ]);
 
@@ -167,6 +166,8 @@ class ProductionBmhpController extends Controller
                             'name' => $bmhp->name,
                             'quantity' => $qty,
                             'unit_name' => $bmhp->unit,
+                            // Harga satuan saat itu — tidak ikut berubah bila harga master diubah.
+                            'price' => $bmhp->price,
                         ]);
 
                         // Label kemasan satuan
@@ -187,6 +188,8 @@ class ProductionBmhpController extends Controller
                                 'package_no' => $setNo,
                                 'quantity' => 1,
                                 'unit_name' => 'paket',
+                                // Harga 1 paket saat itu (total isi paket × harga BMHP-nya).
+                                'price' => $pkg->total_price,
                             ]);
 
                             // Label kemasan per set paket
@@ -220,27 +223,45 @@ class ProductionBmhpController extends Controller
     {
         $search = $request->input('search');
 
+        // Relasi dimuat per halaman (20 baris), hanya kolom yang dipakai kartu & label.
         $query = PackagingBmhp::with([
-            'production',
-            'packagingType',
-            'items.productionItem',
+            'packagingType:id,name,shelf_life_days',
+            'items:id,packaging_bmhp_id,production_bmhp_item_id,barcode_no',
+            'items.productionItem:'.self::PRODUCTION_ITEM_COLUMNS,
         ])
+            ->withStageFlags()
             ->when($search, function ($q, $s) {
                 $q->where(function ($w) use ($s) {
                     $w->whereRaw('CONCAT(prefix, code) LIKE ?', ["%{$s}%"])
-                        ->orWhereHas('production', fn ($p) => $p->where('code', 'like', "%{$s}%"))
                         ->orWhereHas('items.productionItem', fn ($pi) => $pi->where('name', 'like', "%{$s}%"));
                 });
             });
 
         $query = $this->applyDateRange($query, $request, 'created_at');
 
-        // Belum dikemas (diproses) di atas, lalu yang terbaru dulu.
+        // Filter tahap (`?stage=`), dibaca dari kolom — sama dengan PackagingBmhp::stage().
+        $steril = fn ($q) => $q->where('result', SterilizationBmhpItem::RESULT_STERIL);
+        match ($request->input('stage')) {
+            'belum' => $query->whereNull('completed_at')->where('disabled', false),
+            'proses' => $query->whereNotNull('completed_at')->where('disabled', false)
+                ->whereDoesntHave('sterilizationItems', $steril),
+            'steril' => $query->where('disabled', false)->whereHas('sterilizationItems', $steril),
+            'gagal' => $query->where('disabled', true),
+            default => null,
+        };
+
+        // Belum dikemas (`completed_at` kosong) di atas, lalu yang terbaru dulu.
         $data = $query
-            ->orderByRaw('CASE WHEN status = ? THEN 0 ELSE 1 END', [PackagingBmhp::STATUS_DIPROSES])
+            ->orderByRaw('CASE WHEN completed_at IS NULL THEN 0 ELSE 1 END')
             ->orderByDesc('created_at')
             ->orderByDesc('id')
             ->paginate(20);
+
+        // `stage` = tahap kemasan (lihat PackagingBmhp::stage()) untuk warna kartu;
+        // penanda EXISTS-nya tidak perlu ikut dikirim.
+        $data->getCollection()->each(fn (PackagingBmhp $p) => $p
+            ->setAttribute('stage', $p->stage())
+            ->makeHidden(['in_sterilization', 'is_sterilized']));
 
         return $this->success('Antrean pengemasan BMHP.', $data);
     }
@@ -250,8 +271,11 @@ class ProductionBmhpController extends Controller
      */
     public function packagingComplete(Request $request, PackagingBmhp $packaging): JsonResponse
     {
-        if ($packaging->status !== PackagingBmhp::STATUS_DIPROSES) {
+        if ($packaging->completed_at !== null) {
             return $this->error('Batch pengemasan ini sudah diselesaikan sebelumnya.', 422);
+        }
+        if ($packaging->disabled) {
+            return $this->error('Kemasan ini sudah di-void.', 422);
         }
 
         $validated = $request->validate([
@@ -280,16 +304,16 @@ class ProductionBmhpController extends Controller
                     'packaged_at' => $packagedAt,
                     'expiry_date' => $expiryDate,
                     'note' => $validated['note'] ?? $packaging->note,
-                    'status' => PackagingBmhp::STATUS_SELESAI,
                     'completed_by' => $actor,
                     'completed_at' => now(),
                 ]);
             });
 
+            // Untuk modal cetak label — kode produksi tidak dipakai lagi di sana.
             $packaging->refresh()->load([
-                'production',
-                'packagingType',
-                'items.productionItem',
+                'packagingType:id,name,shelf_life_days',
+                'items:id,packaging_bmhp_id,production_bmhp_item_id,barcode_no',
+                'items.productionItem:'.self::PRODUCTION_ITEM_COLUMNS,
             ]);
 
             // Label payload untuk modal cetak
@@ -359,14 +383,31 @@ class ProductionBmhpController extends Controller
             ->orderByDesc('id')
             ->paginate(10);
 
-        // Hidrasi baris union jadi model lengkap, tetap dalam urutan feed.
+        // Hidrasi baris union jadi model lengkap, tetap dalam urutan feed — hanya
+        // untuk id di halaman ini, dan dilewati bila halaman ini tak memuat jenisnya.
         $rows = collect($page->items());
-        $packagings = PackagingBmhp::with(['production', 'packagingType', 'items.productionItem'])
-            ->whereIn('id', $rows->where('kind', 'packaging')->pluck('id'))
+        $packagingIds = $rows->where('kind', 'packaging')->pluck('id');
+        $batchIds = $rows->where('kind', 'batch')->pluck('id');
+        $itemColumns = 'items:id,packaging_bmhp_id,production_bmhp_item_id,barcode_no';
+
+        $packagings = $packagingIds->isEmpty() ? collect() : PackagingBmhp::with([
+            'production:id,code',
+            'packagingType:id,name',
+            $itemColumns,
+            'items.productionItem:'.self::PRODUCTION_ITEM_COLUMNS,
+        ])
+            ->whereIn('id', $packagingIds)
             ->get()
             ->keyBy('id');
-        $batches = SterilizationBmhp::with(['machine', 'items.packaging.items.productionItem'])
-            ->whereIn('id', $rows->where('kind', 'batch')->pluck('id'))
+
+        $batches = $batchIds->isEmpty() ? collect() : SterilizationBmhp::with([
+            'items:id,sterilization_bmhp_id,packaging_bmhp_id,packaging_barcode,result',
+            'items.packaging:id,prefix,code,packaging_type_id,disabled,disabled_by',
+            'items.packaging.packagingType:id,name',
+            'items.packaging.'.$itemColumns,
+            'items.packaging.items.productionItem:'.self::PRODUCTION_ITEM_COLUMNS,
+        ])
+            ->whereIn('id', $batchIds)
             ->get()
             ->keyBy('id');
 
@@ -388,45 +429,61 @@ class ProductionBmhpController extends Controller
     {
         $this->validateSterilizationRange($request);
 
-        $menunggu = $this->batchQuery($request)->where('status', SterilizationBmhp::STATUS_DIPROSES)->count();
+        // Menunggu & sudah dihitung sekali jalan dari tabel batch.
+        $batch = $this->batchQuery($request)
+            ->toBase()
+            ->selectRaw('COUNT(*) as total, SUM(status = ?) as menunggu', [SterilizationBmhp::STATUS_DIPROSES])
+            ->first();
+        $menunggu = (int) $batch->menunggu;
 
         return $this->success('Ringkasan sterilisasi BMHP.', [
             'belum' => $this->readyQuery($request)->count(),
             'menunggu' => $menunggu,
-            'sudah' => $this->batchQuery($request)->count() - $menunggu,
+            'sudah' => (int) $batch->total - $menunggu,
         ]);
     }
 
     /**
-     * Gagal steril: kemasan lama di-void dengan catatan kode sterilisasinya, lalu tiap kemasan
-     * diganti kemasan BARU dari produksi yang sama — kembali ke antrean Inspeksi &
-     * Pengemasan (stok tidak dipotong lagi). Prefix kemasan baru diberi awalan "GS-"
-     * (mis. GS-BMHP-KS-), sekali saja walau gagal berulang. Nomornya baru karena
-     * `code` kemasan unik, label lama tetap milik kemasan yang di-void.
+     * Gagal steril: kemasan lama di-void — rincian lengkapnya (kemasan lama, siklus
+     * steril & alasan gagalnya, kemasan penggantinya) disimpan sebagai JSON di
+     * `disabled_reason`, catatannya tidak diubah — lalu tiap kemasan diganti kemasan BARU
+     * dari produksi yang sama — kembali ke antrean Inspeksi & Pengemasan (stok tidak
+     * dipotong lagi). Prefix kemasan baru diberi awalan "GS-" (mis. GS-BMHP-KS-),
+     * sekali saja walau gagal berulang. Nomornya baru karena `code` kemasan unik,
+     * label lama tetap milik kemasan yang di-void.
      */
-    private function repackFailed($packagingIds, SterilizationBmhp $sterilization): void
+    private function repackFailed($packagingIds, SterilizationBmhp $sterilization, string $actor): void
     {
-        $failNote = 'Gagal sterilisasi '.$sterilization->code;
-
         $packagings = PackagingBmhp::with('items.productionItem')->whereIn('id', $packagingIds)->get();
 
         foreach ($packagings as $old) {
-            $old->update([
-                'disabled' => true,
-                'disabled_at' => now(),
-                'note' => $old->note ? $old->note.' | '.$failNote : $failNote,
-            ]);
-
             $prefix = str_starts_with($old->prefix, 'GS-') ? $old->prefix : 'GS-'.$old->prefix;
 
             $new = PackagingBmhp::create([
                 'production_bmhp_id' => $old->production_bmhp_id,
                 'prefix' => $prefix,
-                'status' => PackagingBmhp::STATUS_DIPROSES,
-                'note' => 'Kemas ulang dari '.$old->prefix.$old->code.' ('.$failNote.')',
             ]);
 
-            foreach ($old->items->where('disabled', false) as $item) {
+            $old->update([
+                'disabled' => true,
+                'disabled_at' => now(),
+                'disabled_by' => $actor,
+                'disabled_reason' => [
+                    'reason' => PackagingBmhp::DISABLED_GAGAL_STERIL,
+                    'packaging' => ['id' => $old->id, 'code' => $old->full_code],
+                    'sterilization' => [
+                        'id' => $sterilization->id,
+                        'code' => $sterilization->code,
+                        'failure_reason' => $sterilization->failure_reason,
+                        'failure_note' => $sterilization->failure_note,
+                    ],
+                    'replaced_by' => ['id' => $new->id, 'code' => $new->full_code],
+                    'by' => $actor,
+                    'at' => now()->toIso8601String(),
+                ],
+            ]);
+
+            foreach ($old->items as $item) {
                 $new->items()->create([
                     'production_bmhp_item_id' => $item->production_bmhp_item_id,
                     'barcode_no' => $new->barcodeNoFor($item->productionItem?->package_no),
@@ -466,10 +523,9 @@ class ProductionBmhpController extends Controller
      */
     private function readyQuery(Request $request)
     {
-        $batchedPackagingIds = SterilizationBmhpItem::where('disabled', false)
-            ->select('packaging_bmhp_id');
+        $batchedPackagingIds = SterilizationBmhpItem::select('packaging_bmhp_id');
 
-        $query = PackagingBmhp::where('status', PackagingBmhp::STATUS_SELESAI)
+        $query = PackagingBmhp::whereNotNull('completed_at')
             ->where('disabled', false)
             ->whereNotIn('id', $batchedPackagingIds)
             ->when($request->input('search'), function ($q, $s) {
@@ -518,8 +574,19 @@ class ProductionBmhpController extends Controller
             'note' => 'nullable|string',
         ]);
 
+        // Hanya kemasan yang sudah dikemas, tidak di-void & belum masuk batch lain.
+        $packagingIds = array_values(array_unique($validated['packaging_ids']));
+        $readyCount = PackagingBmhp::whereIn('id', $packagingIds)
+            ->whereNotNull('completed_at')
+            ->where('disabled', false)
+            ->whereNotIn('id', SterilizationBmhpItem::select('packaging_bmhp_id'))
+            ->count();
+        if ($readyCount !== count($packagingIds)) {
+            return $this->error('Ada kemasan yang belum dikemas, sudah di-void, atau sudah masuk batch sterilisasi lain.', 422);
+        }
+
         try {
-            $sterilization = DB::transaction(function () use ($validated) {
+            $sterilization = DB::transaction(function () use ($validated, $packagingIds) {
                 $machine = SterilizerMachine::findOrFail($validated['machine_id']);
                 $actor = auth()->user()?->name ?? $validated['operator'] ?? 'Petugas';
 
@@ -540,9 +607,8 @@ class ProductionBmhpController extends Controller
                     'note' => $validated['note'] ?? null,
                 ]);
 
-                foreach ($validated['packaging_ids'] as $pkgId) {
+                foreach ($packagingIds as $pkgId) {
                     $pkg = PackagingBmhp::with('items')->findOrFail($pkgId);
-                    $pkg->update(['status' => PackagingBmhp::STATUS_STERILISASI]);
 
                     foreach ($pkg->items as $it) {
                         $sterilization->items()->create([
@@ -570,10 +636,29 @@ class ProductionBmhpController extends Controller
             return $this->error('Batch sterilisasi ini sudah divalidasi sebelumnya.', 422);
         }
 
+        $indicator = ['nullable', Rule::in([SterilizationBmhp::INDICATOR_LULUS, SterilizationBmhp::INDICATOR_GAGAL])];
+
         $validated = $request->validate([
             'result' => ['required', Rule::in(['steril', 'gagal'])],
-            'note' => 'nullable|string',
+            'chemical_indicator_result' => $indicator,
+            'bio_indicator_result' => $indicator,
+            'bowie_dick_result' => $indicator,
+            'failure_reason' => ['required_if:result,gagal', 'nullable', Rule::in(SterilizationBmhp::FAILURE_REASONS)],
+            // Alasan "lainnya" wajib ditulis sendiri.
+            'failure_note' => ['nullable', 'string', 'max:255', Rule::requiredIf(
+                fn () => $request->input('result') === 'gagal' && $request->input('failure_reason') === 'lainnya'
+            )],
+        ], [
+            'failure_reason.required_if' => 'Alasan gagal steril wajib dipilih.',
+            'failure_note.required' => 'Tulis alasan gagal steril.',
         ]);
+
+        // Batch tidak boleh dinyatakan steril bila ada indikator yang gagal.
+        $failedIndicator = collect(['chemical_indicator_result', 'bio_indicator_result', 'bowie_dick_result'])
+            ->contains(fn ($k) => ($validated[$k] ?? null) === SterilizationBmhp::INDICATOR_GAGAL);
+        if ($validated['result'] === 'steril' && $failedIndicator) {
+            return $this->error('Ada indikator yang gagal — batch tidak bisa dinyatakan steril.', 422);
+        }
 
         try {
             DB::transaction(function () use ($sterilization, $validated) {
@@ -585,24 +670,27 @@ class ProductionBmhpController extends Controller
 
                 $sterilization->update([
                     'status' => $isSteril ? SterilizationBmhp::STATUS_SELESAI : SterilizationBmhp::STATUS_GAGAL,
+                    'chemical_indicator_result' => $validated['chemical_indicator_result'] ?? null,
+                    'bio_indicator_result' => $validated['bio_indicator_result'] ?? null,
+                    'bowie_dick_result' => $validated['bowie_dick_result'] ?? null,
+                    'failure_reason' => $isSteril ? null : $validated['failure_reason'],
+                    'failure_note' => ! $isSteril && $validated['failure_reason'] === 'lainnya'
+                        ? $validated['failure_note']
+                        : null,
                     'sterilized_at' => now(),
                     'expiry_date' => $sterilization->expiry_date ?? $minExpiry,
                     'completed_at' => now(),
                     'completed_by' => $actor,
-                    'note' => $validated['note'] ?? $sterilization->note,
                 ]);
 
                 $sterilization->items()->update([
                     'result' => $validated['result'],
                 ]);
 
-                // Update status kemasan
-                if ($isSteril) {
-                    PackagingBmhp::whereIn('id', $packagingIds)->update([
-                        'status' => 'selesai',
-                    ]);
-                } else {
-                    $this->repackFailed($packagingIds, $sterilization);
+                // Steril: kemasan tidak perlu diubah — hasilnya sudah di `result`
+                // item sterilisasi. Gagal: kemasan di-void & dikemas ulang.
+                if (! $isSteril) {
+                    $this->repackFailed($packagingIds, $sterilization, $actor);
                 }
             });
 

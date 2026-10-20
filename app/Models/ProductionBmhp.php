@@ -12,16 +12,9 @@ class ProductionBmhp extends Model
 
     protected $table = 'production_bmhp';
 
-    public const STATUS_DIPROSES = 'diproses';
-
-    public const STATUS_SELESAI = 'selesai';
-
-    public const STATUS_DIBATALKAN = 'dibatalkan';
-
     protected $fillable = [
         'code',
         'note',
-        'status',
         'created_by',
         'updated_by',
     ];

@@ -12,17 +12,26 @@ use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 /**
  * Controller Gudang Steril BMHP:
  * 1. Antrean BMHP steril yang siap disimpan ke rak (incoming)
  * 2. Simpan BMHP steril ke rak penyimpanan (store)
  * 3. Daftar inventaris BMHP di rak steril (inventory)
- * 4. Ringkasan statistik gudang steril BMHP (summary)
+ * 4. Opsi order BMHP steril (orderOptions)
  */
 class StorageBmhpController extends Controller
 {
     private const EXPIRY_ALERT_DAYS = 7;
+
+    /** Relasi batch masuk — hanya kolom yang dipakai payload incoming. */
+    private const INCOMING_RELATIONS = [
+        'items:id,sterilization_bmhp_id,packaging_bmhp_id,result',
+        'items.packaging:id,disabled',
+        'items.packaging.items:id,packaging_bmhp_id,production_bmhp_item_id,barcode_no',
+        'items.packaging.items.productionItem:id,source,name,package_name,quantity,unit_name,price',
+    ];
 
     /**
      * Batch BMHP steril yang perlu disimpan ke rak gudang steril.
@@ -31,11 +40,7 @@ class StorageBmhpController extends Controller
     {
         $search = $request->input('search');
 
-        $query = SterilizationBmhp::with([
-            'machine',
-            'items.packaging.items.productionItem',
-            'items.packaging.packagingType',
-        ])
+        $query = SterilizationBmhp::with(self::INCOMING_RELATIONS)
             ->where('status', SterilizationBmhp::STATUS_SELESAI)
             ->when($search, function ($q, $s) {
                 $q->where(function ($w) use ($s) {
@@ -59,7 +64,6 @@ class StorageBmhpController extends Controller
                     ->where(function ($r) {
                         $r->whereNull('sbi.result')->orWhere('sbi.result', 'steril');
                     })
-                    ->where('pbi.disabled', false)
                     ->whereNotExists(function ($sub2) {
                         $sub2->selectRaw('1')
                             ->from('storage_bmhp')
@@ -71,23 +75,37 @@ class StorageBmhpController extends Controller
             ->orderByDesc('id')
             ->paginate(20);
 
-        $query->getCollection()->transform(fn (SterilizationBmhp $b) => $this->incomingPayload($b));
+        // Baris rak yang sudah tercatat untuk SEMUA batch di halaman ini — satu query,
+        // bukan satu query per batch.
+        $stored = $this->storedByBatch($query->getCollection()->pluck('id')->all());
+
+        $query->getCollection()->transform(
+            fn (SterilizationBmhp $b) => $this->incomingPayload($b, $stored->get($b->id, collect()))
+        );
 
         return $this->success('Data batch BMHP steril siap disimpan berhasil diambil.', $query);
     }
 
     /**
-     * Format payload batch incoming BMHP.
+     * Baris `storage_bmhp` per batch sterilisasi: [sterilization_bmhp_id => [packaging_bmhp_item_id => row]].
      */
-    private function incomingPayload(SterilizationBmhp $sterilization): array
+    private function storedByBatch(array $sterilizationIds)
     {
-        // Ambil data storage yang sudah tercatat untuk batch ini
-        $storedRecords = StorageBmhp::where('sterilization_bmhp_id', $sterilization->id)
-            ->whereNull('deleted_by')
-            ->get(['packaging_bmhp_item_id', 'rack_code'])
-            ->keyBy('packaging_bmhp_item_id');
+        return StorageBmhp::with('rack:id,name')
+            ->whereIn('sterilization_bmhp_id', $sterilizationIds)
+            ->get(['sterilization_bmhp_id', 'packaging_bmhp_item_id', 'rack_id'])
+            ->groupBy('sterilization_bmhp_id')
+            ->map(fn ($rows) => $rows->keyBy('packaging_bmhp_item_id'));
+    }
 
+    /**
+     * Format payload batch incoming BMHP — hanya field yang dipakai halaman Gudang
+     * Steril BMHP. Relasi INCOMING_RELATIONS harus sudah dimuat.
+     */
+    private function incomingPayload(SterilizationBmhp $sterilization, $storedRecords): array
+    {
         $unitRows = collect();
+        $seenPackagings = [];
 
         foreach ($sterilization->items as $sterilItem) {
             // Hanya kemasan yang hasil sterilisasinya sukses / steril
@@ -100,28 +118,34 @@ class StorageBmhpController extends Controller
                 continue;
             }
 
-            foreach ($pkg->items as $it) {
-                if ($it->disabled) {
-                    continue;
-                }
+            // Item sterilisasi dibuat per LABEL, jadi kemasan paket ber-N set muncul
+            // N kali — isinya cukup diambil sekali.
+            if (isset($seenPackagings[$pkg->id])) {
+                continue;
+            }
+            $seenPackagings[$pkg->id] = true;
 
+            foreach ($pkg->items as $it) {
                 $pi = $it->productionItem;
-                $stored = $storedRecords->has($it->id);
-                $rackCode = $stored ? $storedRecords->get($it->id)->rack_code : null;
+                $storedRow = $storedRecords->get($it->id);
+                $quantity = $pi?->quantity ?? 1;
+                // Harga satuan saat produksi (snapshot); paket = harga 1 paket.
+                $price = (float) ($pi?->price ?? 0);
 
                 $unitRows->push([
                     'id' => $it->id, // packaging_bmhp_item_id
                     'code' => $it->barcode_no,
                     'barcode_no' => $it->barcode_no,
                     'instrument' => $pi?->name ?? 'BMHP',
-                    'image_url' => null,
                     'source' => $pi?->source ?? 'satuan',
                     'package_name' => $pi?->package_name,
-                    'package_no' => $pi?->package_no,
-                    'quantity' => $pi?->quantity ?? 1,
+                    'quantity' => $quantity,
                     'unit_name' => $pi?->unit_name ?? 'pcs',
-                    'stored' => $stored,
-                    'rack_code' => $rackCode,
+                    'price' => $price,
+                    'total_price' => $price * $quantity,
+                    'stored' => $storedRow !== null,
+                    'rack_id' => $storedRow?->rack_id,
+                    'rack_name' => $storedRow?->rack?->name,
                 ]);
             }
         }
@@ -131,20 +155,8 @@ class StorageBmhpController extends Controller
 
         return [
             'id' => $sterilization->id,
-            // Batch tidak punya kode sendiri — yang ditampilkan kode kemasan di dalamnya.
-            'code' => $sterilization->items
-                ->map(fn ($it) => $it->packaging ? $it->packaging->prefix.$it->packaging->code : null)
-                ->filter()
-                ->unique()
-                ->implode(', '),
-            'code_transaction' => null,
-            'status' => $sterilization->status,
-            'source' => 'produksi',
-            'store_url' => "/master/storage-bmhp/{$sterilization->id}/store",
-            'borrowed_by' => null,
-            'room' => null,
-            'operator' => $sterilization->operator,
-            'machine_name' => $sterilization->machine_name ?? $sterilization->machine?->name,
+            // Kode siklus sterilisasi, mis. AUT01-191026-03.
+            'sterilization_code' => $sterilization->code,
             'processed_at' => $sterilization->sterilized_at?->toISOString() ?? $sterilization->created_at?->toISOString(),
             'expiry_date' => $sterilization->expiry_date?->toDateString(),
             'unit_count' => $unitCount,
@@ -155,7 +167,7 @@ class StorageBmhpController extends Controller
 
     /**
      * Simpan unit-unit BMHP ke rak gudang steril BMHP.
-     * Request body items: [{ packaging_item_id, rack_code }]
+     * Request body items: [{ packaging_item_id, rack_id }]
      */
     public function store(Request $request, SterilizationBmhp $sterilization): JsonResponse
     {
@@ -166,24 +178,25 @@ class StorageBmhpController extends Controller
         $validated = $request->validate([
             'items' => 'required|array|min:1',
             'items.*.packaging_item_id' => 'required|integer|exists:packaging_bmhp_item,id',
-            'items.*.rack_code' => 'required|string|max:255',
+            // Rak dari master `racks` yang masih aktif.
+            'items.*.rack_id' => ['required', 'integer', Rule::exists('racks', 'id')->whereNull('deleted_by')],
+        ], [
+            'items.*.rack_id.exists' => 'Rak tidak ditemukan di master rak.',
         ]);
 
         $itemIds = collect($validated['items'])->pluck('packaging_item_id')->all();
 
         // Cari item yang valid milik batch sterilisasi ini
-        $validItems = PackagingBmhpItem::with(['packaging', 'productionItem'])
-            ->whereIn('id', $itemIds)
+        $validItems = PackagingBmhpItem::whereIn('id', $itemIds)
             ->whereHas('packaging.sterilizationItems', function ($q) use ($sterilization) {
                 $q->where('sterilization_bmhp_id', $sterilization->id)
                     ->where(fn ($w) => $w->whereNull('result')->orWhere('result', 'steril'));
             })
-            ->where('disabled', false)
             ->get()
             ->keyBy('id');
 
+        // `deleted_by IS NULL` sudah dari global scope HasAuditColumns.
         $alreadyStored = StorageBmhp::where('sterilization_bmhp_id', $sterilization->id)
-            ->whereNull('deleted_by')
             ->pluck('packaging_bmhp_item_id')
             ->all();
 
@@ -193,27 +206,21 @@ class StorageBmhpController extends Controller
 
                 foreach ($validated['items'] as $item) {
                     $itemId = (int) $item['packaging_item_id'];
-                    $rackCode = trim($item['rack_code']);
 
-                    if (! $validItems->has($itemId) || in_array($itemId, $alreadyStored, true) || empty($rackCode)) {
+                    if (! $validItems->has($itemId) || in_array($itemId, $alreadyStored, true)) {
                         continue;
                     }
 
                     $pkgItem = $validItems->get($itemId);
-                    $pkg = $pkgItem->packaging;
-                    $prodItem = $pkgItem->productionItem;
 
-                    $expiry = $pkg?->expiry_date ?? $sterilization->expiry_date;
-
+                    // Kedaluwarsa tidak disalin — dibaca dari kemasannya (packaging_bmhp.expiry_date).
                     StorageBmhp::create([
                         'sterilization_bmhp_id' => $sterilization->id,
                         'packaging_bmhp_id' => $pkgItem->packaging_bmhp_id,
                         'packaging_bmhp_item_id' => $pkgItem->id,
-                        'production_bmhp_item_id' => $prodItem?->id ?? $pkgItem->production_bmhp_item_id,
+                        'production_bmhp_item_id' => $pkgItem->production_bmhp_item_id,
                         'barcode_no' => $pkgItem->barcode_no,
-                        'rack_code' => $rackCode,
-                        'expiry_date' => $expiry,
-                        'status' => StorageBmhp::STATUS_TERSIMPAN,
+                        'rack_id' => (int) $item['rack_id'],
                         'stored_at' => now(),
                         'created_by' => $actor,
                     ]);
@@ -222,7 +229,14 @@ class StorageBmhpController extends Controller
                 }
             });
 
-            return $this->success('Unit BMHP berhasil disimpan ke Gudang Steril BMHP.', $this->incomingPayload($sterilization->refresh()));
+            // Relasinya dimuat sekaligus — tanpa ini payload memicu satu query per
+            // kemasan/label (lazy loading).
+            $sterilization->refresh()->load(self::INCOMING_RELATIONS);
+
+            return $this->success(
+                'Unit BMHP berhasil disimpan ke Gudang Steril BMHP.',
+                $this->incomingPayload($sterilization, $this->storedByBatch([$sterilization->id])->get($sterilization->id, collect()))
+            );
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
         }
@@ -236,97 +250,71 @@ class StorageBmhpController extends Controller
         $days = max(0, (int) $request->input('days', self::EXPIRY_ALERT_DAYS));
         $search = $request->input('search');
 
+        // Relasi dimuat per halaman (20 baris), hanya kolom yang dipakai tabel.
+        // Kedaluwarsa = milik kemasannya (packaging_bmhp.expiry_date).
         $query = StorageBmhp::with([
-            'sterilization.machine',
-            'packaging.packagingType',
-            'packaging.production',
-            'productionItem',
+            'rack:id,name',
+            'packaging:id,expiry_date',
+            'sterilization:id,code',
+            'productionItem:id,source,name,package_name,quantity,unit_name,price',
         ])
             ->sterilePool()
+            // Filter rak (`?rack_id=`).
+            ->when($request->input('rack_id'), fn ($q, $rackId) => $q->where('rack_id', $rackId))
             ->when($search, function ($q, $s) {
                 $q->where(function ($w) use ($s) {
-                    $w->where('rack_code', 'like', "%{$s}%")
-                        ->orWhere('barcode_no', 'like', "%{$s}%")
+                    $w->where('barcode_no', 'like', "%{$s}%")
+                        ->orWhereHas('rack', fn ($r) => $r->where('name', 'like', "%{$s}%"))
                         ->orWhereHas('productionItem', fn ($p) => $p->where('name', 'like', "%{$s}%")
                             ->orWhere('package_name', 'like', "%{$s}%"));
                 });
             })
-            ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
+            // Kedaluwarsa terdekat dulu; tanpa tanggal di akhir.
+            ->orderByRaw(
+                '(SELECT expiry_date FROM packaging_bmhp WHERE packaging_bmhp.id = storage_bmhp.packaging_bmhp_id) IS NULL, '
+                .'(SELECT expiry_date FROM packaging_bmhp WHERE packaging_bmhp.id = storage_bmhp.packaging_bmhp_id) ASC'
+            )
             ->paginate(20);
 
         $today = now()->startOfDay();
 
         $query->getCollection()->transform(function (StorageBmhp $row) use ($today, $days) {
-            $expiry = $row->expiry_date ? Carbon::parse($row->expiry_date)->startOfDay() : null;
+            $expiryDate = $row->packaging?->expiry_date;
+            $expiry = $expiryDate ? Carbon::parse($expiryDate)->startOfDay() : null;
             $daysToExpiry = $expiry ? (int) $today->diffInDays($expiry, false) : null;
             $isExpired = $expiry ? $expiry->lt($today) : false;
             $isAlert = $expiry ? ($daysToExpiry !== null && $daysToExpiry >= 0 && $daysToExpiry <= $days) : false;
-            $canDistribute = ! $isExpired && $expiry !== null;
-            $blockedReason = null;
-            if ($isExpired) {
-                $blockedReason = 'Kedaluwarsa';
-            } elseif (! $expiry) {
-                $blockedReason = 'Tanpa tanggal kedaluwarsa';
-            }
 
             $pi = $row->productionItem;
+            $quantity = $pi?->quantity ?? 1;
+            // Harga satuan saat produksi (production_bmhp_item.price); paket = harga 1 paket.
+            $price = (float) ($pi?->price ?? 0);
 
             return [
                 'id' => $row->id,
-                'rack_code' => $row->rack_code,
+                'rack_id' => $row->rack_id,
+                'rack_name' => $row->rack?->name,
                 'stored_at' => $row->stored_at?->toISOString(),
-                'expiry_date' => $row->expiry_date?->toDateString(),
+                'expiry_date' => $expiry?->toDateString(),
                 'days_to_expiry' => $daysToExpiry,
                 'alert' => $isAlert,
                 'expired' => $isExpired,
-                'can_distribute' => $canDistribute,
-                'blocked_reason' => $blockedReason,
                 'source' => $pi?->source ?? 'satuan',
                 'package_name' => $pi?->package_name,
-                'package_no' => $pi?->package_no,
                 'barcode_no' => $row->barcode_no,
-                'production_code' => $row->packaging?->production?->code,
-                // Dikelompokkan per kemasan — batch sterilisasi tidak punya kode sendiri.
-                'batch' => $row->packaging ? $row->packaging->prefix.$row->packaging->code : '-',
+                // Kode siklus sterilisasi tempat BMHP ini disteril, mis. AUT01-191026-03.
+                'sterilization_code' => $row->sterilization?->code,
                 'unit' => [
-                    'id' => $row->packaging_bmhp_item_id,
-                    'code' => $row->barcode_no,
                     'instrument' => $pi?->name ?? 'BMHP',
-                    'quantity' => $pi?->quantity ?? 1,
+                    'quantity' => $quantity,
                     'unit_name' => $pi?->unit_name ?? 'pcs',
-                    'image_url' => null,
+                    'price' => $price,
+                    'total_price' => $price * $quantity,
                 ],
-                'order' => null,
             ];
         });
 
         return $this->success('Inventaris gudang steril BMHP berhasil diambil.', $query);
-    }
-
-    /**
-     * Ringkasan statistik angka gudang steril BMHP.
-     */
-    public function summary(Request $request): JsonResponse
-    {
-        $days = max(0, (int) $request->input('days', self::EXPIRY_ALERT_DAYS));
-        $today = now()->startOfDay();
-        $limit = $today->copy()->addDays($days);
-
-        $rows = StorageBmhp::sterilePool()->get(['id', 'expiry_date']);
-
-        $total = $rows->count();
-        $alert = $rows->filter(fn ($s) => $s->expiry_date
-            && Carbon::parse($s->expiry_date)->startOfDay()->gte($today)
-            && Carbon::parse($s->expiry_date)->startOfDay()->lte($limit))->count();
-        $expired = $rows->filter(fn ($s) => $s->expiry_date && Carbon::parse($s->expiry_date)->startOfDay()->lt($today))->count();
-        $noExpiry = $rows->filter(fn ($s) => ! $s->expiry_date)->count();
-
-        return $this->success('Ringkasan gudang steril BMHP berhasil diambil.', [
-            'total' => $total,
-            'alert' => $alert,
-            'expired' => $expired,
-            'no_expiry' => $noExpiry,
-        ]);
     }
 
     /**
@@ -338,10 +326,7 @@ class StorageBmhpController extends Controller
 
         // Hitung stok steril BMHP SATUAN di rak Gudang Steril BMHP
         $satuanRows = StorageBmhp::sterilePool()
-            ->where('status', StorageBmhp::STATUS_TERSIMPAN)
-            ->where(function ($q) use ($today) {
-                $q->whereNull('expiry_date')->orWhere('expiry_date', '>=', $today);
-            })
+            ->usableOn($today)
             ->whereHas('productionItem', fn ($p) => $p->where('source', 'satuan'))
             ->with('productionItem.bmhp')
             ->get();
@@ -370,10 +355,7 @@ class StorageBmhpController extends Controller
 
         // Hitung stok steril BMHP PAKET di rak Gudang Steril BMHP
         $paketRows = StorageBmhp::sterilePool()
-            ->where('status', StorageBmhp::STATUS_TERSIMPAN)
-            ->where(function ($q) use ($today) {
-                $q->whereNull('expiry_date')->orWhere('expiry_date', '>=', $today);
-            })
+            ->usableOn($today)
             ->whereHas('productionItem', fn ($p) => $p->where('source', 'paket'))
             ->with('productionItem.package.items.bmhp')
             ->get();

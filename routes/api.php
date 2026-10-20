@@ -219,7 +219,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('storage-bmhp/incoming', [StorageBmhpController::class, 'incoming']);
         Route::post('storage-bmhp/{sterilization}/store', [StorageBmhpController::class, 'store']);
         Route::get('storage-bmhp/inventory', [StorageBmhpController::class, 'inventory']);
-        Route::get('storage-bmhp/summary', [StorageBmhpController::class, 'summary']);
         Route::get('storage-bmhp/order-options', [StorageBmhpController::class, 'orderOptions']);
         // Pipeline pemrosesan CSSD: Proses order masuk → tahap Cleaning & Pengemasan
         Route::post('orders/{order}/process', [CleaningController::class, 'process']);

@@ -22,7 +22,6 @@ return new class extends Migration
                 $table->id();
                 $table->string('code')->unique();
                 $table->text('note')->nullable();
-                $table->string('status')->default('diproses');
                 $table->string('created_by')->nullable();
                 $table->string('updated_by')->nullable();
                 $table->string('deleted_by')->nullable();
@@ -66,13 +65,15 @@ return new class extends Migration
                 $table->timestamp('packaged_at')->nullable();
                 $table->date('expiry_date')->nullable();
                 $table->text('note')->nullable();
-                $table->string('status')->default('diproses'); // diproses, selesai, sterilisasi
-                $table->string('started_by')->nullable();
-                $table->timestamp('started_at')->nullable();
+                // Tahap kemasan dibaca dari kolom (lihat PackagingBmhp), tanpa `status`.
                 $table->string('completed_by')->nullable();
                 $table->timestamp('completed_at')->nullable();
+                // Kemasan di-void (mis. gagal steril). `disabled_reason` = rincian JSON:
+                // reason, packaging, sterilization (+ alasan gagal), replaced_by, by, at.
                 $table->boolean('disabled')->default(false);
                 $table->timestamp('disabled_at')->nullable();
+                $table->json('disabled_reason')->nullable();
+                $table->string('disabled_by')->nullable();
                 $table->string('created_by')->nullable();
                 $table->string('updated_by')->nullable();
                 $table->string('deleted_by')->nullable();
@@ -88,8 +89,6 @@ return new class extends Migration
                 $table->foreignId('packaging_bmhp_id')->constrained('packaging_bmhp')->cascadeOnDelete();
                 $table->foreignId('production_bmhp_item_id')->constrained('production_bmhp_item')->cascadeOnDelete();
                 $table->string('barcode_no')->nullable()->index();
-                $table->boolean('disabled')->default(false);
-                $table->timestamp('disabled_at')->nullable();
                 $table->string('created_by')->nullable();
                 $table->string('updated_by')->nullable();
                 $table->string('deleted_by')->nullable();
@@ -112,7 +111,16 @@ return new class extends Migration
                 $table->string('operator')->nullable();
                 $table->string('bio_indicator_lot')->nullable();
                 $table->string('chemical_indicator_lot')->nullable();
+                // Hasil indikator saat validasi: lulus / gagal, NULL = tidak dipakai.
+                // Bowie-Dick hanya untuk mesin uap.
+                $table->string('chemical_indicator_result')->nullable();
+                $table->string('bio_indicator_result')->nullable();
+                $table->string('bowie_dick_result')->nullable();
                 $table->string('status')->default('diproses'); // diproses, selesai, gagal
+                // Alasan gagal (lihat SterilizationBmhp::FAILURE_REASONS); `failure_note`
+                // = alasan yang diketik sendiri bila alasannya `lainnya`.
+                $table->string('failure_reason')->nullable();
+                $table->string('failure_note')->nullable();
                 $table->timestamp('sterilized_at')->nullable();
                 $table->date('expiry_date')->nullable();
                 $table->text('note')->nullable();
@@ -136,8 +144,6 @@ return new class extends Migration
                 $table->foreignId('packaging_bmhp_id')->constrained('packaging_bmhp')->cascadeOnDelete();
                 $table->string('packaging_barcode')->nullable()->index();
                 $table->string('result')->nullable(); // steril, gagal
-                $table->boolean('disabled')->default(false);
-                $table->timestamp('disabled_at')->nullable();
                 $table->string('created_by')->nullable();
                 $table->string('updated_by')->nullable();
                 $table->string('deleted_by')->nullable();

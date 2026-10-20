@@ -19,15 +19,8 @@ class SterilizationBmhpItem extends Model
         'packaging_bmhp_id',
         'packaging_barcode',
         'result',
-        'disabled',
-        'disabled_at',
         'created_by',
         'updated_by',
-    ];
-
-    protected $casts = [
-        'disabled' => 'boolean',
-        'disabled_at' => 'datetime',
     ];
 
     public function sterilization()

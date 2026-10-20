@@ -19,9 +19,10 @@ return new class extends Migration
                 $table->foreignId('packaging_bmhp_item_id')->constrained('packaging_bmhp_item')->cascadeOnDelete();
                 $table->foreignId('production_bmhp_item_id')->constrained('production_bmhp_item')->cascadeOnDelete();
                 $table->string('barcode_no')->nullable()->index();
-                $table->string('rack_code');
-                $table->date('expiry_date')->nullable();
-                $table->string('status')->default('tersimpan'); // tersimpan, keluar
+                // Rak penyimpanan (master `racks`). Kedaluwarsa tidak disimpan di
+                // sini — dibaca dari kemasannya (packaging_bmhp.expiry_date); "masih
+                // di rak" dibaca dari removed_at / disabled_at, tanpa kolom status.
+                $table->foreignId('rack_id')->constrained('racks');
                 $table->timestamp('stored_at')->nullable();
                 $table->timestamp('removed_at')->nullable();
                 $table->boolean('disabled')->default(false);

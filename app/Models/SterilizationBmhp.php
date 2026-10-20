@@ -21,6 +21,22 @@ class SterilizationBmhp extends Model
 
     public const STATUS_GAGAL = 'gagal';
 
+    // Hasil indikator kimia / biologi / Bowie-Dick saat validasi; NULL = tidak dipakai.
+    public const INDICATOR_LULUS = 'lulus';
+
+    public const INDICATOR_GAGAL = 'gagal';
+
+    // Alasan batch dinyatakan gagal steril (`failure_reason`).
+    public const FAILURE_REASONS = [
+        'indikator_kimia',
+        'indikator_biologi',
+        'bowie_dick',
+        'mesin_error',
+        'kemasan_basah',
+        'kemasan_rusak',
+        'lainnya',
+    ];
+
     protected $fillable = [
         'code',
         'machine_id',
@@ -32,7 +48,12 @@ class SterilizationBmhp extends Model
         'operator',
         'bio_indicator_lot',
         'chemical_indicator_lot',
+        'chemical_indicator_result',
+        'bio_indicator_result',
+        'bowie_dick_result',
         'status',
+        'failure_reason',
+        'failure_note',
         'sterilized_at',
         'expiry_date',
         'note',

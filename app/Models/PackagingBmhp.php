@@ -12,11 +12,22 @@ class PackagingBmhp extends Model
 
     protected $table = 'packaging_bmhp';
 
-    public const STATUS_DIPROSES = 'diproses';
+    // Tahap kemasan tidak disimpan sebagai `status`, tetapi dibaca dari kolomnya
+    // lewat stage(): `completed_at` kosong = menunggu pengemasan; terisi = siap
+    // steril; sudah ada di `sterilization_bmhp_items` = masuk sterilisasi (hasilnya
+    // di `result`); `disabled` = di-void (gagal steril).
+    public const STAGE_BELUM = 'belum';
 
-    public const STATUS_SELESAI = 'selesai';
+    public const STAGE_SIAP = 'siap';
 
-    public const STATUS_STERILISASI = 'sterilisasi';
+    public const STAGE_STERILISASI = 'sterilisasi';
+
+    public const STAGE_STERIL = 'steril';
+
+    public const STAGE_GAGAL = 'gagal';
+
+    // Alasan kemasan di-void (`disabled_reason.reason`).
+    public const DISABLED_GAGAL_STERIL = 'gagal_steril';
 
     protected $fillable = [
         'production_bmhp_id',
@@ -28,13 +39,12 @@ class PackagingBmhp extends Model
         'packaged_at',
         'expiry_date',
         'note',
-        'status',
-        'started_by',
-        'started_at',
         'completed_by',
         'completed_at',
         'disabled',
         'disabled_at',
+        'disabled_reason',
+        'disabled_by',
         'created_by',
         'updated_by',
     ];
@@ -42,10 +52,11 @@ class PackagingBmhp extends Model
     protected $casts = [
         'packaged_at' => 'datetime',
         'expiry_date' => 'date',
-        'started_at' => 'datetime',
         'completed_at' => 'datetime',
         'disabled' => 'boolean',
         'disabled_at' => 'datetime',
+        // Rincian void (JSON): reason, packaging, sterilization, replaced_by, by, at.
+        'disabled_reason' => 'array',
     ];
 
     /**
@@ -106,5 +117,34 @@ class PackagingBmhp extends Model
     public function sterilizationItems()
     {
         return $this->hasMany(SterilizationBmhpItem::class, 'packaging_bmhp_id');
+    }
+
+    /**
+     * Tambah penanda `in_sterilization` & `is_sterilized` (EXISTS) yang dipakai
+     * stage() — tanpa memuat baris item sterilisasinya.
+     */
+    public function scopeWithStageFlags($query)
+    {
+        return $query->withExists([
+            'sterilizationItems as in_sterilization',
+            'sterilizationItems as is_sterilized' => fn ($q) => $q->where('result', SterilizationBmhpItem::RESULT_STERIL),
+        ]);
+    }
+
+    /** Tahap kemasan (STAGE_*) — butuh query memakai withStageFlags(). */
+    public function stage(): string
+    {
+        if ($this->disabled) {
+            return self::STAGE_GAGAL;
+        }
+        if ($this->completed_at === null) {
+            return self::STAGE_BELUM;
+        }
+        if (! $this->in_sterilization) {
+            return self::STAGE_SIAP;
+        }
+
+        // Hasil gagal selalu disertai void (`disabled`), jadi sisanya steril / menunggu validasi.
+        return $this->is_sterilized ? self::STAGE_STERIL : self::STAGE_STERILISASI;
     }
 }

@@ -21,6 +21,7 @@ class ProductionBmhpItem extends Model
         'package_no',
         'quantity',
         'unit_name',
+        'price',
         'created_by',
         'updated_by',
     ];
@@ -28,6 +29,7 @@ class ProductionBmhpItem extends Model
     protected $casts = [
         'quantity' => 'float',
         'package_no' => 'integer',
+        'price' => 'float',
     ];
 
     public function production()
