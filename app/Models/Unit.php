@@ -7,7 +7,8 @@ use App\Traits\HasAutoCode;
 use Illuminate\Database\Eloquent\Model;
 
 /**
- * Master satuan (pcs, box, botol, ...). Kode auto SAT-NNN. Jejak pembuat,
+ * Master satuan (pcs, box, botol, ...). Kode diisi pengguna lewat form; SAT-NNN
+ * hanya cadangan bila dibuat tanpa kode (mis. dari seeder). Jejak pembuat,
  * pengubah & penghapusnya diurus HasAuditColumns — penghapusan selalu soft delete.
  */
 class Unit extends Model

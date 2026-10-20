@@ -213,7 +213,8 @@ class ProductionBmhpController extends Controller
 
     /**
      * Daftar antrean Inspeksi & Pengemasan BMHP — paginasi 20, dimuat bertahap
-     * (lazy load) oleh frontend saat daftar di-scroll.
+     * (lazy load) oleh frontend saat daftar di-scroll. Kemasan yang di-void
+     * (disabled, mis. gagal steril) tetap ditampilkan sebagai riwayat.
      */
     public function packagingQueue(Request $request): JsonResponse
     {
@@ -224,7 +225,6 @@ class ProductionBmhpController extends Controller
             'packagingType',
             'items.productionItem',
         ])
-            ->where('disabled', false)
             ->when($search, function ($q, $s) {
                 $q->where(function ($w) use ($s) {
                     $w->whereRaw('CONCAT(prefix, code) LIKE ?', ["%{$s}%"])
