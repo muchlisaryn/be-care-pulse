@@ -12,6 +12,12 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // Database lama sudah menjalankan migrasi ini dengan nama
+        // 2026_10_06_000001_create_units_table. Jangan buat ulang tabelnya.
+        if (Schema::hasTable('units')) {
+            return;
+        }
+
         Schema::create('units', function (Blueprint $table) {
             $table->id();
             $table->string('name');

@@ -15,6 +15,12 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // Database lama sudah membentuk tabel ini lewat migrasi
+        // 2026_10_06_000003_restructure_bmhps_into_mst_bmhp. Jangan buat ulang.
+        if (Schema::hasTable('mst_bmhp')) {
+            return;
+        }
+
         Schema::create('mst_bmhp', function (Blueprint $table) {
             $table->id();
             $table->string('code')->unique();
