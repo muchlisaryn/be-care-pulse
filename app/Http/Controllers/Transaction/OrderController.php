@@ -44,8 +44,9 @@ class OrderController extends Controller
         'requestItems.catalog',
         // Isi paket (instrumen apa saja di dalam katalog) untuk ditampilkan di detail.
         'requestItems.catalog.items.instrument',
-        'requestItems.bmhp',
-        'requestItems.packageBmhp.items.bmhp',
+        // Baris permintaan order BMHP (tabel order_request_bmhp) + isi paketnya.
+        'bmhpItems.bmhp',
+        'bmhpItems.packageBmhp.items.bmhp',
         // Unit fisik hasil generate saat order diterima (kosong sebelum diterima).
         'items.instrumentStock.instrument',
         'items.conditionOut',
@@ -66,6 +67,8 @@ class OrderController extends Controller
             // attachItemCount(). Dibaca dari baris permintaan supaya sudah terisi sejak
             // order baru diajukan, bukan menunggu unit fisik dialokasikan CSSD.
             ->withSum('requestItems as requested_qty', 'quantity')
+            // Order BMHP menyimpan baris permintaannya di order_request_bmhp.
+            ->withSum('bmhpItems as requested_bmhp_qty', 'quantity')
             // Hanya tampilkan order milik akun yang login (penanggung jawab order).
             ->where('user_id', auth()->id())
             // Kecualikan batch PRODUKSI CSSD (internal, tanpa ruangan) — itu bukan
@@ -119,6 +122,13 @@ class OrderController extends Controller
      */
     private function attachItemCount(Collection $orders): void
     {
+        // Order BMHP: jumlah permintaannya dari order_request_bmhp.
+        foreach ($orders as $o) {
+            if (! $o->getAttribute('requested_qty') && $o->getAttribute('requested_bmhp_qty')) {
+                $o->setAttribute('requested_qty', $o->getAttribute('requested_bmhp_qty'));
+            }
+        }
+
         $fallbackIds = $orders->filter(fn (Order $o) => ! $o->getAttribute('requested_qty'))
             ->pluck('id');
 
@@ -185,7 +195,7 @@ class OrderController extends Controller
         $patientRequired = $room && $room->layanan === 'rawat_inap';
 
         $validated = $request->validate([
-            'order_type' => ['nullable', 'string', Rule::in(['cssd', 'bmhp'])],
+            'order_type' => ['nullable', 'string', Rule::in(Order::TYPES)],
             'room_id' => 'required|integer|exists:rooms,id',
             // `user_id` SENGAJA tidak diterima dari request: pemilik order selalu akun
             // yang membuatnya. Dulu boleh dikirim klien, sehingga order bisa didaftarkan
@@ -215,7 +225,7 @@ class OrderController extends Controller
         try {
             $order = DB::transaction(function () use ($validated) {
                 // Stok steril WAJIB dicek di server, bukan cuma di form.
-                $this->assertSterileStockSufficient($validated['items'], $validated['order_type'] ?? 'cssd');
+                $this->assertSterileStockSufficient($validated['items'], $validated['order_type'] ?? Order::TYPE_INSTRUMEN);
 
                 return $this->createOrder($validated, $validated['items']);
             });
@@ -254,7 +264,7 @@ class OrderController extends Controller
         $patientRequired = $room && $room->layanan === 'rawat_inap';
 
         $validated = $request->validate([
-            'order_type' => ['nullable', 'string', Rule::in(['cssd', 'bmhp'])],
+            'order_type' => ['nullable', 'string', Rule::in(Order::TYPES)],
             'room_id' => 'required|integer|exists:rooms,id',
             'borrowed_by' => 'nullable|string|max:255',
             'order_date' => 'required|date',
@@ -294,7 +304,7 @@ class OrderController extends Controller
                 // Stok steril dicek SEKALI untuk gabungan permintaan SELURUH pasien:
                 $this->assertSterileStockSufficient(
                     collect($validated['patients'])->flatMap(fn ($p) => $p['items'])->all(),
-                    $validated['order_type'] ?? 'cssd'
+                    $validated['order_type'] ?? Order::TYPE_INSTRUMEN
                 );
 
                 return collect($validated['patients'])
@@ -337,7 +347,7 @@ class OrderController extends Controller
      */
     private function createOrder(array $data, array $items): Order
     {
-        $orderType = $data['order_type'] ?? 'cssd';
+        $orderType = $data['order_type'] ?? Order::TYPE_INSTRUMEN;
         $order = Order::create([
             'order_type' => $orderType,
             'room_id' => $data['room_id'],
@@ -357,14 +367,27 @@ class OrderController extends Controller
 
         foreach ($items as $item) {
             $isPaket = $item['type'] === 'paket';
-            $isBmhp = $orderType === 'bmhp';
+            $packageName = $isPaket ? ($item['package_name'] ?? $item['name'] ?? null) : null;
+
+            // Order BMHP → order_request_bmhp; order instrumen → order_request_item.
+            if ($orderType === Order::TYPE_BMHP) {
+                $order->bmhpItems()->create([
+                    'type' => $item['type'],
+                    'bmhp_id' => $isPaket ? null : ($item['bmhp_id'] ?? $item['instrument_id'] ?? null),
+                    'package_bmhp_id' => $isPaket ? ($item['package_bmhp_id'] ?? $item['instrument_catalog_id'] ?? null) : null,
+                    'package_name' => $packageName,
+                    'item_name' => $item['name'] ?? null,
+                    'quantity' => $item['quantity'],
+                ]);
+
+                continue;
+            }
+
             $order->requestItems()->create([
                 'type' => $item['type'],
-                'instrument_id' => (! $isPaket && ! $isBmhp) ? ($item['instrument_id'] ?? null) : null,
-                'instrument_catalog_id' => ($isPaket && ! $isBmhp) ? ($item['instrument_catalog_id'] ?? null) : null,
-                'bmhp_id' => (! $isPaket && $isBmhp) ? ($item['bmhp_id'] ?? $item['instrument_id'] ?? null) : null,
-                'package_bmhp_id' => ($isPaket && $isBmhp) ? ($item['package_bmhp_id'] ?? $item['instrument_catalog_id'] ?? null) : null,
-                'package_name' => $isPaket ? ($item['package_name'] ?? $item['name'] ?? null) : null,
+                'instrument_id' => $isPaket ? null : ($item['instrument_id'] ?? null),
+                'instrument_catalog_id' => $isPaket ? ($item['instrument_catalog_id'] ?? null) : null,
+                'package_name' => $packageName,
                 'item_name' => $item['name'] ?? null,
                 'quantity' => $item['quantity'],
             ]);
@@ -372,7 +395,7 @@ class OrderController extends Controller
 
         // Timeline: order dibuat (code_transaction masih null, diisi saat diterima).
         OrderEvent::record(OrderEvent::TYPE_DIBUAT, $order, [
-            'note' => ($order->order_type === 'bmhp' ? 'Order BMHP diajukan' : 'Order peminjaman diajukan')
+            'note' => ($order->order_type === Order::TYPE_BMHP ? 'Order BMHP diajukan' : 'Order peminjaman diajukan')
                 .($order->medical_record_no ? ' · RM '.$order->medical_record_no : '')
                 .($order->patient_name ? ' · '.$order->patient_name : ''),
         ]);
@@ -383,9 +406,9 @@ class OrderController extends Controller
     /**
      * Pastikan stok steril cukup untuk seluruh baris permintaan, SEBELUM order dibuat.
      */
-    private function assertSterileStockSufficient(array $items, string $orderType = 'cssd'): void
+    private function assertSterileStockSufficient(array $items, string $orderType = Order::TYPE_INSTRUMEN): void
     {
-        if ($orderType === 'bmhp') {
+        if ($orderType === Order::TYPE_BMHP) {
             $this->assertBmhpStock($items);
 
             return;

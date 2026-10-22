@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Model;
 /**
  * Master BMHP (Bahan Medis Habis Pakai). Kodenya diketik manual oleh admin —
  * tidak dibuat otomatis oleh sistem. Satuannya merujuk master satuan (`unit_id`).
+ * Master ini tidak menyimpan stok — stok BMHP adalah kemasan hasil produksi yang
+ * sudah steril di Gudang Steril BMHP (`storage_bmhp`).
  */
 class Bmhp extends Model
 {
@@ -19,15 +21,13 @@ class Bmhp extends Model
         'code',
         'name',
         'unit_id',
-        'stock_qty',
         'price',
         'created_by',
         'updated_by',
     ];
 
     protected $casts = [
-        // Desimal di database (12,2); dikirim sebagai angka, bukan string.
-        'stock_qty' => 'float',
+        // Desimal di database; dikirim sebagai angka, bukan string.
         'price' => 'float',
     ];
 

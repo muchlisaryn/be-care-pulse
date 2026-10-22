@@ -18,6 +18,13 @@ class Order extends Model
     protected $table = 'order';
 
     // Status order/peminjaman (PRD §4.6)
+    /** Jenis order (`order_type`): instrumen steril atau BMHP steril. */
+    public const TYPE_INSTRUMEN = 'instrumen';
+
+    public const TYPE_BMHP = 'bmhp';
+
+    public const TYPES = [self::TYPE_INSTRUMEN, self::TYPE_BMHP];
+
     public const STATUS_DIAJUKAN = 'diajukan';
 
     public const STATUS_DIPINJAM = 'dipinjam';
@@ -283,6 +290,12 @@ class Order extends Model
     public function requestItems()
     {
         return $this->hasMany(OrderRequestItem::class);
+    }
+
+    /** Baris permintaan order BMHP (`order_type = bmhp`). */
+    public function bmhpItems()
+    {
+        return $this->hasMany(OrderRequestBmhp::class);
     }
 
     /** Event timeline tracking order (dibuat/diterima/dipindah/dikembalikan). */

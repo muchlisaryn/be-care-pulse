@@ -52,7 +52,6 @@ class BmhpController extends Controller
             'name' => 'required|string|max:255',
             // Satuan dipilih dari master satuan yang masih aktif.
             'unit_id' => ['required', 'integer', Rule::exists('units', 'id')->whereNull('deleted_by')],
-            'stock_qty' => 'sometimes|numeric|min:0',
             'price' => 'sometimes|numeric|min:0',
         ], $this->messages());
 
@@ -76,7 +75,6 @@ class BmhpController extends Controller
             'code' => ['sometimes', 'required', 'string', 'max:50', Rule::unique('mst_bmhp', 'code')->ignore($bmhp->id)],
             'name' => 'sometimes|required|string|max:255',
             'unit_id' => ['sometimes', 'required', 'integer', Rule::exists('units', 'id')->whereNull('deleted_by')],
-            'stock_qty' => 'sometimes|numeric|min:0',
             'price' => 'sometimes|numeric|min:0',
         ], $this->messages());
 

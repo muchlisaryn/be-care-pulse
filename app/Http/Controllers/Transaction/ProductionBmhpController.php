@@ -19,7 +19,7 @@ use Illuminate\Validation\Rule;
 
 /**
  * Controller Pipeline Produksi BMHP (Bahan Medis Habis Pakai) — 3 Tahap:
- * 1. Produksi Baru (potong stok master BMHP, langsung ke antrean pengemasan)
+ * 1. Produksi Baru (langsung ke antrean pengemasan, tanpa potong stok master)
  * 2. Inspeksi & Pengemasan (pilih jenis kemasan, cetak label barcode)
  * 3. Sterilisasi (mesin sterilisator, validasi hasil)
  */
@@ -27,9 +27,6 @@ class ProductionBmhpController extends Controller
 {
     /** Tanggal kemasan siap steril untuk filter & urutan tab Sterilisasi. */
     private const READY_DATE = 'COALESCE(packaged_at, created_at)';
-
-    /** Panjang rentang tanggal maksimal (hari, inklusif) di tab Sterilisasi. */
-    private const STERIL_MAX_DAYS = 3;
 
     /** Kolom item produksi yang dipakai kartu, isi kemasan & label (tanpa harga dll). */
     private const PRODUCTION_ITEM_COLUMNS = 'id,source,name,package_no,quantity,unit_name';
@@ -58,9 +55,9 @@ class ProductionBmhpController extends Controller
     }
 
     /**
-     * Buat batch produksi baru BMHP:
-     * - Validasi stok cukup di `mst_bmhp`
-     * - Potong `stock_qty`
+     * Buat batch produksi baru BMHP. Master BMHP tidak menyimpan stok, jadi
+     * produksi tidak memotong apa pun — stok BMHP baru terbentuk saat kemasannya
+     * lolos sterilisasi dan masuk Gudang Steril BMHP.
      * - Per BMHP / paket: buat `production_bmhp` & `production_bmhp_item`, lalu
      *   langsung `packaging_bmhp` (masuk antrean Inspeksi & Pengemasan). Kode
      *   produksi = kemasan = label: BMHP-{kode master}-{yymmdd}{urut}
@@ -77,50 +74,29 @@ class ProductionBmhpController extends Controller
 
         try {
             $result = DB::transaction(function () use ($validated) {
-                // 1. Akumulasi total kebutuhan per bmhp_id untuk validasi stok
-                $requirements = [];
+                // 1. Ambil master BMHP / Paket BMHP yang dirujuk. Tidak ada stok
+                //    yang dicek atau dipotong — master BMHP tidak menyimpan stok.
+                $bmhpRecords = collect();
                 $packageModels = [];
 
                 foreach ($validated['items'] as $item) {
-                    $qty = (float) $item['quantity'];
+                    $refId = (int) $item['ref_id'];
 
                     if ($item['type'] === 'satuan') {
-                        $bmhpId = (int) $item['ref_id'];
-                        $requirements[$bmhpId] = ($requirements[$bmhpId] ?? 0) + $qty;
-                    } else {
-                        $packageId = (int) $item['ref_id'];
-                        if (! isset($packageModels[$packageId])) {
-                            $pkg = PackageBmhp::with('items.bmhp')->findOrFail($packageId);
-                            $packageModels[$packageId] = $pkg;
+                        if (! $bmhpRecords->has($refId)) {
+                            $bmhp = Bmhp::find($refId);
+                            if (! $bmhp) {
+                                throw new \RuntimeException("BMHP ID {$refId} tidak ditemukan.");
+                            }
+                            $bmhpRecords->put($refId, $bmhp);
                         }
-                        $pkg = $packageModels[$packageId];
-                        foreach ($pkg->items as $pItem) {
-                            $needed = (float) $pItem->qty * $qty;
-                            $requirements[$pItem->bmhp_id] = ($requirements[$pItem->bmhp_id] ?? 0) + $needed;
-                        }
+                    } elseif (! isset($packageModels[$refId])) {
+                        // Isi paket ikut dimuat untuk `total_price`.
+                        $packageModels[$refId] = PackageBmhp::with('items.bmhp')->findOrFail($refId);
                     }
                 }
 
-                // Cek stok seluruh BMHP yang dibutuhkan
-                $bmhpRecords = Bmhp::whereIn('id', array_keys($requirements))->lockForUpdate()->get()->keyBy('id');
-
-                foreach ($requirements as $bmhpId => $neededQty) {
-                    $bmhp = $bmhpRecords->get($bmhpId);
-                    if (! $bmhp) {
-                        throw new \RuntimeException("BMHP ID {$bmhpId} tidak ditemukan.");
-                    }
-                    if ($bmhp->stock_qty < $neededQty) {
-                        throw new \RuntimeException("Stok {$bmhp->name} tidak mencukupi (dibutuhkan {$neededQty} {$bmhp->unit}, tersedia {$bmhp->stock_qty} {$bmhp->unit}).");
-                    }
-                }
-
-                // 2. Potong stok pada tabel master
-                foreach ($requirements as $bmhpId => $neededQty) {
-                    $bmhp = $bmhpRecords->get($bmhpId);
-                    $bmhp->decrement('stock_qty', $neededQty);
-                }
-
-                // 3. Satu produksi + satu kemasan per BMHP / paket — baris yang
+                // 2. Satu produksi + satu kemasan per BMHP / paket — baris yang
                 //    merujuk master yang sama digabung jumlahnya. Kodenya diambil
                 //    dari `code` master BMHP / Paket BMHP dan dipakai sama persis
                 //    oleh produksi, kemasan & label: BMHP-KS-26101901.
@@ -131,7 +107,7 @@ class ProductionBmhpController extends Controller
                     $groups[$key]['quantity'] += (float) $item['quantity'];
                 }
 
-                // 4. Buat produksi & kemasannya (langsung masuk tahap pengemasan)
+                // 3. Buat produksi & kemasannya (langsung masuk tahap pengemasan)
                 //    beserta item produksi & label-labelnya
                 $productions = [];
                 foreach ($groups as $item) {
@@ -223,7 +199,7 @@ class ProductionBmhpController extends Controller
     {
         $search = $request->input('search');
 
-        // Relasi dimuat per halaman (20 baris), hanya kolom yang dipakai kartu & label.
+        // Relasi dimuat per halaman (12 kotak — pas untuk grid 2 & 3 kolom), hanya kolom yang dipakai kartu & label.
         $query = PackagingBmhp::with([
             'packagingType:id,name,shelf_life_days',
             'items:id,packaging_bmhp_id,production_bmhp_item_id,barcode_no',
@@ -255,7 +231,7 @@ class ProductionBmhpController extends Controller
             ->orderByRaw('CASE WHEN completed_at IS NULL THEN 0 ELSE 1 END')
             ->orderByDesc('created_at')
             ->orderByDesc('id')
-            ->paginate(20);
+            ->paginate(12);
 
         // `stage` = tahap kemasan (lihat PackagingBmhp::stage()) untuk warna kartu;
         // penanda EXISTS-nya tidak perlu ikut dikirim.
@@ -493,28 +469,14 @@ class ProductionBmhpController extends Controller
     }
 
     /**
-     * Rentang tanggal tab Sterilisasi maksimal STERIL_MAX_DAYS hari (inklusif).
+     * Rentang tanggal tab Sterilisasi — panjangnya bebas, asal tidak terbalik.
      * Gagal → ValidationException (422) lewat handler global.
      */
     private function validateSterilizationRange(Request $request): void
     {
         $request->validate([
             'date_from' => ['nullable', 'date'],
-            'date_to' => [
-                'nullable',
-                'date',
-                'after_or_equal:date_from',
-                function (string $attribute, mixed $value, \Closure $fail) use ($request) {
-                    if (! $request->date_from || ! $value) {
-                        return;
-                    }
-                    $days = Carbon::parse($request->date_from)->startOfDay()
-                        ->diffInDays(Carbon::parse($value)->startOfDay()) + 1;
-                    if ($days > self::STERIL_MAX_DAYS) {
-                        $fail('Rentang tanggal maksimal '.self::STERIL_MAX_DAYS.' hari.');
-                    }
-                },
-            ],
+            'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
         ]);
     }
 

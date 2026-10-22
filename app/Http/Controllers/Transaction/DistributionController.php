@@ -65,17 +65,10 @@ class DistributionController extends Controller
                     'note' => $validated['note'] ?? null,
                 ]);
 
-                // Buat item + kurangi stok BMHP.
+                // Buat item. Master BMHP tidak menyimpan stok, jadi tidak ada
+                // stok yang dipotong di sini.
                 foreach ($validated['items'] as $item) {
                     $qty = $item['quantity'] ?? 1;
-
-                    $bmhp = Bmhp::find($item['bmhp_id']);
-                    if ($bmhp->stock_qty < $qty) {
-                        throw ValidationException::withMessages([
-                            'items' => ["Stok BMHP {$bmhp->name} tidak mencukupi (tersisa {$bmhp->stock_qty})."],
-                        ]);
-                    }
-                    $bmhp->decrement('stock_qty', $qty);
 
                     $distribution->items()->create([
                         'bmhp_id' => $item['bmhp_id'],
@@ -113,15 +106,6 @@ class DistributionController extends Controller
 
         try {
             DB::transaction(function () use ($validated, $distribution) {
-                // Pembatalan → kembalikan stok.
-                if (
-                    isset($validated['status'])
-                    && $validated['status'] === Distribution::STATUS_DIBATALKAN
-                    && $distribution->status !== Distribution::STATUS_DIBATALKAN
-                ) {
-                    $this->restoreStock($distribution);
-                }
-
                 $distribution->fill($validated);
                 $distribution->save();
             });
@@ -138,29 +122,12 @@ class DistributionController extends Controller
     {
         try {
             DB::transaction(function () use ($distribution) {
-                // Kembalikan stok bila distribusi masih aktif (belum dibatalkan).
-                if ($distribution->status !== Distribution::STATUS_DIBATALKAN) {
-                    $this->restoreStock($distribution);
-                }
-
                 $distribution->delete();
             });
 
             return $this->success('Distribusi berhasil dihapus.');
         } catch (\Throwable $e) {
             return $this->error($e->getMessage(), 500);
-        }
-    }
-
-    /**
-     * Kembalikan stok BMHP yang sempat dipakai distribusi.
-     */
-    private function restoreStock(Distribution $distribution): void
-    {
-        foreach ($distribution->items()->get() as $item) {
-            if ($item->bmhp_id) {
-                Bmhp::where('id', $item->bmhp_id)->increment('stock_qty', $item->quantity);
-            }
         }
     }
 }

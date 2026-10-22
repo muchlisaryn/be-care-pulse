@@ -5,6 +5,10 @@ namespace App\Models;
 use App\Traits\HasAuditColumns;
 use Illuminate\Database\Eloquent\Model;
 
+/**
+ * Baris permintaan order INSTRUMEN (satuan / paket katalog). Order BMHP memakai
+ * `order_request_bmhp` (OrderRequestBmhp).
+ */
 class OrderRequestItem extends Model
 {
     use HasAuditColumns;
@@ -16,8 +20,6 @@ class OrderRequestItem extends Model
         'type',
         'instrument_id',
         'instrument_catalog_id',
-        'bmhp_id',
-        'package_bmhp_id',
         'package_name',
         'item_name',
         'quantity',
@@ -42,15 +44,5 @@ class OrderRequestItem extends Model
     public function catalog()
     {
         return $this->belongsTo(InstrumentCatalog::class, 'instrument_catalog_id');
-    }
-
-    public function bmhp()
-    {
-        return $this->belongsTo(Bmhp::class, 'bmhp_id');
-    }
-
-    public function packageBmhp()
-    {
-        return $this->belongsTo(PackageBmhp::class, 'package_bmhp_id');
     }
 }
