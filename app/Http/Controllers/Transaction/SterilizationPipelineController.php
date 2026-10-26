@@ -551,7 +551,13 @@ class SterilizationPipelineController extends Controller
     private function batchPayload(Sterilization $batch): array
     {
         $batch->loadMissing(['items.instrumentStock.instrument']);
-        $batchItems = $batch->items->where('disabled', false);
+        // Batch yang masih diproses: item yang di-void tidak ikut. Batch yang SUDAH
+        // divalidasi (riwayat) tetap menampilkan seluruh unit yang pernah masuk —
+        // termasuk unit gagal yang sudah dikembalikan ke packaging (di-void) — supaya
+        // Riwayat Sterilisasi batch gagal tidak tampil "0 unit".
+        $batchItems = $batch->status === Sterilization::STATUS_DIPROSES
+            ? $batch->items->where('disabled', false)
+            : $batch->items;
 
         // Nomor label (barcode_no) tiap unit dibaca dari `sterilization_items.packaging_barcode`
         // — dicatat saat batch dibuat, jadi tetap benar meski PKG-nya kemudian ikut
@@ -622,7 +628,7 @@ class SterilizationPipelineController extends Controller
         return [
             'id' => $batch->id,          // id STR → dipakai saat validasi
             'kind' => 'batch',
-            'code' => $batch->code,      // STR-NNN
+            'code' => $batch->code,      // {kode mesin}-{ddmmyy}-{urut}
             'code_transaction' => $packagings->map(fn ($p) => $p->washing?->production?->code)->filter()->unique()->implode(', '),
             'status' => 'sterilisasi',
             'borrowed_by' => $names ?: 'Produksi CSSD',

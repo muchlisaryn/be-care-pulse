@@ -2,13 +2,14 @@
 
 namespace App\Models;
 
+use App\Traits\GeneratesSterilizationCode;
 use App\Traits\HasAuditColumns;
 use App\Traits\HasAutoCode;
 use Illuminate\Database\Eloquent\Model;
 
 class Sterilization extends Model
 {
-    use HasAuditColumns, HasAutoCode;
+    use GeneratesSterilizationCode, HasAuditColumns, HasAutoCode;
 
     // Status batch sterilisasi
     public const STATUS_DIPROSES = 'diproses';
@@ -81,18 +82,20 @@ class Sterilization extends Model
         'completed_at' => 'datetime',
     ];
 
+    /**
+     * Kode batch disamakan dengan sterilisasi BMHP: {kode mesin}-{ddmmyy}-{urut},
+     * mis. AUT01-191026-03. Kolom `machine` berisi teks bebas (umumnya nama mesin
+     * dari master), jadi kode mesinnya dicari lewat nama ATAU kode; bila tidak
+     * ditemukan di master, awalannya "STR".
+     */
     protected static function generateUniqueCode($model): string
     {
-        $maxCode = static::withoutGlobalScopes()
-            ->where('code', 'like', 'STR-%')
-            ->max('code');
+        $machine = trim((string) $model->machine);
+        $machineCode = $machine === ''
+            ? null
+            : SterilizerMachine::where('name', $machine)->orWhere('code', $machine)->value('code');
 
-        $sequence = 1;
-        if ($maxCode && preg_match('/-(\d+)$/', $maxCode, $matches)) {
-            $sequence = (int) $matches[1] + 1;
-        }
-
-        return 'STR-'.str_pad($sequence, 3, '0', STR_PAD_LEFT);
+        return static::nextSterilizationCode($machineCode ?: 'STR');
     }
 
     public function items()

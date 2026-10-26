@@ -10,8 +10,8 @@ return new class extends Migration
      * Master BMHP (Bahan Medis Habis Pakai / consumables).
      *
      * Gabungan create_bmhps_table + restructure_bmhps_into_mst_bmhp: langsung
-     * bentuk akhirnya — kode diketik manual, satuan dari master `units`, stok
-     * boleh pecahan, dan harga satuan (rupiah).
+     * bentuk akhirnya — kode diketik manual, satuan dari master `units`, dan
+     * harga satuan (rupiah). Tanpa stok: stok BMHP ada di Gudang Steril BMHP.
      */
     public function up(): void
     {
@@ -26,7 +26,6 @@ return new class extends Migration
             $table->string('code')->unique();
             $table->string('name');
             $table->foreignId('unit_id')->nullable()->constrained('units')->nullOnDelete();
-            $table->decimal('stock_qty', 12, 2)->default(0);
             $table->decimal('price', 15, 2)->default(0);
             // Kolom audit standar (lihat HasAuditColumns).
             $table->string('created_by')->nullable();

@@ -12,7 +12,7 @@ class InstrumentStock extends Model
 
     /**
      * Metadata sementara (konteks + referensi) untuk pencatatan log saat status berubah.
-     * Di-set sebelum save oleh controller, mis. ['context' => 'sterilization', 'reference' => 'STR-001'].
+     * Di-set sebelum save oleh controller, mis. ['context' => 'sterilization', 'reference' => 'AUT01-191026-03'].
      */
     public ?array $logMeta = null;
 

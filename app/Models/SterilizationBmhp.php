@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Traits\GeneratesSterilizationCode;
 use App\Traits\HasAuditColumns;
 use Illuminate\Database\Eloquent\Model;
 
@@ -11,7 +12,7 @@ use Illuminate\Database\Eloquent\Model;
  */
 class SterilizationBmhp extends Model
 {
-    use HasAuditColumns;
+    use GeneratesSterilizationCode, HasAuditColumns;
 
     protected $table = 'sterilization_bmhp';
 
@@ -76,21 +77,12 @@ class SterilizationBmhp extends Model
     ];
 
     /**
-     * Kode batch berikutnya: {kode mesin}-{ddmmyy}-{urut 2 digit}. Nomor urut =
-     * urutan sterilisasi BMHP hari itu, lintas mesin (sterilisasi ke-3 hari ini → 03).
+     * Kode batch berikutnya: {kode mesin}-{ddmmyy}-{urut 2 digit}. Nomor urut
+     * dibagi dengan sterilisasi instrumen — lihat GeneratesSterilizationCode.
      */
     public static function nextCode(string $machineCode): string
     {
-        $day = now()->format('dmy');
-        $pattern = '/-'.$day.'-(\d+)$/';
-
-        $last = static::withoutGlobalScopes()
-            ->where('code', 'like', '%-'.$day.'-%')
-            ->pluck('code')
-            ->map(fn ($code) => preg_match($pattern, $code, $m) ? (int) $m[1] : 0)
-            ->max() ?? 0;
-
-        return $machineCode.'-'.$day.'-'.str_pad($last + 1, 2, '0', STR_PAD_LEFT);
+        return static::nextSterilizationCode($machineCode);
     }
 
     public function machine()

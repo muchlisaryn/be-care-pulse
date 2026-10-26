@@ -593,7 +593,7 @@ class StorageController extends Controller
 
         return [
             'id' => $batch->id,                 // id sterilisasi (STR) → dipakai di store_url
-            'code' => $batch->code,             // STR-NNN
+            'code' => $batch->code,             // {kode mesin}-{ddmmyy}-{urut}
             'code_transaction' => $production?->code, // PRD-NNN
             'status' => 'steril',
             'source' => 'produksi',

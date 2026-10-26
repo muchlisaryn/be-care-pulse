@@ -38,7 +38,7 @@ trait ReprocessesPackaging
      * menolaknya alih-alih diam-diam membiarkannya hilang dari pipeline.
      *
      * @param  array<int,int>  $stockIds  unit yang ditarik kembali ke Packaging
-     * @param  string  $reason  potongan kalimat untuk jejak pipeline, mis. "unit gagal steril STR-001 dikembalikan"
+     * @param  string  $reason  potongan kalimat untuk jejak pipeline, mis. "unit gagal steril AUT01-191026-03 dikembalikan"
      * @return array{packagings: array<int,Packaging>, stock_ids: array<int,int>}
      */
     protected function openReprocessRound(Sterilization $sterilization, array $stockIds, string $reason): array

@@ -8,8 +8,9 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     /**
-     * Nilai `order.order_type` mengikuti nama jenis order di layar: `instrumen`
-     * (dulu `cssd`) dan `bmhp`.
+     * Nilai `order.order_type` untuk order instrumen kini `instrumen` (dulu `cssd`).
+     * Migrasi pembuat kolomnya sudah memakai `instrumen`; ini hanya untuk database
+     * yang terlanjur memakai `cssd`.
      */
     public function up(): void
     {
@@ -26,14 +27,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (! Schema::hasColumn('order', 'order_type')) {
-            return;
-        }
-
-        DB::table('order')->where('order_type', 'instrumen')->update(['order_type' => 'cssd']);
-
-        Schema::table('order', function (Blueprint $table) {
-            $table->string('order_type', 32)->default('cssd')->change();
-        });
+        // Sengaja kosong — nilai `cssd` sudah tidak dipakai.
     }
 };
