@@ -127,13 +127,18 @@ trait ReprocessesPackaging
             ->whereIn('instrument_stock_id', $hit->all());
 
         if ($prodItems->isNotEmpty()) {
+            $masterCodes = Packaging::masterCodesFor($prodItems);
             foreach ($prodItems as $pi) {
                 $newPkg->items()->create([
                     'instrument_stock_id' => $pi->instrument_stock_id,
                     'source' => $pi->source,
                     'package_name' => $pi->package_name,
-                    // Label baru: nomornya ikut kode RPK, bukan warisan PKG lama.
-                    'barcode_no' => $newPkg->barcodeNoFor($pi->package_no),
+                    // Label baru: `RPK-{kode master}-` + nomor packaging RPK, bukan
+                    // warisan label PKG lama.
+                    'barcode_no' => $newPkg->barcodeNoFor(
+                        $pi->package_no,
+                        $masterCodes[$pi->instrument_stock_id] ?? null,
+                    ),
                 ]);
             }
 
@@ -143,6 +148,7 @@ trait ReprocessesPackaging
         $fallback = $sourcePkg->items()
             ->whereIn('instrument_stock_id', $hit->all())
             ->get();
+        $masterCodes = Packaging::masterCodesFor($fallback);
 
         foreach ($fallback as $item) {
             $newPkg->items()->create([
@@ -151,7 +157,7 @@ trait ReprocessesPackaging
                 'package_name' => $item->package_name,
                 // Tanpa production_item nomor setnya tidak diketahui; labelnya tetap
                 // baru karena kode RPK-nya berbeda.
-                'barcode_no' => $newPkg->barcodeNoFor(null),
+                'barcode_no' => $newPkg->barcodeNoFor(null, $masterCodes[$item->instrument_stock_id] ?? null),
             ]);
         }
     }

@@ -198,13 +198,19 @@ class PackagingController extends Controller
                 ]);
 
                 // Isi ronde ini = seluruh unit produksi (cermin production_item).
-                foreach (($washing->production?->items()->get() ?? collect()) as $pi) {
+                $prodItems = $washing->production?->items()->get() ?? collect();
+                $masterCodes = Packaging::masterCodesFor($prodItems);
+                foreach ($prodItems as $pi) {
                     $packaging->items()->create([
                         'instrument_stock_id' => $pi->instrument_stock_id,
                         'source' => $pi->source,
                         'package_name' => $pi->package_name,
-                        // Nomor yang tercetak di label (tanpa spasi).
-                        'barcode_no' => $packaging->barcodeNoFor($pi->package_no),
+                        // Nomor yang tercetak di label (tanpa spasi), berawalan kode
+                        // katalog paket / kode instrumen satuan.
+                        'barcode_no' => $packaging->barcodeNoFor(
+                            $pi->package_no,
+                            $masterCodes[$pi->instrument_stock_id] ?? null,
+                        ),
                     ]);
                 }
 
@@ -388,6 +394,13 @@ class PackagingController extends Controller
             'expiry_date' => $expiry,
             'chemical_indicator' => $packaging->chemical_indicator,
             'items' => $units->map(fn ($u) => [
+                // Awalan label (kode master instrumen, mis. `SETBDH-`, atau `PKG` untuk
+                // label lama) — diambil dari barcode tersimpan supaya tampilan tiga
+                // segmen di frontend sama persis dengan yang tercetak.
+                'label_prefix' => $packaging->labelPrefixOf(
+                    $u->barcode_no,
+                    $packageNoByStock[$u->instrument_stock_id] ?? null,
+                ),
                 // id packaging_item — null bila fallback ke unit produksi.
                 'id' => $packagingItems->isNotEmpty() ? $u->id : null,
                 'instrument_name' => $prodByStock->get($u->instrument_stock_id)?->name
@@ -427,6 +440,51 @@ class PackagingController extends Controller
      * Payload satu batch tahap Packaging. `$packaging` null = batch masih antrean
      * (belum ada recordnya); field khusus packaging ikut null dan `started` false.
      */
+    /**
+     * Label kemasan batch yang SELESAI dikemas: `barcode_no` (isi barcode), `title`
+     * (nama paket/instrumen) + `label_code` (tampilan tiga segmen, mis. `INS-001 26110602 1`,
+     * sama dengan yang tercetak). Batch yang belum selesai → array kosong.
+     *
+     * @return array<int,array{barcode_no:string,title:string,label_code:string}>
+     */
+    private function labelCodes(?Packaging $packaging, $productionItems): array
+    {
+        if (! $packaging || $packaging->status !== Packaging::STATUS_SELESAI) {
+            return [];
+        }
+
+        $prodByStock = collect($productionItems)
+            ->filter(fn ($pi) => $pi->instrument_stock_id !== null)
+            ->keyBy('instrument_stock_id');
+
+        return $packaging->items()
+            ->where('disabled', false)
+            ->whereNotNull('barcode_no')
+            ->orderBy('id')
+            ->get(['id', 'instrument_stock_id', 'source', 'package_name', 'barcode_no'])
+            ->unique('barcode_no')
+            ->map(function ($it) use ($packaging, $prodByStock) {
+                $pi = $prodByStock->get($it->instrument_stock_id);
+                $packageNo = $pi?->package_no;
+                $prefix = rtrim($packaging->labelPrefixOf($it->barcode_no, $packageNo), '-');
+
+                return [
+                    'barcode_no' => $it->barcode_no,
+                    // Nama di label: nama PAKET untuk unit paket, nama INSTRUMEN untuk
+                    // satuan — sama dengan label yang dicetak (labelPayload).
+                    'title' => $it->source === 'paket' && $it->package_name
+                        ? $it->package_name
+                        : ($pi?->name ?? 'Instrumen'),
+                    'label_code' => trim(implode(' ', array_filter(
+                        [$prefix, $packaging->code, $packageNo],
+                        fn ($part) => $part !== null && $part !== '',
+                    ))),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
     private function batchPayload(?OrderWashing $washing, ?Packaging $packaging): array
     {
         $production = $washing?->production;
@@ -502,6 +560,9 @@ class PackagingController extends Controller
             'expiry_date' => $packaging?->expiry_date?->toDateString(),
             'units_count' => $units->count(),
             'items' => $items,
+            // Kode label kemasan yang sudah tercetak (batch selesai) — ditampilkan di
+            // kartu riwayat. Satu entri per label fisik (barcode_no unik).
+            'label_codes' => $this->labelCodes($packaging, $productionItems),
             'units' => $units->map(fn ($u) => [
                 'id' => $u->id,
                 'source' => $u->source,

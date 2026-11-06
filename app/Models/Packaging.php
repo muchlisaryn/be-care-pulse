@@ -10,7 +10,8 @@ use Illuminate\Database\Eloquent\Model;
  * Tahap Packaging pada pipeline CSSD. Identitas batch dipecah dua kolom: `prefix`
  * (PKG / RPK) + `code` (ymd + urutan harian), digabung lewat accessor `full_code`
  * — mis. `PKG26050201`. Dirangkai ke tahap cleaning lewat washing_code
- * (= washing.code).
+ * (= washing.code). Label kemasan (packaging_item.barcode_no) TIDAK memakai
+ * prefix batch, melainkan kode master instrumennya — lihat labelPrefixFor().
  */
 class Packaging extends Model
 {
@@ -113,13 +114,80 @@ class Packaging extends Model
     }
 
     /**
-     * Nomor barcode label untuk satu set: prefix + kode packaging + nomor set,
-     * DIGABUNG TANPA SPASI (mis. `PKG260719011`). Tampilan preview label tetap
-     * memakai tiga segmen berspasi — ini khusus nilai yang disimpan & dipindai.
+     * Awalan label satu kemasan: KODE MASTER instrumennya — kode katalog
+     * (`instrument_catalogs.code`) untuk paket, kode instrumen (`instruments.code`)
+     * untuk satuan — diakhiri `-`, mis. `SETBDH-`. Kemasan ulang (RPK) diberi
+     * awalan tambahan `RPK-` (mis. `RPK-SETBDH-`) agar label ulang beda dari label
+     * pertamanya.
+     *
+     * Bila kode master tidak diketahui (data lama / master terhapus) awalannya
+     * kembali ke prefix batch (`PKG` / `RPK`) seperti aturan lama.
      */
-    public function barcodeNoFor(?int $packageNo): string
+    public function labelPrefixFor(?string $masterCode): string
     {
-        return $this->prefix.$this->code.($packageNo ?? '');
+        $masterCode = trim((string) $masterCode);
+        if ($masterCode === '') {
+            return $this->prefix;
+        }
+
+        return ($this->prefix === self::PREFIX_REPROCESS ? self::PREFIX_REPROCESS.'-' : '').$masterCode.'-';
+    }
+
+    /**
+     * Nomor barcode label untuk satu set: awalan label + kode packaging + nomor
+     * set, DIGABUNG TANPA SPASI (mis. `SETBDH-260719011`). Tampilan preview label
+     * tetap memakai tiga segmen berspasi — ini khusus nilai yang disimpan & dipindai.
+     * Tanpa `$masterCode` dipakai aturan lama (`PKG260719011`).
+     */
+    public function barcodeNoFor(?int $packageNo, ?string $masterCode = null): string
+    {
+        return $this->labelPrefixFor($masterCode).$this->code.($packageNo ?? '');
+    }
+
+    /**
+     * Awalan label dari barcode_no yang SUDAH tersimpan — bagian sebelum kode
+     * packaging + nomor set. Dipakai frontend menyusun tampilan tiga segmen, jadi
+     * label lama (`PKG...`) maupun baru (`SETBDH-...`) tampil sesuai yang tercetak.
+     */
+    public function labelPrefixOf(?string $barcodeNo, ?int $packageNo): string
+    {
+        $tail = $this->code.($packageNo ?? '');
+        if ($barcodeNo === null || ! str_ends_with($barcodeNo, $tail)) {
+            return $this->prefix;
+        }
+
+        return substr($barcodeNo, 0, strlen($barcodeNo) - strlen($tail));
+    }
+
+    /**
+     * Kode master per unit: `instrument_stock_id` → kode katalog (paket, dicocokkan
+     * lewat nama paket) atau kode instrumen (satuan). Baris yang kodenya tidak
+     * ditemukan bernilai null → barcodeNoFor() memakai aturan lama.
+     *
+     * @param  iterable<object{instrument_stock_id:?int,source:?string,package_name:?string}>  $rows
+     * @return array<int,?string>
+     */
+    public static function masterCodesFor(iterable $rows): array
+    {
+        $rows = collect($rows)->filter(fn ($r) => $r->instrument_stock_id !== null);
+
+        $paketNames = $rows->where('source', 'paket')->pluck('package_name')->filter()->unique()->values();
+        $catalogCodes = $paketNames->isEmpty()
+            ? collect()
+            : InstrumentCatalog::whereIn('name', $paketNames)->orderBy('id')->get(['name', 'code'])
+                ->unique('name')->pluck('code', 'name');
+
+        $satuanIds = $rows->where('source', '!=', 'paket')->pluck('instrument_stock_id')->unique()->values();
+        $instrumentCodes = $satuanIds->isEmpty()
+            ? collect()
+            : InstrumentStock::with('instrument:id,code')->whereIn('id', $satuanIds)->get()
+                ->mapWithKeys(fn ($s) => [$s->id => $s->instrument?->code]);
+
+        return $rows->mapWithKeys(fn ($r) => [
+            $r->instrument_stock_id => $r->source === 'paket'
+                ? ($catalogCodes[$r->package_name] ?? null)
+                : ($instrumentCodes[$r->instrument_stock_id] ?? null),
+        ])->all();
     }
 
     /** Batch pengemasan asal yang di-void (diisi hanya pada record RPK). */
